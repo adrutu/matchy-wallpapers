@@ -1,0 +1,93 @@
+# Matchy Wallpapers — Home Assistant app (add-on) config.
+#
+# NOTE: the Supervisor schema ends in `extra=vol.REMOVE_EXTRA`, so an unknown key is
+# SILENTLY DISCARDED — no error, the feature just does not exist. Only add keys that
+# are in supervisor/apps/validate.py.
+name: Matchy Wallpapers
+version: "0.1.0"
+slug: matchy
+description: >-
+  One wallpaper, matched across every screen. Rotates a captioned wallpaper and serves it
+  to desktops, Home Assistant tablets and dashboards, rendered to each screen's own size.
+url: "https://github.com/adrutu/matchy"
+arch:
+  - amd64
+  - aarch64
+
+# Required for the s6-overlay v3 entrypoint in the HA base images.
+init: false
+startup: application
+boot: auto
+
+# The sidebar panel. Authenticated by Home Assistant.
+ingress: true
+ingress_port: 8160
+panel_icon: mdi:image-frame
+panel_title: Matchy
+
+# The container always listens on 8160; the user picks the host port in the UI.
+# Published to nobody by default (null), but offered, because the display clients
+# (desktops, tablets, Homepage) do not go through ingress.
+ports:
+  "8160/tcp": null
+ports_description:
+  "8160/tcp": "Direct HTTP for desktops, tablets and dashboards (not needed for the sidebar panel)"
+
+# Images come from the user's own media/share folders; an app cannot read arbitrary host paths.
+map:
+  - type: media
+    read_only: true
+  - type: share
+    read_only: true
+
+# The render cache is rebuildable, so keep it out of backups. Masters and sidecars stay in.
+backup: hot
+backup_exclude:
+  - "cache/**"
+
+# watchdog: deliberately NOT set yet. A cold start hashes the whole library before the
+# port opens, so the Supervisor would restart the app mid-scan and loop. Enable it once
+# the engine binds before scanning (see the engine-fixes ticket).
+
+# image: "ghcr.io/adrutu/matchy"   # uncomment once CI publishes a multi-arch manifest;
+                                   # commented out = the Supervisor builds locally.
+
+options:
+  source_folders:
+    - /media/wallpapers
+  rotation_min_minutes: 15
+  rotation_max_minutes: 20
+  folder_scan_minutes: 10
+  master_max_px: 3840
+  cache_max_mb: 2048
+  render_threads: 2
+  caption_enabled: true
+  caption_language: English
+  caption_spelling: British
+  caption_min_words: 30
+  caption_max_words: 45
+  captioners: []
+
+schema:
+  source_folders:
+    - str
+  rotation_min_minutes: int(1,1440)
+  rotation_max_minutes: int(1,1440)
+  folder_scan_minutes: int(1,1440)
+  master_max_px: int(1280,7680)
+  cache_max_mb: int(128,65536)
+  render_threads: int(1,8)
+  caption_enabled: bool
+  caption_language: str
+  caption_spelling: "list(British|American)"
+  caption_min_words: int(5,200)
+  caption_max_words: int(5,200)
+  captioners:
+    - name: str
+      url: url
+      model: str
+      api_key: "password?"
+      timeout: "int(5,600)?"
+  remote_manifest_url: "url?"
+  daily_json_url: "url?"
+  daily_image_url: "url?"
