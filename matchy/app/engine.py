@@ -13,6 +13,7 @@ import json
 import os
 import random
 import re
+import string
 import sys
 import threading
 import time
@@ -35,7 +36,7 @@ DEFAULTS = {
     "master_max_px": 3840,
     "cache_max_mb": 2048,
     "render_threads": 2,
-    "rotation": {"min_minutes": 15, "max_minutes": 20, "first_id": "", "caption_priority": []},
+    "rotation": {"min_minutes": 15, "max_minutes": 20, "caption_priority": []},
     "folders": [],
     "folder_scan_minutes": 10,
     "dedupe": {"avoid_prefixes": [], "ladder_prefer": "4k"},
@@ -83,6 +84,17 @@ def iso(ts):
     return dt.datetime.fromtimestamp(ts).astimezone().isoformat(timespec="seconds")
 
 
+class Refused(Exception):
+    """A control request the engine turns down; the handler answers with `code` and the message."""
+
+    def __init__(self, code, msg):
+        super().__init__(msg)
+        self.code = code
+
+
+CAPTION_LIMITS = {"title": 100, "place": 120, "credit": 200, "blurb": 600}
+
+
 # ======================================================================
 class Engine:
     def __init__(self, cfg):
@@ -95,8 +107,16 @@ class Engine:
         self.state.setdefault("bag", [])
         self.state.setdefault("priority", [])
         self.state.setdefault("history", [])
+        self.state.setdefault("hidden", [])     # ids kept out of rotation from the panel
+        self.state.setdefault("recaption", [])  # ids queued for a fresh machine caption
+        # A window set in the panel lasts until the add-on options change: whichever was set last wins.
+        ov, r = self.state.get("rotation_override"), cfg["rotation"]
+        if ov and ov.get("options") != [r["min_minutes"], r["max_minutes"]]:
+            log("rotation: the add-on options changed since the window was set in the panel; using the options")
+            self.state.pop("rotation_override")
         self.lock = threading.RLock()
         self.wake = threading.Event()
+        self.caption_wake = threading.Event()
         self.render_sem = threading.Semaphore(int(cfg["render_threads"]))
         self.render_locks = {}
         self.masters = OrderedDict()
@@ -111,18 +131,26 @@ class Engine:
         write_json(self.state_path, self.state)
 
     def eligible(self):
-        """Captioned images, or every image when captions are off or none have landed yet.
+        """Captioned images not hidden, or every image not hidden when none are captioned.
 
         Without the fallback an install with no captioner shows one frozen picture forever,
         because the shuffle bag is always empty.
         """
-        lib = self.lib
-        captioned = sorted(i for i in lib.items if lib.status(i) == "captioned")
-        return captioned or sorted(lib.items)
+        lib, hidden = self.lib, set(self.state["hidden"])
+        shown = [i for i in lib.items if i not in hidden]
+        captioned = sorted(i for i in shown if lib.status(i) == "captioned")
+        return captioned or sorted(shown)
+
+    def rotation_window(self):
+        ov = self.state.get("rotation_override")
+        if ov:
+            return ov["min_minutes"], ov["max_minutes"], "panel"
+        r = self.cfg["rotation"]
+        return r["min_minutes"], r["max_minutes"], "options"
 
     def interval(self):
-        r = self.cfg["rotation"]
-        return random.uniform(float(r["min_minutes"]), float(r["max_minutes"])) * 60
+        lo, hi, _src = self.rotation_window()
+        return random.uniform(float(lo), float(hi)) * 60
 
     def pick_next(self, exclude=None):
         el = set(self.eligible())
@@ -140,37 +168,136 @@ class Engine:
             log("rotation: new shuffle of %d" % len(bag))
         return st["bag"].pop(0) if st["bag"] else None
 
+    def _show(self, iid, now, reason, picked=False):
+        """Put iid on screen. Caller holds self.lock. `picked` marks a choice made by hand,
+        which the rotator must not swap out early for being uncaptioned."""
+        self.state.update(current=iid, since=now, next_change=now + self.interval(), picked=picked)
+        self.state["history"] = ([{"id": iid, "at": int(now)}] + self.state["history"])[:50]
+        self.save_state()
+        log("rotate (%s) -> %s, next at %s%s" % (reason, iid, iso(self.state["next_change"]),
+                                                 " (rotation paused)" if self.state.get("paused") else ""))
+
     def rotate(self, reason):
         with self.lock:
-            now = time.time()
-            cur = self.state.get("current")
-            nxt = self.pick_next(exclude=cur)
-            if nxt is None:  # nothing captioned yet: show the first image clean, with its title
-                ids = sorted(self.lib.items, key=lambda i: self.lib.items[i]["order"])
-                first = self.cfg["rotation"].get("first_id")
-                nxt = first if first in self.lib.items else (ids[0] if ids else None)
-                if nxt is None:
-                    return
-            self.state.update(current=nxt, since=now, next_change=now + self.interval())
-            self.state["history"] = ([{"id": nxt, "at": int(now)}] + self.state["history"])[:50]
-            self.save_state()
-        log("rotate (%s) -> %s, next at %s" % (reason, nxt, iso(self.state["next_change"])))
+            nxt = self.pick_next(exclude=self.state.get("current"))
+            if nxt is None:  # empty library, or every picture hidden: leave the screen as it is
+                return
+            self._show(nxt, time.time(), reason)
 
     def rotator(self):
         while True:
             try:
                 with self.lock:
                     cur = self.state.get("current")
-                    due = self.state.get("next_change", 0) <= time.time()
-                    placeholder = cur and self.lib.status(cur) != "captioned"
-                    have_captioned = bool(self.eligible())
+                    paused = self.state.get("paused")
+                    due = not paused and self.state.get("next_change", 0) <= time.time()
                     missing = cur and cur not in self.lib.items
-                if not cur or due or missing or (placeholder and have_captioned):
+                    # An uncaptioned stand-in gives way as soon as a captioned picture exists,
+                    # unless it was picked by hand or the rotation is paused on it.
+                    placeholder = (cur and not paused and not self.state.get("picked")
+                                   and self.lib.status(cur) != "captioned"
+                                   and any(self.lib.status(i) == "captioned" for i in self.eligible()))
+                if not cur or due or missing or placeholder:
                     self.rotate("due" if due else "placeholder" if placeholder else "start")
             except Exception:
                 traceback.print_exc()
             self.wake.wait(5)
             self.wake.clear()
+
+    # ---------------- controls (the panel and the HTTP API) ----------------
+    def _need_item(self, iid):
+        if iid not in self.lib.items:
+            raise Refused(404, "no picture with id %r" % iid)
+
+    def next_now(self, who):
+        self.rotate("api from %s" % who)
+
+    def set_paused(self, paused):
+        with self.lock:
+            if bool(self.state.get("paused")) == paused:
+                return
+            self.state["paused"] = paused
+            if not paused:  # a full interval from now, not whatever was left before the pause
+                self.state["next_change"] = time.time() + self.interval()
+            self.save_state()
+        log("rotation %s" % ("paused" if paused else "resumed"))
+        self.wake.set()
+
+    def show_now(self, iid):
+        self._need_item(iid)
+        with self.lock:
+            self.state["bag"] = [i for i in self.state["bag"] if i != iid]
+            self.state["priority"] = [i for i in self.state["priority"] if i != iid]
+            self._show(iid, time.time(), "picked", picked=True)
+
+    def hide(self, iid):
+        self._need_item(iid)
+        with self.lock:
+            hidden = self.state["hidden"]
+            if iid not in hidden:
+                if not any(i not in hidden and i != iid for i in self.lib.items):
+                    raise Refused(409, "that is the last picture left in rotation")
+                hidden.append(iid)
+            self.state["bag"] = [i for i in self.state["bag"] if i != iid]
+            self.state["priority"] = [i for i in self.state["priority"] if i != iid]
+            self.save_state()
+            log("hidden from rotation:", iid)
+            if self.state.get("current") == iid:
+                self.rotate("hidden")
+
+    def unhide(self, iid):
+        with self.lock:
+            if iid in self.state["hidden"]:
+                self.state["hidden"].remove(iid)
+                self.save_state()
+                log("back in rotation:", iid)
+
+    def set_caption(self, iid, fields):
+        """A caption written by hand. edited: true keeps the captioner off it until a re-caption."""
+        self._need_item(iid)
+        it = self.lib.items[iid]
+        sc = dict(self.lib.sidecars.get(iid) or {})
+        for k in ("caption_error", "caption_failed_at", "caption_attempts", "caption_note"):
+            sc.pop(k, None)
+        sc.update(fields)
+        sc.update({"id": iid, "source": it["path"], "sha256": it["sha256"], "edited": True,
+                   "edited_at": iso(time.time())})
+        with self.lock:
+            self.state["recaption"] = [i for i in self.state["recaption"] if i != iid]
+            self.save_state()
+        self.lib.save_sidecar(iid, sc, force=True)
+        log("caption edited by hand:", iid)
+        self.wake.set()
+
+    def recaption(self, iid):
+        self._need_item(iid)
+        if not self.captioner:
+            raise Refused(409, "captioning is off, or no captioner is configured")
+        with self.lock:
+            self.state["recaption"] = [iid] + [i for i in self.state["recaption"] if i != iid]
+            self.save_state()
+        log("re-caption queued:", iid)
+        self.caption_wake.set()
+
+    def set_rotation(self, lo, hi):
+        r = self.cfg["rotation"]
+        with self.lock:
+            if [lo, hi] == [r["min_minutes"], r["max_minutes"]]:
+                self.state.pop("rotation_override", None)
+            else:
+                self.state["rotation_override"] = {"min_minutes": lo, "max_minutes": hi,
+                                                   "options": [r["min_minutes"], r["max_minutes"]]}
+            if not self.state.get("paused") and self.state.get("current"):
+                # Re-roll the current picture's slot in the new window; if that is already past,
+                # the rotator moves on within seconds.
+                self.state["next_change"] = self.state.get("since", time.time()) + self.interval()
+            self.save_state()
+        log("rotation window set in the panel: %s-%s minutes" % (lo, hi))
+        self.wake.set()
+
+    def reset_rotation(self):
+        r = self.cfg["rotation"]
+        self.set_rotation(r["min_minutes"], r["max_minutes"])
 
     def current(self, base=""):
         with self.lock:
@@ -178,12 +305,15 @@ class Engine:
             if not cur or cur not in self.lib.items:
                 return None
             d = self.lib.display(cur)
-            since, nxt = self.state["since"], self.state["next_change"]
+            # .get: a state.json from an older version or a crash mid-write must not 500 this.
+            since = self.state.get("since") or time.time()
+            nxt = self.state.get("next_change") or since
+            paused = bool(self.state.get("paused"))
         rev = d["rev"]
         return {
             "id": cur, "rev": rev, "version": "%s.%s.%d" % (cur, rev, int(since)),
             "title": d["title"], "place": d["place"], "credit": d["credit"], "blurb": d["blurb"],
-            "since": iso(since), "next_change": iso(nxt),
+            "since": iso(since), "next_change": None if paused else iso(nxt), "paused": paused,
             "captioned": self.lib.status(cur) == "captioned",
             # Root-absolute by default, so a direct-port client can use them as-is. Behind Home
             # Assistant ingress the handler passes the ingress prefix, because the page lives
@@ -195,6 +325,35 @@ class Engine:
                 "span": "%s/img/%s/%s/span.jpg?layout={layout}" % (base, cur, rev),
             },
         }
+
+    def captioner_view(self):
+        c, now = self.captioner, time.time()
+        if not c:
+            return {"configured": False, "enabled": bool(self.cfg["caption"].get("enabled", True)),
+                    "busy": None, "waiting": 0, "endpoints": []}
+        return {"configured": True, "enabled": True, "busy": self.caption_busy, "waiting": len(self.caption_queue()),
+                "endpoints": [{"name": ep["name"],
+                               "skipped_until": iso(c.down_until[ep["name"]]) if c.down_until.get(ep["name"], 0) > now else None}
+                              for ep in c.endpoints]}
+
+    def library_view(self):
+        lib = self.lib
+        hidden, recap = set(self.state["hidden"]), set(self.state["recaption"])
+        out = []
+        for iid in sorted(lib.items, key=lambda i: lib.items[i]["order"]):
+            d = lib.display(iid)
+            sc = lib.sidecars.get(iid) or {}
+            out.append({"id": iid, "rev": d["rev"], "status": lib.status(iid), "title": d["title"],
+                        "place": d["place"], "credit": d["credit"], "blurb": d["blurb"],
+                        "caption_model": sc.get("caption_model", ""), "caption_at": sc.get("caption_at", ""),
+                        "edited": bool(sc.get("edited")), "hidden": iid in hidden, "recaption_queued": iid in recap,
+                        "error": sc.get("caption_error", "") if not d["blurb"] else ""})
+        lo, hi, src = self.rotation_window()
+        r = self.cfg["rotation"]
+        return {"items": out, "current": self.state.get("current"), "paused": bool(self.state.get("paused")),
+                "rotation": {"min_minutes": lo, "max_minutes": hi, "source": src,
+                             "options": {"min_minutes": r["min_minutes"], "max_minutes": r["max_minutes"]}},
+                "captioning": self.caption_busy, "captioner": self.captioner_view()}
 
     # ---------------- background workers ----------------
     def scanner(self):
@@ -243,8 +402,12 @@ class Engine:
         retry = 3600 * float(self.cfg["caption"].get("retry_failed_hours", 6))
         prio = self.cfg["rotation"].get("caption_priority", [])
         now = time.time()
+        # Asked for from the panel: first, whatever their status, and even over a hand edit.
+        recap = [i for i in self.state["recaption"] if i in lib.items]
         todo = []
         for iid, it in lib.items.items():
+            if iid in recap:
+                continue
             stt = lib.status(iid)
             if stt == "captioned":
                 continue
@@ -256,7 +419,13 @@ class Engine:
             rank = (0, prio.index(iid)) if iid in prio else (1, 0) if it["kind"] == "daily" else (2, 0)
             todo.append((rank, it["kind"] != "daily", it["meta"].get("date", "") and -int(it["meta"]["date"]) or 0, it["order"], iid))
         todo.sort()
-        return [t[-1] for t in todo]
+        return recap + [t[-1] for t in todo]
+
+    def _recaption_done(self, iid):
+        with self.lock:
+            if iid in self.state["recaption"]:
+                self.state["recaption"].remove(iid)
+                self.save_state()
 
     def caption_worker(self):
         if not self.captioner:
@@ -266,10 +435,12 @@ class Engine:
         while True:
             queue = self.caption_queue()
             if not queue:
-                time.sleep(30)
+                self.caption_wake.wait(30)
+                self.caption_wake.clear()
                 continue
             iid = queue[0]
             it = self.lib.items.get(iid)
+            recap = iid in self.state["recaption"]
             gap = 30
             try:
                 master = self.lib.ensure_master(iid)
@@ -282,7 +453,10 @@ class Engine:
                       "caption_at": iso(time.time()), "caption_seconds": res["seconds"], "edited": False}
                 if res.get("accepted_with"):
                     sc["caption_note"] = "; ".join(res["accepted_with"])
-                if self.lib.save_sidecar(iid, sc):
+                saved = self.lib.save_sidecar(iid, sc, force=recap)
+                if recap:
+                    self._recaption_done(iid)
+                if saved:
                     log("captioned %s: %s | %s" % (iid, res["title"], res["blurb"]))
                     if it["kind"] == "daily":
                         with self.lock:
@@ -295,17 +469,23 @@ class Engine:
                     log("caption", iid, "postponed:", e)
                     gap = 60
                 else:
-                    self._mark_failed(iid, it, str(e))
+                    self._mark_failed(iid, it, str(e), recap)
             except ValueError as e:
-                self._mark_failed(iid, it, str(e))
+                self._mark_failed(iid, it, str(e), recap)
             except Exception as e:
                 traceback.print_exc()
-                self._mark_failed(iid, it, repr(e))
+                self._mark_failed(iid, it, repr(e), recap)
             finally:
                 self.caption_busy = None
-            time.sleep(gap)
+            self.caption_wake.wait(gap)  # a re-caption asked for in the panel cuts the pause short
+            self.caption_wake.clear()
 
-    def _mark_failed(self, iid, it, err):
+    def _mark_failed(self, iid, it, err, recap=False):
+        if recap:  # the old caption stays; a failed re-caption is not retried on its own
+            self._recaption_done(iid)
+            log("re-caption", iid, "failed, keeping the old caption:", err)
+            if (self.lib.sidecars.get(iid) or {}).get("blurb"):
+                return
         sc = dict(self.lib.sidecars.get(iid) or {})
         if sc.get("edited"):
             return
@@ -443,12 +623,13 @@ class Handler(BaseHTTPRequestHandler):
             log("http", self.address_string(), fmt % args)
 
     # ----- plumbing -----
-    def send(self, code, body=b"", ctype="text/plain; charset=utf-8", headers=None, head=False):
+    def send(self, code, body=b"", ctype="text/plain; charset=utf-8", headers=None, head=False, cors=True):
         if isinstance(body, str):
             body = body.encode()
         self.send_response(code)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Expose-Headers", "ETag")
+        if cors:
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Expose-Headers", "ETag")
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         for k, v in (headers or {}).items():
@@ -499,25 +680,76 @@ class Handler(BaseHTTPRequestHandler):
         return all(inlan(a) for a in xff.split(",")) if xff else True
 
     def do_OPTIONS(self):
+        if urllib.parse.urlsplit(self.path).path.startswith("/api/"):
+            # No CORS on the control API: the browser then refuses another website's JSON POST
+            # (which always preflights), even from a machine on this network.
+            return self.send(204, cors=False)
         self.send(204, headers={"Access-Control-Allow-Methods": "GET, HEAD, POST, OPTIONS",
                                 "Access-Control-Allow-Headers": "*", "Access-Control-Max-Age": "86400"})
 
     def do_HEAD(self):
         self.do_GET(head=True)
 
+    def read_body(self, cap=65536):
+        """The whole request body, or None if it is too big or not framed by Content-Length.
+        Bytes left unread would be parsed as the next request on a keep-alive connection, so
+        a refused body also closes the connection."""
+        try:
+            length = -1 if self.headers.get("Transfer-Encoding") else int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = -1
+        if not 0 <= length <= cap:
+            self.close_connection = True
+            return None
+        return self.rfile.read(length) if length else b""
+
     def do_POST(self):
+        try:
+            self.post()
+        except BrokenPipeError:
+            pass
+        except Exception as e:
+            traceback.print_exc()
+            try:
+                self.send(500, "error: %s\n" % e.__class__.__name__)
+            except Exception:
+                pass
+
+    def post(self):
+        eng = self.engine
         path = urllib.parse.urlsplit(self.path).path
-        length = int(self.headers.get("Content-Length") or 0)
-        if length:
-            self.rfile.read(min(length, 65536))
+        body = self.read_body()
+        if body is None:
+            return self.send(413, "body too large, or not sent with a Content-Length\n")
+        who = "%s via %s" % (self.headers.get("X-Forwarded-For", "-"), self.client_address[0])
         if path == "/api/next":
-            who = "%s via %s" % (self.headers.get("X-Forwarded-For", "-"), self.client_address[0])
             if not self.client_is_lan():
                 log("api/next refused for", who)
                 return self.send(403, "LAN only\n")
-            self.engine.rotate("api from %s" % who)
-            return self.send_json(self.engine.current(self.ingress_base()))
-        self.send(404, "not found\n")
+            eng.next_now(who)
+            return self.send_json(eng.current(self.ingress_base()))
+        action = ACTIONS.get(path)
+        if not action:
+            return self.send(404, "not found\n")
+        tier, fn = action
+        if not (self.client_is_ingress() if tier == "panel" else self.client_is_lan()):
+            log(path[1:], "refused for", who)
+            return self.send(403, "Home Assistant sidebar panel only\n" if tier == "panel" else "LAN only\n")
+        # Requiring JSON is what makes the CORS refusal above bite: a form or text/plain POST
+        # from another website needs no preflight, a JSON one does.
+        if (self.headers.get("Content-Type") or "").split(";")[0].strip().lower() != "application/json":
+            return self.send(415, "send Content-Type: application/json\n")
+        try:
+            args = json.loads(body or b"{}")
+        except ValueError:
+            return self.send(400, "body is not JSON\n")
+        if not isinstance(args, dict):
+            return self.send(400, "body must be a JSON object\n")
+        try:
+            fn(eng, args)
+        except Refused as e:
+            return self.send(e.code, "%s\n" % e)
+        return self.send_json({"ok": True, "current": eng.current(self.ingress_base())})
 
     def do_GET(self, head=False):
         try:
@@ -563,9 +795,10 @@ class Handler(BaseHTTPRequestHandler):
             cur = eng.current(self.ingress_base())
             return self.send_json(cur or {"error": "library empty"}, 200 if cur else 503, head=head)
         if path == "/library.json":
-            return self.send_json(self.library_json(), head=head)
+            return self.send_json(eng.library_view(), head=head)
         if path in ("/", "/index.html"):
-            return self.send(200, gallery_html(eng), "text/html; charset=utf-8", {"Cache-Control": "no-store"}, head)
+            page = gallery_html(eng, control=self.client_is_lan(), admin=self.client_is_ingress())
+            return self.send(200, page, "text/html; charset=utf-8", {"Cache-Control": "no-store"}, head)
 
         try:
             # /current/<kind>/<W>x<H>.jpg
@@ -612,69 +845,288 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(400, "%s\n" % e, head=head)
         return self.send(404, "not found\n", head=head)
 
-    def library_json(self):
-        eng = self.engine
-        out = []
-        for iid in sorted(eng.lib.items, key=lambda i: eng.lib.items[i]["order"]):
-            d = eng.lib.display(iid)
-            sc = eng.lib.sidecars.get(iid) or {}
-            out.append({"id": iid, "rev": d["rev"], "status": eng.lib.status(iid), "title": d["title"],
-                        "place": d["place"], "credit": d["credit"], "blurb": d["blurb"],
-                        "caption_model": sc.get("caption_model", ""), "caption_at": sc.get("caption_at", ""),
-                        "edited": bool(sc.get("edited")), "error": sc.get("caption_error", "") if not d["blurb"] else ""})
-        return {"items": out, "current": (eng.state.get("current")), "captioning": eng.caption_busy}
+
+def arg_id(a):
+    iid = a.get("id")
+    if not isinstance(iid, str) or not iid:
+        raise Refused(400, "id required")
+    return iid
 
 
-def gallery_html(eng):
-    cur = eng.current() or {}
+def arg_caption(a):
+    out = {}
+    for k, cap in CAPTION_LIMITS.items():
+        v = a.get(k, "")
+        if not isinstance(v, str):
+            raise Refused(400, "%s must be text" % k)
+        v = " ".join(v.split())  # one paragraph: the label does its own wrapping
+        if len(v) > cap:
+            raise Refused(400, "%s is longer than %d characters" % (k, cap))
+        out[k] = v
+    if not out["blurb"]:
+        raise Refused(400, "blurb required")
+    return out
+
+
+def arg_window(a):
+    lo, hi = a.get("min_minutes"), a.get("max_minutes")
+    if not all(isinstance(v, int) and not isinstance(v, bool) and 1 <= v <= 1440 for v in (lo, hi)):
+        raise Refused(400, "min_minutes and max_minutes must be whole minutes from 1 to 1440")
+    if lo > hi:
+        raise Refused(400, "min_minutes is more than max_minutes")
+    return lo, hi
+
+
+# POST /api/<name> -> (who may call it, what it does). "lan" is the rule /api/next has always had:
+# the sidebar panel, or a private address on the direct port, so a dashboard button or an
+# automation can drive the screens. "panel" is the sidebar panel only, because the direct port is
+# unauthenticated and these change what the library holds or what the labels say.
+ACTIONS = {
+    "/api/pause": ("lan", lambda eng, a: eng.set_paused(True)),
+    "/api/resume": ("lan", lambda eng, a: eng.set_paused(False)),
+    "/api/show": ("lan", lambda eng, a: eng.show_now(arg_id(a))),
+    "/api/hide": ("panel", lambda eng, a: eng.hide(arg_id(a))),
+    "/api/unhide": ("panel", lambda eng, a: eng.unhide(arg_id(a))),
+    "/api/caption": ("panel", lambda eng, a: eng.set_caption(arg_id(a), arg_caption(a))),
+    "/api/recaption": ("panel", lambda eng, a: eng.recaption(arg_id(a))),
+    "/api/rotation": ("panel", lambda eng, a: eng.reset_rotation() if a.get("reset") is True
+                      else eng.set_rotation(*arg_window(a))),
+}
+
+
+def hhmm(stamp):
+    return stamp[11:16] if stamp else ""
+
+
+def gallery_html(eng, control, admin):
+    """The sidebar panel. control/admin: whether this viewer may use the "lan"/"panel" actions;
+    the buttons they may not use are drawn disabled, with the reason as a tooltip."""
     esc = html.escape
-    lib = Handler.library_json(type("X", (), {"engine": eng})())
-    items = lib["items"]
-    n_cap = sum(1 for i in items if i["status"] == "captioned")
+    cur = eng.current() or {}
+    lib = eng.library_view()
+    items, rot, cap = lib["items"], lib["rotation"], lib["captioner"]
+    no_ctl = "" if control else ' disabled title="Only from your own network"'
+    no_admin = "" if admin else ' disabled title="Only in the Home Assistant sidebar panel"'
+    no_recap = no_admin or ("" if cap["configured"] else ' disabled title="No captioner is configured"')
+
+    def tags(it):
+        out = []
+        if it["id"] == cur.get("id"):
+            out.append('<span class="tag on">On screen now</span>')
+        if it["hidden"]:
+            out.append('<span class="tag hid">Hidden from rotation</span>')
+        if it["recaption_queued"]:
+            st = "Caption: re-caption queued"
+        else:
+            st = {"captioned": "Caption: written by hand" if it["edited"] else "Caption: done",
+                  "pending": "Caption: waiting", "failed": "Caption: failed"}.get(it["status"], it["status"])
+        out.append('<span class="tag %s">%s</span>' % (esc(it["status"]), esc(st)))
+        return "".join(out)
+
+    def buttons(it, top=False):
+        out = [] if top else ['<button data-act="show"%s>Show now</button>' % no_ctl]
+        out.append('<button data-act="edit"%s>Edit caption</button>' % no_admin)
+        out.append('<button data-act="recaption"%s>Re-caption</button>' % no_recap)
+        if it["hidden"]:
+            out.append('<button data-act="unhide"%s>Unhide</button>' % no_admin)
+        else:
+            out.append('<button data-act="hide"%s>%s</button>' % (no_admin, "Hide this picture" if top else "Hide"))
+        return "".join(out)
+
     cards = []
     for it in items:
-        st = it["status"]
+        cls = " is-current" if it["id"] == cur.get("id") else ""
+        cls += " is-hidden" if it["hidden"] else ""
+        src = "img/%s/%s" % (it["id"], it["rev"])
         cards.append(
-            '<figure class="%s"><a href="img/%s/%s/label/2560x1440.jpg"><img loading="lazy" '
-            'src="img/%s/%s/clean/640x360.jpg" alt=""></a><figcaption><b>%s</b>'
-            '<span class="st %s">%s</span><small>%s%s</small><p>%s</p></figcaption></figure>' % (
-                "is-current" if it["id"] == cur.get("id") else "", it["id"], it["rev"], it["id"], it["rev"],
-                esc(it["title"] or it["id"]), st, st + (" (edited)" if it["edited"] else ""),
-                esc(it["id"]), (" · " + esc(it["place"])) if it["place"] else "",
-                esc(it["blurb"] or it["error"])))
-    # Built here rather than taken from current()["urls"], which is root-absolute: a relative
-    # URL resolves correctly whether the page is served at / or under an ingress prefix.
-    label = ("img/%s/%s/label/1920x1080.jpg" % (cur["id"], cur["rev"])) if cur.get("id") else ""
-    return """<!doctype html><html lang="en"><head><meta charset="utf-8">
+            '<figure class="card%s" data-id="%s"><a class="thumb" href="%s/label/2560x1440.jpg" target="_blank" '
+            'rel="noopener"><img loading="lazy" src="%s/clean/640x360.jpg" alt=""></a><figcaption>'
+            '<div class="tags">%s</div><b>%s</b><small>%s%s</small><p>%s</p><div class="acts">%s</div>'
+            '</figcaption></figure>' % (
+                cls, esc(it["id"]), esc(src), esc(src), tags(it), esc(it["title"] or it["id"]), esc(it["id"]),
+                (" · " + esc(it["place"])) if it["place"] else "", esc(it["blurb"] or it["error"]), buttons(it)))
+
+    by_id = {i["id"]: i for i in items}
+    if cur.get("id"):
+        # Relative, not current()["urls"] (root-absolute): this resolves at / and under ingress.
+        src = "img/%s/%s/label" % (cur["id"], cur["rev"])
+        top = ('<section class="top" data-id="%s"><a class="shot" href="%s/2560x1440.jpg" target="_blank" '
+               'rel="noopener"><img src="%s/1920x1080.jpg" alt="The wallpaper on screen now"></a><div class="meta">'
+               '<p class="kicker">On screen now</p><h1>%s</h1><p class="mut">%s</p><p>%s</p>'
+               '<div class="acts"><button class="primary" data-act="next"%s>Next picture</button>%s</div></div></section>') % (
+            esc(cur["id"]), esc(src), esc(src), esc(cur["title"] or cur["id"]),
+            esc(" · ".join(x for x in (cur["place"], cur["credit"]) if x)), esc(cur["blurb"]),
+            no_ctl, buttons(by_id.get(cur["id"], {"hidden": False}), top=True))
+    else:
+        top = ('<section class="top empty"><div class="meta"><p class="kicker">On screen now</p><h1>Nothing yet</h1>'
+               '<p class="mut">No pictures found so far. Check <code>source_folders</code> in the add-on options; '
+               'the log names any folder it could not read.</p></div></section>')
+
+    if lib["paused"]:
+        state = 'Rotation: <b>paused</b>, holding this picture until you resume.'
+        toggle = '<button class="primary" data-act="resume"%s>Resume rotation</button>' % no_ctl
+    else:
+        state = 'Rotation: <b>running</b>%s.' % (
+            (", next picture at %s" % esc(hhmm(cur.get("next_change")))) if cur.get("next_change") else "")
+        toggle = '<button data-act="pause"%s>Pause rotation</button>' % no_ctl
+    opt = rot["options"]
+    if rot["source"] == "panel":
+        source = ('Set here. The add-on options say %s to %s minutes; changing them there takes over again. '
+                  '<button class="link" data-act="rotation" data-body=\'{"reset": true}\'%s>Use the options</button>') % (
+            opt["min_minutes"], opt["max_minutes"], no_admin)
+    else:
+        source = "From the add-on options."
+    window = ('<form id="window" class="window">Change every <input name="min" type="number" min="1" max="1440" '
+              'step="1" value="%s" aria-label="Shortest minutes"%s> to <input name="max" type="number" min="1" '
+              'max="1440" step="1" value="%s" aria-label="Longest minutes"%s> minutes <button%s>Save</button></form>'
+              '<p class="mut small">%s</p>') % (
+        rot["min_minutes"], no_admin, rot["max_minutes"], no_admin, no_admin, source)
+
+    if not cap["enabled"]:
+        capline = 'Captioner: <b>off</b>. <code>caption_enabled</code> is false, so labels carry titles only.'
+    elif not cap["configured"]:
+        capline = ('Captioner: <b>not set up</b>. Add one under <code>captioners</code> in the add-on options '
+                   'to get written blurbs.')
+    else:
+        eps = []
+        for ep in cap["endpoints"]:
+            eps.append("%s <b>%s</b>" % (esc(ep["name"]), ("skipped until %s, it did not answer" % esc(hhmm(ep["skipped_until"])))
+                                         if ep["skipped_until"] else "ready"))
+        capline = "Captioner: %s." % "; ".join(eps)
+        if cap["busy"]:
+            capline += "<br>Writing a caption for %s now." % esc(cap["busy"])
+        if cap["waiting"]:
+            capline += "<br>%d picture%s waiting for a caption." % (cap["waiting"], "" if cap["waiting"] == 1 else "s")
+    n_cap = sum(1 for i in items if i["status"] == "captioned")
+    n_hidden = sum(1 for i in items if i["hidden"])
+    summary = "%d picture%s · %d captioned%s" % (len(items), "" if len(items) == 1 else "s", n_cap,
+                                                 (" · %d hidden" % n_hidden) if n_hidden else "")
+
+    data = {"version": cur.get("version"),
+            "items": [{k: i[k] for k in ("id", "title", "place", "credit", "blurb")} for i in items]}
+    return PAGE.substitute(
+        top=top, state=state, toggle=toggle, window=window, capline=capline, summary=esc(summary),
+        cards="\n".join(cards), data=json.dumps(data, ensure_ascii=False).replace("<", "\\u003c"),
+        lim_title=CAPTION_LIMITS["title"], lim_place=CAPTION_LIMITS["place"],
+        lim_credit=CAPTION_LIMITS["credit"], lim_blurb=CAPTION_LIMITS["blurb"])
+
+
+# string.Template, so the CSS and JS need no escaping; the script avoids "$" for the same reason.
+PAGE = string.Template("""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>Matchy</title>
 <style>
-:root{color-scheme:dark;--bg:#111413;--card:#1b201e;--fg:#e8ece9;--mut:#9aa59f;--acc:#7fb38f}
+:root{color-scheme:dark;--bg:#111413;--card:#1b201e;--line:#2c3430;--fg:#e8ece9;--mut:#9aa59f;--acc:#7fb38f;--bad:#e08a7f}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,sans-serif}
-main{max-width:1500px;margin:auto;padding:24px 16px}h1{font:italic 600 28px/1.2 Georgia,serif;margin:0 0 4px}
+main{max-width:1500px;margin:auto;padding:20px 16px 40px}
+header{display:flex;gap:16px;align-items:baseline;margin-bottom:14px}.brand{font:italic 600 20px Georgia,serif;color:var(--acc)}
+#msg{color:var(--bad)}code{font-size:.92em;color:#cfe3d5}
+h1{font:italic 600 28px/1.2 Georgia,serif;margin:0 0 4px}h2{font-size:15px;margin:0 0 8px;letter-spacing:.02em}
+.mut{color:var(--mut)}.small{font-size:13px}.kicker{margin:0 0 6px;color:var(--acc);font-size:12px;text-transform:uppercase;letter-spacing:.08em}
 .top{display:grid;grid-template-columns:minmax(0,3fr) minmax(260px,1fr);gap:20px;align-items:start}
-.top img{width:100%%;border-radius:10px;display:block}.meta p{color:var(--mut);margin:.4em 0}
-button{background:var(--acc);color:#0b120e;border:0;border-radius:8px;padding:10px 18px;font-weight:600;cursor:pointer}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:14px;margin-top:28px}
-figure{margin:0;background:var(--card);border-radius:10px;overflow:hidden}figure img{width:100%%;aspect-ratio:16/9;display:block;object-fit:cover}
-figure.is-current{outline:2px solid var(--acc)}figcaption{padding:10px 12px}figcaption small{display:block;color:var(--mut)}
-figcaption p{margin:.4em 0 0;font-size:13px;color:#c9d0cc}.st{float:right;font-size:12px;border-radius:6px;padding:1px 7px;background:#333}
-.st.captioned{background:#24402d}.st.failed{background:#5a2a2a}.st.pending{background:#40391f}
+.top img{width:100%;border-radius:10px;display:block}.meta p{margin:.4em 0}
+.panels{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px;margin-top:20px}
+.box{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px}.box p{margin:.3em 0 .6em}
+button{font:inherit;font-size:13px;background:transparent;color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:6px 12px;cursor:pointer}
+button:hover:not(:disabled){border-color:var(--acc)}button:disabled{opacity:.45;cursor:not-allowed}
+button.primary{background:var(--acc);border-color:var(--acc);color:#0b120e;font-weight:600}
+button.link{border:0;padding:0;color:var(--acc);text-decoration:underline;font-size:inherit}
+.acts{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.window input{width:4.5em;font:inherit;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:4px 6px}
+.lib{margin:28px 0 0}.lib small{color:var(--mut);font-weight:400;margin-left:8px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:14px;margin-top:12px}
+.card{margin:0;background:var(--card);border-radius:10px;overflow:hidden;display:flex;flex-direction:column}
+.card img{width:100%;aspect-ratio:16/9;display:block;object-fit:cover}
+.card.is-current{outline:2px solid var(--acc)}.card.is-hidden .thumb,.card.is-hidden b,.card.is-hidden p{opacity:.45}
+figcaption{padding:10px 12px;display:flex;flex-direction:column;flex:1}figcaption small{display:block;color:var(--mut)}
+figcaption p{margin:.4em 0 0;font-size:13px;color:#c9d0cc;flex:1}
+.tags{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px}.tag{font-size:11px;border-radius:6px;padding:1px 7px;background:#333}
+.tag.captioned{background:#24402d}.tag.failed{background:#5a2a2a}.tag.pending{background:#40391f}
+.tag.on{background:var(--acc);color:#0b120e}.tag.hid{background:#3a3f55}
+dialog{background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:12px;width:min(640px,calc(100vw - 32px));padding:18px}
+dialog::backdrop{background:#000a}dialog label{display:block;margin:10px 0 0;font-size:13px;color:var(--mut)}
+dialog input,dialog textarea{display:block;width:100%;margin-top:4px;font:15px/1.4 system-ui,sans-serif;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:6px 8px}
+dialog menu{display:flex;justify-content:flex-end;gap:8px;padding:0;margin:16px 0 0}#ed-msg{color:var(--bad);min-height:1.2em;margin:8px 0 0}
+.foot{margin-top:24px;font-size:13px}.foot a{color:var(--acc)}
 @media(max-width:800px){.top{grid-template-columns:1fr}}
 </style></head><body><main>
-<div class="top"><div><img src="%s" alt="current wallpaper"></div><div class="meta">
-<h1>%s</h1><p>%s</p><p>%s</p><p>Shown since %s<br>Next change %s</p>
-<p><button id="next">Next wallpaper</button></p>
-<p>%d of %d images captioned%s.<br><a style="color:var(--acc)" href="current.json">current.json</a> ·
-<a style="color:var(--acc)" href="library.json">library.json</a></p></div></div>
-<div class="grid">%s</div></main>
+<header><span class="brand">Matchy</span><span id="msg" role="status"></span></header>
+$top
+<section class="panels">
+<div class="box"><h2>Rotation</h2><p>$state</p><div class="acts">$toggle</div>$window</div>
+<div class="box"><h2>Captions</h2><p>$capline</p></div>
+</section>
+<h2 class="lib">Library <small>$summary</small></h2>
+<div class="grid">$cards</div>
+<p class="foot mut"><a href="current.json">current.json</a> · <a href="library.json">library.json</a></p>
+</main>
+<dialog id="editor"><form method="dialog" id="edit-form">
+<h2>Edit caption: <span id="ed-id"></span></h2>
+<p class="mut small">A caption written here is never overwritten by the captioner. Re-caption brings a machine caption back.</p>
+<label>Title <input name="title" maxlength="$lim_title"></label>
+<label>Place <input name="place" maxlength="$lim_place"></label>
+<label>Credit <input name="credit" maxlength="$lim_credit"></label>
+<label>Blurb <textarea name="blurb" rows="5" maxlength="$lim_blurb" required></textarea></label>
+<p id="ed-msg" role="status"></p>
+<menu><button value="cancel" formnovalidate>Cancel</button><button class="primary" value="save">Save caption</button></menu>
+</form></dialog>
+<script type="application/json" id="lib">$data</script>
 <script>
-document.getElementById('next').onclick=async e=>{e.target.disabled=true;
- await fetch('api/next',{method:'POST'});location.reload();};
-</script></body></html>""" % (
-        esc(label), esc(cur.get("title", "")), esc(" · ".join(x for x in (cur.get("place"), cur.get("credit")) if x)),
-        esc(cur.get("blurb", "")), esc(cur.get("since", "")[11:16]), esc(cur.get("next_change", "")[11:16]),
-        n_cap, len(items), (" (captioning %s now)" % esc(lib["captioning"])) if lib["captioning"] else "",
-        "\n".join(cards))
+const data = JSON.parse(document.getElementById('lib').textContent);
+const byId = Object.fromEntries(data.items.map(i => [i.id, i]));
+const msg = document.getElementById('msg');
+const dlg = document.getElementById('editor'), form = document.getElementById('edit-form');
+const edMsg = document.getElementById('ed-msg'), FIELDS = ['title', 'place', 'credit', 'blurb'];
+
+async function post(path, body) {
+  const r = await fetch('api/' + path, {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                        body: JSON.stringify(body || {})});
+  if (!r.ok) throw new Error((await r.text()).trim() || 'HTTP ' + r.status);
+  return r.json();
+}
+async function run(btn, path, body) {
+  btn.disabled = true;
+  msg.textContent = '';
+  try { await post(path, body); location.reload(); }
+  catch (e) { msg.textContent = btn.textContent + ' did not work: ' + e.message; btn.disabled = false; }
+}
+function edit(id) {
+  const it = byId[id];
+  if (!it) return;
+  form.dataset.id = id;
+  edMsg.textContent = '';
+  document.getElementById('ed-id').textContent = it.title || id;
+  FIELDS.forEach(k => { form.elements[k].value = it[k] || ''; });
+  dlg.showModal();
+}
+form.addEventListener('submit', async e => {
+  if (e.submitter && e.submitter.value === 'cancel') return;
+  e.preventDefault();
+  const body = {id: form.dataset.id};
+  FIELDS.forEach(k => { body[k] = form.elements[k].value; });
+  try { await post('caption', body); location.reload(); } catch (err) { edMsg.textContent = err.message; }
+});
+document.addEventListener('click', e => {
+  const b = e.target.closest('button[data-act]');
+  if (!b || b.disabled) return;
+  const holder = b.closest('[data-id]'), id = holder ? holder.dataset.id : null;
+  if (b.dataset.act === 'edit') return edit(id);
+  run(b, b.dataset.act, b.dataset.body ? JSON.parse(b.dataset.body) : (id ? {id: id} : {}));
+});
+const win = document.getElementById('window');
+win.addEventListener('submit', e => {
+  e.preventDefault();
+  run(e.submitter || win.querySelector('button'), 'rotation',
+      {min_minutes: Number(win.elements.min.value), max_minutes: Number(win.elements.max.value)});
+});
+// Follow the rotation: reload when the picture on screen changes, but never under an open editor.
+setInterval(async () => {
+  if (dlg.open || document.hidden) return;
+  try {
+    const c = await (await fetch('current.json', {cache: 'no-store'})).json();
+    if (c.version && c.version !== data.version) location.reload();
+  } catch (e) { /* offline for a moment: try again next time */ }
+}, 30000);
+</script></body></html>""")
 
 
 def main():

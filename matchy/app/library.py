@@ -122,10 +122,11 @@ class Library:
             self.changed.set()
         return changed
 
-    def save_sidecar(self, iid, sc):
+    def save_sidecar(self, iid, sc, force=False):
+        """force: replace even a hand-edited caption (a hand edit, or a re-caption asked for in the panel)."""
         with self.lock:
             cur = self.sidecars.get(iid)
-            if cur and cur.get("edited") and cur.get("blurb"):
+            if cur and cur.get("edited") and cur.get("blurb") and not force:
                 log("sidecar", iid, "is edited:true - not overwritten")
                 return False
             p = self.sidecar_path(iid)
