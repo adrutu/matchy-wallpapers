@@ -46,6 +46,10 @@ DEFAULTS = {
                 "max_tokens": 300, "temperature": 0.4, "image_px": 1024, "retry_failed_hours": 6,
                 "forbidden_titles": []},
     "overrides": {},
+    # Home Assistant's Supervisor proxies authenticated ingress sessions from this address
+    # (the official add-on guidance is "allow 172.30.32.2; deny all"). A request from here has
+    # already been authenticated by Home Assistant, so it is trusted without the LAN check.
+    "ingress_peers": ["172.30.32.2/32"],
     "lan_cidrs": ["127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10",
                   "::1/128", "fc00::/7", "fe80::/10"],
     "style": {},
@@ -107,8 +111,14 @@ class Engine:
         write_json(self.state_path, self.state)
 
     def eligible(self):
+        """Captioned images, or every image when captions are off or none have landed yet.
+
+        Without the fallback an install with no captioner shows one frozen picture forever,
+        because the shuffle bag is always empty.
+        """
         lib = self.lib
-        return sorted(i for i in lib.items if lib.status(i) == "captioned")
+        captioned = sorted(i for i in lib.items if lib.status(i) == "captioned")
+        return captioned or sorted(lib.items)
 
     def interval(self):
         r = self.cfg["rotation"]
@@ -162,7 +172,7 @@ class Engine:
             self.wake.wait(5)
             self.wake.clear()
 
-    def current(self):
+    def current(self, base=""):
         with self.lock:
             cur = self.state.get("current")
             if not cur or cur not in self.lib.items:
@@ -175,11 +185,14 @@ class Engine:
             "title": d["title"], "place": d["place"], "credit": d["credit"], "blurb": d["blurb"],
             "since": iso(since), "next_change": iso(nxt),
             "captioned": self.lib.status(cur) == "captioned",
+            # Root-absolute by default, so a direct-port client can use them as-is. Behind Home
+            # Assistant ingress the handler passes the ingress prefix, because the page lives
+            # under /api/hassio_ingress/<token>/ there.
             "urls": {
-                "original": "/img/%s/original.jpg" % cur,
-                "clean": "/img/%s/%s/clean/{w}x{h}.jpg" % (cur, rev),
-                "label": "/img/%s/%s/label/{w}x{h}.jpg" % (cur, rev),
-                "span": "/img/%s/%s/span.jpg?layout={layout}" % (cur, rev),
+                "original": "%s/img/%s/original.jpg" % (base, cur),
+                "clean": "%s/img/%s/%s/clean/{w}x{h}.jpg" % (base, cur, rev),
+                "label": "%s/img/%s/%s/label/{w}x{h}.jpg" % (base, cur, rev),
+                "span": "%s/img/%s/%s/span.jpg?layout={layout}" % (base, cur, rev),
             },
         }
 
@@ -449,7 +462,26 @@ class Handler(BaseHTTPRequestHandler):
         h.update(headers or {})
         self.send(code, json.dumps(obj, ensure_ascii=False, indent=1), "application/json; charset=utf-8", h, head)
 
+    def ingress_base(self):
+        """The path Home Assistant serves this page under, or "" for a direct request."""
+        return (self.headers.get("X-Ingress-Path") or "").rstrip("/")
+
+    def client_is_ingress(self):
+        """True for a request proxied by the Supervisor, which only forwards authenticated sessions."""
+        try:
+            ip = ipaddress.ip_address(self.client_address[0].strip())
+        except ValueError:
+            return False
+        if ip.version == 6 and ip.ipv4_mapped:
+            ip = ip.ipv4_mapped
+        return any(ip in ipaddress.ip_network(n) for n in self.engine.cfg["ingress_peers"])
+
     def client_is_lan(self):
+        # Home Assistant has already authenticated an ingress request, and its X-Forwarded-For
+        # carries the browser's own address — which is public for anyone coming in over a tunnel
+        # or VPN, and would fail the check below.
+        if self.client_is_ingress():
+            return True
         nets = [ipaddress.ip_network(n) for n in self.engine.cfg["lan_cidrs"]]
 
         def inlan(a):
@@ -484,7 +516,7 @@ class Handler(BaseHTTPRequestHandler):
                 log("api/next refused for", who)
                 return self.send(403, "LAN only\n")
             self.engine.rotate("api from %s" % who)
-            return self.send_json(self.engine.current())
+            return self.send_json(self.engine.current(self.ingress_base()))
         self.send(404, "not found\n")
 
     def do_GET(self, head=False):
@@ -528,7 +560,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/healthz":
             return self.send(200, "ok\n", head=head, headers={"Cache-Control": "no-store"})
         if path == "/current.json":
-            cur = eng.current()
+            cur = eng.current(self.ingress_base())
             return self.send_json(cur or {"error": "library empty"}, 200 if cur else 503, head=head)
         if path == "/library.json":
             return self.send_json(self.library_json(), head=head)
@@ -561,7 +593,7 @@ class Handler(BaseHTTPRequestHandler):
                 if kind not in ("clean", "label", "span"):
                     return self.send(404, "not found\n", head=head)
                 if rev != cur_rev:  # caption edited since this URL was handed out
-                    loc = "/" + "/".join(["img", iid, cur_rev] + parts[3:]) + ("?" + u.query if u.query else "")
+                    loc = self.ingress_base() + "/" + "/".join(["img", iid, cur_rev] + parts[3:]) + ("?" + u.query if u.query else "")
                     return self.send(302, headers={"Location": loc, "Cache-Control": "no-store"}, head=True)
                 if kind == "span" and len(parts) == 4:
                     layout = q.get("layout", [""])[0]
@@ -603,16 +635,18 @@ def gallery_html(eng):
     for it in items:
         st = it["status"]
         cards.append(
-            '<figure class="%s"><a href="/img/%s/%s/label/2560x1440.jpg"><img loading="lazy" '
-            'src="/img/%s/%s/clean/640x360.jpg" alt=""></a><figcaption><b>%s</b>'
+            '<figure class="%s"><a href="img/%s/%s/label/2560x1440.jpg"><img loading="lazy" '
+            'src="img/%s/%s/clean/640x360.jpg" alt=""></a><figcaption><b>%s</b>'
             '<span class="st %s">%s</span><small>%s%s</small><p>%s</p></figcaption></figure>' % (
                 "is-current" if it["id"] == cur.get("id") else "", it["id"], it["rev"], it["id"], it["rev"],
                 esc(it["title"] or it["id"]), st, st + (" (edited)" if it["edited"] else ""),
                 esc(it["id"]), (" · " + esc(it["place"])) if it["place"] else "",
                 esc(it["blurb"] or it["error"])))
-    label = cur.get("urls", {}).get("label", "").replace("{w}x{h}", "1920x1080")
+    # Built here rather than taken from current()["urls"], which is root-absolute: a relative
+    # URL resolves correctly whether the page is served at / or under an ingress prefix.
+    label = ("img/%s/%s/label/1920x1080.jpg" % (cur["id"], cur["rev"])) if cur.get("id") else ""
     return """<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1"><title>Wallpaper engine</title>
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Matchy</title>
 <style>
 :root{color-scheme:dark;--bg:#111413;--card:#1b201e;--fg:#e8ece9;--mut:#9aa59f;--acc:#7fb38f}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,sans-serif}
@@ -630,12 +664,12 @@ figcaption p{margin:.4em 0 0;font-size:13px;color:#c9d0cc}.st{float:right;font-s
 <div class="top"><div><img src="%s" alt="current wallpaper"></div><div class="meta">
 <h1>%s</h1><p>%s</p><p>%s</p><p>Shown since %s<br>Next change %s</p>
 <p><button id="next">Next wallpaper</button></p>
-<p>%d of %d images captioned%s.<br><a style="color:var(--acc)" href="/current.json">current.json</a> ·
-<a style="color:var(--acc)" href="/library.json">library.json</a></p></div></div>
+<p>%d of %d images captioned%s.<br><a style="color:var(--acc)" href="current.json">current.json</a> ·
+<a style="color:var(--acc)" href="library.json">library.json</a></p></div></div>
 <div class="grid">%s</div></main>
 <script>
 document.getElementById('next').onclick=async e=>{e.target.disabled=true;
- await fetch('/api/next',{method:'POST'});location.reload();};
+ await fetch('api/next',{method:'POST'});location.reload();};
 </script></body></html>""" % (
         esc(label), esc(cur.get("title", "")), esc(" · ".join(x for x in (cur.get("place"), cur.get("credit")) if x)),
         esc(cur.get("blurb", "")), esc(cur.get("since", "")[11:16]), esc(cur.get("next_change", "")[11:16]),

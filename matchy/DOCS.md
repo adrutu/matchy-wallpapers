@@ -71,7 +71,7 @@ So: usable almost immediately, fully captioned after a while.
 
 | Endpoint | Description |
 | :--- | :--- |
-| `GET /current.json` | The current image: title, credit, blurb, and URL templates. |
+| `GET /current.json` | The current image: title, credit, blurb, and URL templates (prefixed automatically when fetched through the sidebar panel). |
 | `GET /library.json` | Everything in the library. |
 | `GET /` | The gallery page, with the next-wallpaper button. |
 | `GET /current/clean/WxH.jpg` | The current image at any size, without the label. |
@@ -103,8 +103,9 @@ the add-on. Check the log: a missing folder is named there and skipped.
 it will be retried. A blurb that breaks the word-count or grounding rules is retried once immediately,
 then that image is retried six hours later.
 
-**The same image never changes.** Rotation prefers captioned images, so with no reachable captioner you
-can sit on one picture. Either configure a captioner or set `caption_enabled: false`.
+**The same image never changes.** Check how many images it actually found: open `library.json` from the
+panel, or look for the `library: N items` line in the log. One usable image means no rotation. If the
+count is right, the rotation window may simply be long — `POST /api/next` moves it on immediately.
 
 **Images look soft.** `master_max_px` caps the longest edge of the master copy at 3840 by default.
 Raise it if your screens are bigger than 4K, and remember a bigger master costs memory per render.

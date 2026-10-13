@@ -175,7 +175,7 @@ export WE_DATA_DIR="${DATA_DIR}"
 
 bashio::log.info "Matchy Wallpapers: port ${PORT}, ${usable_folders} source folder(s), captions ${captions_on}, ${captioner_count} captioner(s)."
 if [[ "${captions_on}" == "true" ]] && [[ "${captioner_count}" -eq 0 ]]; then
-    bashio::log.warning "Captions are on but no captioner is configured: the first image will be shown with its file metadata and will NOT rotate. Add a captioner, or set caption_enabled to false. See DOCS.md."
+    bashio::log.warning "Captions are on but no captioner is configured: wallpapers will rotate without gallery labels. Add a captioner, or set caption_enabled to false. See DOCS.md."
 fi
 
 exec python3 /app/engine.py
