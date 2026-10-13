@@ -11,6 +11,7 @@ import urllib.request
 from PIL import Image
 
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp"}
+HASH_SAVE_SECS = 10  # a long cold scan checkpoints hash-cache.json this often
 SMALL_WORDS = {"a", "an", "and", "as", "at", "but", "by", "for", "in", "of", "on", "or", "the", "to", "with", "over", "under", "from", "into"}
 
 
@@ -44,6 +45,17 @@ def sha256_file(path):
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def open_image(path):
+    """Image.open with Pillow's decompression-bomb guard turned into a ValueError (render.py sets the
+    pixel cap and raises the 1x-2x warning as an error, so one cap applies everywhere)."""
+    try:
+        return Image.open(path)
+    except (Image.DecompressionBombError, Image.DecompressionBombWarning) as e:
+        m = re.search(r"\((\d+) pixels\)", str(e))
+        px = int(m.group(1)) // 1_000_000 if m else 0
+        raise ValueError("image too large (%d MP, cap %d MP)" % (px, Image.MAX_IMAGE_PIXELS // 1_000_000)) from None
 
 
 def title_case(text):
@@ -92,6 +104,8 @@ class Library:
         self.remote = read_json(self.remote_path, {}) or {}
         self.hash_cache_path = os.path.join(self.data, "hash-cache.json")
         self.hash_cache = read_json(self.hash_cache_path, {}) or {}
+        self.scan_lock = threading.Lock()
+        self.skipped = {}  # id -> (sha256, reason) for sources that cannot be decoded (too large)
         self.changed = threading.Event()
 
     # ---------- sidecars ----------
@@ -183,11 +197,11 @@ class Library:
             self.hash_cache[key] = h
         return h
 
-    def scan_folders(self):
-        """Walk every configured folder; dedupe by sha256; collapse -2k/-4k/... ladders; assign ids."""
-        dcfg = self.cfg["dedupe"]
-        avoid = tuple(dcfg.get("avoid_prefixes", []))
-        found = []  # (folder_index, root, relpath, fullpath, sha)
+    def _walk(self):
+        """Every image file under the configured folders as (folder_index, root, relpath, fullpath, sha)."""
+        found = []
+        n0 = saved = len(self.hash_cache)  # it only grows during the walk: the growth is the fresh hashes
+        t0 = t = time.time()
         for fi, folder in enumerate(self.cfg["folders"]):
             root = folder["path"]
             if not os.path.isdir(root):
@@ -206,10 +220,25 @@ class Library:
                     if st.st_size < 10_000:
                         continue
                     found.append((fi, root, os.path.relpath(full, root), full, self._hash(full, st)))
+                    # checkpoint a cold scan, so a kill mid-walk keeps the hashes done so far
+                    if len(self.hash_cache) > saved and time.time() - t >= HASH_SAVE_SECS:
+                        write_json(self.hash_cache_path, self.hash_cache)
+                        saved, t = len(self.hash_cache), time.time()
+                        log("scan: %d files hashed so far, cache saved" % (saved - n0))
+        hashed = len(self.hash_cache) - n0
         live = {k for k in self.hash_cache if k.split("|")[0] in {f[3] for f in found}}
         self.hash_cache = {k: v for k, v in self.hash_cache.items() if k in live}
         write_json(self.hash_cache_path, self.hash_cache)
+        if hashed:
+            log("scan: %d files, %d newly hashed in %.0fs" % (len(found), hashed, time.time() - t0))
+        return found
 
+    def scan_folders(self):
+        """Walk every configured folder; dedupe by sha256; collapse -2k/-4k/... ladders; assign ids."""
+        with self.scan_lock:  # one walk at a time: it writes the hash cache as it goes
+            found = self._walk()
+        dcfg = self.cfg["dedupe"]
+        avoid = tuple(dcfg.get("avoid_prefixes", []))
         # 1) dedupe identical files: prefer not-avoided names, then folder order, then shortest path.
         by_sha = {}
         for f in found:
@@ -281,6 +310,7 @@ class Library:
             added = set(items) - set(self.items)
             gone = set(self.items) - set(items)
             self.items = items
+            self.skipped = {i: v for i, v in self.skipped.items() if i in items and items[i]["sha256"] == v[0]}
         self.load_sidecars()
         self.sync_sidecar_meta()
         if added or gone:
@@ -384,9 +414,17 @@ class Library:
         if os.path.exists(p):
             return p
         it = self.items[iid]
+        if iid in self.skipped:  # reported once already; it stays in the library so the gallery can say why
+            raise ValueError(self.skipped[iid][1])
         cap = int(self.cfg["master_max_px"])
         t = time.time()
-        with Image.open(it["path"]) as im:
+        try:
+            im = open_image(it["path"])
+        except ValueError as e:
+            self.skipped[iid] = (it["sha256"], str(e))
+            log("master", iid, "skipped:", e, "-", it["path"])
+            raise
+        with im:
             if im.format == "JPEG":
                 im.draft("RGB", (cap, cap))
             im = im.convert("RGB")

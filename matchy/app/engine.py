@@ -26,7 +26,7 @@ from PIL import Image
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import render  # noqa: E402
 from caption import Captioner  # noqa: E402
-from library import Library, log, read_json, rev_of, write_json  # noqa: E402
+from library import Library, log, open_image, read_json, rev_of, write_json  # noqa: E402
 
 DEFAULTS = {
     "port": 8160,
@@ -210,6 +210,9 @@ class Engine:
                     self.lib.load_sidecars()
             except Exception:
                 traceback.print_exc()
+            if self.lib.changed.is_set():  # first wallpaper right after the cold scan, not after all masters
+                self.lib.changed.clear()
+                self.wake.set()
             if c["static_manifest"].get("enabled") and now - last_static >= 3600 * c["static_manifest"].get("refresh_hours", 24):
                 try:
                     if self.lib.sync_static_manifest():
@@ -229,8 +232,12 @@ class Engine:
                     last_daily = now - 60 * c["daily"].get("check_minutes", 60) + 600
             # masters for everything (cheap after the first pass)
             for iid in list(self.lib.items):
+                if iid in self.lib.skipped:
+                    continue
                 try:
                     self.lib.ensure_master(iid)
+                except ValueError:  # too large: logged once by ensure_master, now in lib.skipped
+                    pass
                 except Exception as e:
                     log("master", iid, "failed:", e)
             if self.lib.changed.is_set():
@@ -424,7 +431,7 @@ class Engine:
                 return f.read()
 
         def prod():
-            with Image.open(it["path"]) as im:
+            with open_image(it["path"]) as im:
                 return self.renderer.encode(im.convert("RGB"), quality=92)
         return self.cached("%s/original-%s.jpg" % (iid, it["sha256"][:8]), prod)
 
@@ -681,13 +688,15 @@ def main():
     cfg = load_config()
     eng = Engine(cfg)
     log("wallpaper engine starting; raqm=%s port=%d data=%s" % (render.HAVE_RAQM, cfg["port"], cfg["data_dir"]))
-    eng.lib.rescan()
-    for name, fn in (("scanner", eng.scanner), ("rotator", eng.rotator), ("captioner", eng.caption_worker)):
-        threading.Thread(target=fn, name=name, daemon=True).start()
+    # Bind before the first scan: a cold library takes minutes to hash, and /healthz must answer
+    # at once (the Supervisor watchdog). The scanner thread does the first rescan; until it lands
+    # current.json answers 503 "library empty" and the gallery is blank.
     Handler.engine = eng
     srv = ThreadingHTTPServer((cfg["bind"], cfg["port"]), Handler)
     srv.daemon_threads = True
     log("listening on %s:%d" % (cfg["bind"], cfg["port"]))
+    for name, fn in (("scanner", eng.scanner), ("rotator", eng.rotator), ("captioner", eng.caption_worker)):
+        threading.Thread(target=fn, name=name, daemon=True).start()
     srv.serve_forever()
 
 

@@ -12,10 +12,15 @@ import io
 import os
 import re
 import threading
+import warnings
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, features
 
-Image.MAX_IMAGE_PIXELS = 200_000_000
+# 8K is 33 MP; 50 MP leaves room for a wide panorama and decodes to ~200 MB, which the host survives
+# (the add-on has no memory limit). The 1x-2x band is only a warning in Pillow: make it an error, so
+# one cap applies and library.open_image can skip the file instead of decoding it.
+Image.MAX_IMAGE_PIXELS = 50_000_000
+warnings.simplefilter("error", Image.DecompressionBombWarning)
 
 HAVE_RAQM = features.check("raqm")
 _LAYOUT = ImageFont.Layout.RAQM if HAVE_RAQM else ImageFont.Layout.BASIC
