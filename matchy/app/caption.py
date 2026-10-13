@@ -77,14 +77,19 @@ class Captioner:
         self.down_until = {}
         for ep in self.endpoints:
             ep.setdefault("name", ep.get("url"))
-            key = ep.get("api_key", "")
-            if not key and ep.get("api_key_file"):
-                try:
-                    with open(ep["api_key_file"]) as f:
-                        key = f.read().strip()
-                except OSError as e:
-                    log("captioner", ep["name"], "key file unreadable:", e)
-            ep["_key"] = key
+            self.load_key(ep)
+
+    @staticmethod
+    def load_key(ep):
+        key = ep.get("api_key", "")
+        if not key and ep.get("api_key_file"):
+            try:
+                with open(ep["api_key_file"]) as f:
+                    key = f.read().strip()
+            except OSError as e:
+                log("captioner", ep["name"], "key file unreadable:", e)
+        ep["_key"] = key
+        return key
 
     def available(self):
         now = time.time()
@@ -147,10 +152,24 @@ class Captioner:
         }
         if ep.get("json_mode", True):
             body["response_format"] = {"type": "json_object"}
+        data = json.dumps(body).encode()
+        try:
+            return self.post(ep, data)
+        except urllib.error.HTTPError as e:
+            # A rotated key file (the add-on rewrites them on every start) is the usual cause of a
+            # 401/403: re-read it and retry once. Any other failure is "endpoint down" for a while.
+            if e.code in (401, 403) and ep.get("api_key_file"):
+                old = ep.get("_key")
+                if self.load_key(ep) != old:
+                    log("captioner", ep["name"], "HTTP %d: key file changed, retrying with the new key" % e.code)
+                    return self.post(ep, data)
+            raise
+
+    def post(self, ep, data):
         headers = {"Content-Type": "application/json"}
         if ep.get("_key"):
             headers["Authorization"] = "Bearer " + ep["_key"]
-        req = urllib.request.Request(ep["url"], data=json.dumps(body).encode(), headers=headers, method="POST")
+        req = urllib.request.Request(ep["url"], data=data, headers=headers, method="POST")
         with urllib.request.urlopen(req, timeout=ep.get("timeout", 120)) as r:
             resp = json.loads(r.read())
         return resp["choices"][0]["message"]["content"]
