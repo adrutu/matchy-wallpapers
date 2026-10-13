@@ -4,7 +4,7 @@
 # SILENTLY DISCARDED — no error, the feature just does not exist. Only add keys that
 # are in supervisor/apps/validate.py.
 name: Matchy Wallpapers
-version: "0.1.0"
+version: "0.2.0"
 slug: matchy
 description: >-
   One wallpaper, matched across every screen. Rotates a captioned wallpaper and serves it
@@ -47,9 +47,8 @@ backup: hot
 backup_exclude:
   - "cache"
 
-# watchdog: deliberately NOT set yet. A cold start hashes the whole library before the
-# port opens, so the Supervisor would restart the app mid-scan and loop. Enable it once
-# the engine binds before scanning (see the engine-fixes ticket).
+# watchdog: not set yet. The blocker is gone (the engine now binds before the first scan
+# and checkpoints its hashes), but turn it on only after testing it on a real install.
 
 # image: "ghcr.io/adrutu/matchy"   # uncomment once CI publishes a multi-arch manifest;
                                    # commented out = the Supervisor builds locally.

@@ -51,27 +51,39 @@ is — Matchy tries them in order and skips a dead one for a few minutes.
 
 The first start does real work:
 
-1. It hashes every image in your source folders **before the port opens**. Tens of seconds for a few
-   hundred images; longer on slow storage or a Raspberry Pi. The add-on looks unresponsive meanwhile.
-2. It then builds a master copy of each image, one to three seconds each — five to fifteen minutes of
-   background work on one CPU core for a few hundred images.
-3. `/current.json` answers within seconds of the port opening, with `captioned: false` until the first
-   blurb is written. Captioning runs one image at a time, a couple of seconds each on a local
-   8-billion-parameter vision model.
+1. The port opens at once. Meanwhile it hashes every image in your source folders: tens of seconds
+   for a few hundred images, longer on slow storage or a Raspberry Pi. Until that lands,
+   `/current.json` answers `503 library empty` and the panel says *Nothing yet*. Progress is saved
+   every few seconds, so a restart mid-scan picks up where it left off.
+2. The first wallpaper appears the moment the scan finishes. It then builds a master copy of each
+   image in the background, one to three seconds each.
+3. `/current.json` says `captioned: false` until the first blurb is written. Captioning runs one image
+   at a time, a couple of seconds each on a local 8-billion-parameter vision model.
 
 So: usable almost immediately, fully captioned after a while.
 
 ## Using it
 
-- **Sidebar panel.** Open Matchy from the Home Assistant sidebar. It shows the current wallpaper, the
-  library, and a **next wallpaper** button. This route is authenticated by Home Assistant.
+- **Sidebar panel.** Open Matchy from the Home Assistant sidebar. This route is authenticated by Home
+  Assistant. From there you can:
+  - **Next picture**, **Pause rotation** / **Resume rotation**. Paused holds whatever is on screen;
+    Next and Show now still work while paused, and Resume starts a full interval from then.
+  - **Show now** on any picture in the library.
+  - **Hide** a picture so it never comes up in rotation, and **Unhide** it later. Hiding the picture on
+    screen moves on at once. The last visible picture cannot be hidden.
+  - **Edit caption** by hand. A hand-written caption is never overwritten by the captioner.
+  - **Re-caption** a picture: it jumps the captioning queue and replaces even a hand-written caption.
+    If the captioner fails, the old caption stays.
+  - **Change every … to … minutes.** This lasts until you change the rotation options in the add-on
+    configuration, so whichever was set last wins; **Use the options** goes back to them.
+  - See whether the captioner is ready, what it is writing and how many pictures are waiting.
 - **Published port.** Other clients — desktops, tablets, dashboards, a browser — fetch images directly
   from `http://<your-ha-host>:<the host port you published>`.
 - **HTTP API:**
 
 | Endpoint | Description |
 | :--- | :--- |
-| `GET /current.json` | The current image: title, credit, blurb, and URL templates (prefixed automatically when fetched through the sidebar panel). |
+| `GET /current.json` | The current image: title, credit, blurb, `paused`, `next_change` (null while paused), and URL templates (prefixed automatically when fetched through the sidebar panel). |
 | `GET /library.json` | Everything in the library. |
 | `GET /` | The gallery page, with the next-wallpaper button. |
 | `GET /current/clean/WxH.jpg` | The current image at any size, without the label. |
@@ -83,13 +95,46 @@ So: usable almost immediately, fully captioned after a while.
 | `POST /api/next` | Rotate now. |
 | `GET /healthz` | Liveness. |
 
+Control endpoints take a JSON object and **must** be sent with `Content-Type: application/json`.
+*Network* means the sidebar panel or any private address on the published port, so a dashboard
+button or an automation can use it. *Panel* means the sidebar panel only.
+
+| Endpoint | Body | Who | Description |
+| :--- | :--- | :--- | :--- |
+| `POST /api/pause` | `{}` | Network | Hold the picture on screen. |
+| `POST /api/resume` | `{}` | Network | Rotate again, a full interval from now. |
+| `POST /api/show` | `{"id": "<id>"}` | Network | Put this picture on screen now. |
+| `POST /api/hide` | `{"id": "<id>"}` | Panel | Keep this picture out of rotation. |
+| `POST /api/unhide` | `{"id": "<id>"}` | Panel | Put it back. |
+| `POST /api/caption` | `{"id", "title", "place", "credit", "blurb"}` | Panel | Write the caption by hand; `blurb` is required. |
+| `POST /api/recaption` | `{"id": "<id>"}` | Panel | Ask the captioner for a fresh caption. |
+| `POST /api/rotation` | `{"min_minutes": 10, "max_minutes": 12}` or `{"reset": true}` | Panel | Set the rotation window, or go back to the options. |
+
+For example, a Home Assistant `rest_command` that pauses the rotation:
+
+```yaml
+rest_command:
+  matchy_pause:
+    url: "http://<your-ha-host>:<published port>/api/pause"
+    method: post
+    content_type: "application/json"
+    payload: "{}"
+```
+
 ## Security
 
 - The **sidebar panel is authenticated** by Home Assistant.
 - The **published port is not authenticated**. Anything on your network that can reach it can read
   every image and every caption, and responses allow cross-origin requests. That is deliberate: it is
   what lets tablets, desktops and dashboards display the wallpaper without credentials. Do not expose
-  that port to the internet. Only `POST /api/next` is restricted, to private network ranges.
+  that port to the internet.
+- **Controls on the published port** — next, pause, resume and show now — accept private network
+  addresses only. Everything that changes the library or its captions (hide, unhide, edit caption,
+  re-caption, rotation window) works **only through the sidebar panel**, because the published port
+  has no login.
+- The control endpoints need a JSON body and refuse cross-origin requests, so another website open in
+  a browser on your network cannot use them directly. A determined page using DNS rebinding could
+  still reach the *network* controls (it could skip or pause the wallpaper), never the panel-only ones.
 - An API key you enter for a captioner is written to a file inside the add-on's own data directory at
   mode 600. It never appears in the generated config file or in the log.
 
@@ -107,11 +152,15 @@ then that image is retried six hours later.
 panel, or look for the `library: N items` line in the log. One usable image means no rotation. If the
 count is right, the rotation window may simply be long — `POST /api/next` moves it on immediately.
 
+**A picture never appears, and its card says "image too large".** Matchy refuses to decode any source
+over 50 megapixels (8K is 33), because the add-on has no memory limit and one huge file could exhaust
+the host's memory. Scale that file down; it is picked up again on the next folder scan.
+
 **Images look soft.** `master_max_px` caps the longest edge of the master copy at 3840 by default.
 Raise it if your screens are bigger than 4K, and remember a bigger master costs memory per render.
 
-**Slow or unresponsive first start.** Expected: see *First run*. Avoid restarting the add-on during the
-first scan — it has to start the hashing over.
+**Slow first start.** Expected: see *First run*. The panel answers straight away and fills in when
+the scan finishes.
 
 **Where the log is.** The add-on's **Log** tab in Home Assistant.
 

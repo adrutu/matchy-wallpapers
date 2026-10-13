@@ -63,7 +63,7 @@ Each of these is a short recipe, not a separate program:
 - **Home Assistant dashboards and tablets** — a card-mod view background plus a screensaver recipe.
   [docs/home-assistant.md](docs/home-assistant.md)
 - **Homepage dashboard** — a background that follows the rotation. [docs/homepage.md](docs/homepage.md)
-- **Any browser** — the gallery page itself, with a next-wallpaper button. No setup.
+- **Any browser** — the gallery page itself, with next, pause and show-now controls. No setup.
 
 ## Requirements
 

@@ -132,12 +132,13 @@ class Engine:
 
     def eligible(self):
         """Captioned images not hidden, or every image not hidden when none are captioned.
+        Sources too large to decode (lib.skipped) never count: they would only ever be a 400.
 
         Without the fallback an install with no captioner shows one frozen picture forever,
         because the shuffle bag is always empty.
         """
         lib, hidden = self.lib, set(self.state["hidden"])
-        shown = [i for i in lib.items if i not in hidden]
+        shown = [i for i in lib.items if i not in hidden and i not in lib.skipped]
         captioned = sorted(i for i in shown if lib.status(i) == "captioned")
         return captioned or sorted(shown)
 
@@ -154,6 +155,8 @@ class Engine:
 
     def pick_next(self, exclude=None):
         el = set(self.eligible())
+        if not el:  # cold start before the first scan, or everything hidden
+            return None
         st = self.state
         st["priority"] = [i for i in st["priority"] if i in el]
         if st["priority"]:
@@ -225,6 +228,8 @@ class Engine:
 
     def show_now(self, iid):
         self._need_item(iid)
+        if iid in self.lib.skipped:
+            raise Refused(409, "that picture cannot be shown: %s" % self.lib.skipped[iid][1])
         with self.lock:
             self.state["bag"] = [i for i in self.state["bag"] if i != iid]
             self.state["priority"] = [i for i in self.state["priority"] if i != iid]
@@ -235,7 +240,7 @@ class Engine:
         with self.lock:
             hidden = self.state["hidden"]
             if iid not in hidden:
-                if not any(i not in hidden and i != iid for i in self.lib.items):
+                if not any(i not in hidden and i not in self.lib.skipped and i != iid for i in self.lib.items):
                     raise Refused(409, "that is the last picture left in rotation")
                 hidden.append(iid)
             self.state["bag"] = [i for i in self.state["bag"] if i != iid]
@@ -254,8 +259,9 @@ class Engine:
 
     def set_caption(self, iid, fields):
         """A caption written by hand. edited: true keeps the captioner off it until a re-caption."""
-        self._need_item(iid)
-        it = self.lib.items[iid]
+        it = self.lib.items.get(iid)  # one lookup: a rescan can drop the item at any moment
+        if not it:
+            raise Refused(404, "no picture with id %r" % iid)
         sc = dict(self.lib.sidecars.get(iid) or {})
         for k in ("caption_error", "caption_failed_at", "caption_attempts", "caption_note"):
             sc.pop(k, None)
@@ -347,7 +353,8 @@ class Engine:
                         "place": d["place"], "credit": d["credit"], "blurb": d["blurb"],
                         "caption_model": sc.get("caption_model", ""), "caption_at": sc.get("caption_at", ""),
                         "edited": bool(sc.get("edited")), "hidden": iid in hidden, "recaption_queued": iid in recap,
-                        "error": sc.get("caption_error", "") if not d["blurb"] else ""})
+                        "error": (lib.skipped[iid][1] if iid in lib.skipped
+                                  else sc.get("caption_error", "") if not d["blurb"] else "")})
         lo, hi, src = self.rotation_window()
         r = self.cfg["rotation"]
         return {"items": out, "current": self.state.get("current"), "paused": bool(self.state.get("paused")),
