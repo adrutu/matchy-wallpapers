@@ -7,14 +7,19 @@
 # The engine DEEP-MERGES this file over its own defaults, so we write only what
 # the user actually set, and never write a JSON null: a null overwrites the
 # default and then crashes the engine.
+# bashio already sets errexit, errtrace, nounset, pipefail and `shopt -s inherit_errexit`;
+# inherit_errexit is what makes every command substitution below strict. Repeated for clarity.
 set -euo pipefail
 
 readonly DATA_DIR=/data
 readonly CONFIG_FILE="${DATA_DIR}/config.json"
 readonly SECRETS_DIR="${DATA_DIR}/secrets"
 
-mkdir -p "${SECRETS_DIR}"
+( umask 077; mkdir -p "${SECRETS_DIR}" )
 chmod 700 "${SECRETS_DIR}"
+# A renamed or revoked captioner must not leave its key behind: /data survives restarts,
+# updates and uninstall-with-keep-data, and it is included in Home Assistant backups.
+rm -f "${SECRETS_DIR}"/*.key
 
 # opt <key> <default> — bashio::config, but with an explicit fallback and no nulls.
 opt() {
@@ -27,7 +32,27 @@ opt() {
 
 # The container port is fixed: config.yaml's ingress_port must match it, and the user
 # chooses the published host port in the UI instead.
+# int <key> <default> — a non-numeric option must never reach `jq --argjson`, which would
+# abort with a raw jq usage dump and (worse) after the config file was already truncated.
+int() {
+    local value
+    value="$(opt "${1}" "${2}")"
+    if [[ "${value}" =~ ^-?[0-9]+$ ]]; then
+        printf '%s' "${value}"
+    else
+        bashio::log.warning "Option '${1}' is not a whole number ('${value}'); using ${2}."
+        printf '%s' "${2}"
+    fi
+}
+
 readonly PORT=8160
+
+# An absent key makes `bashio::config` print the literal string "null", so
+# `bashio::config.true` would read as false and switch captions off against the documented
+# default. Resolve it once, explicitly, and reuse it.
+captions_on="$(opt 'caption_enabled' true)"
+[[ "${captions_on}" == "true" ]] || captions_on=false
+readonly captions_on
 
 # ---------------------------------------------------------------- source folders
 folders='[]'
@@ -37,7 +62,7 @@ if bashio::config.exists 'source_folders'; then
         folder="$(bashio::config "source_folders[${idx}]")"
         [[ -n "${folder}" ]] || continue
         if [[ ! -d "${folder}" ]]; then
-            bashio::log.warn "Source folder not found, skipping: ${folder}"
+            bashio::log.warning "Source folder not found, skipping: ${folder}"
             continue
         fi
         folders="$(jq -c --arg p "${folder}" '. + [{path: $p}]' <<<"${folders}")"
@@ -52,21 +77,22 @@ if bashio::config.exists 'captioners'; then
         c_url="$(opt "captioners[${idx}].url" '')"
         c_model="$(opt "captioners[${idx}].model" '')"
         if [[ -z "${c_url}" || -z "${c_model}" ]]; then
-            bashio::log.warn "Captioner ${idx} has no url or no model, skipping."
+            bashio::log.warning "Captioner ${idx} has no url or no model, skipping."
             continue
         fi
         c_name="$(opt "captioners[${idx}].name" "captioner-${idx}")"
-        c_timeout="$(opt "captioners[${idx}].timeout" 120)"
+        c_timeout="$(int "captioners[${idx}].timeout" 120)"
         entry="$(jq -nc \
             --arg n "${c_name}" --arg u "${c_url}" --arg m "${c_model}" \
             --argjson t "${c_timeout}" \
             '{name: $n, url: $u, model: $m, timeout: $t}')"
 
-        # The key goes to a 600 file inside /data; only its path enters the config,
-        # so the key is never in config.json and never in the log.
+        # The key goes to a 600 file inside /data and only its path enters the config, which
+        # keeps it out of config.json and out of the engine's argv. Note it is still in
+        # /data/options.json in plaintext, as it is for every add-on option.
         if bashio::config.has_value "captioners[${idx}].api_key"; then
-            safe_name="$(printf '%s' "${c_name}" | tr -cs 'A-Za-z0-9_.-' '_')"
-            key_file="${SECRETS_DIR}/${safe_name}.key"
+            # Keyed by index, not by name: two names can sanitise to the same filename.
+            key_file="${SECRETS_DIR}/captioner-${idx}.key"
             ( umask 077; bashio::config "captioners[${idx}].api_key" > "${key_file}" )
             chmod 600 "${key_file}"
             entry="$(jq -c --arg f "${key_file}" '.api_key_file = $f' <<<"${entry}")"
@@ -93,7 +119,7 @@ if bashio::config.has_value 'daily_json_url' && bashio::config.has_value 'daily_
         --arg i "$(bashio::config 'daily_image_url')" \
         '{enabled: true, json_url: $j, image_url: $i, id_prefix: "daily"}')"
 elif bashio::config.has_value 'daily_json_url' || bashio::config.has_value 'daily_image_url'; then
-    bashio::log.warn "Daily image needs BOTH daily_json_url and daily_image_url; ignoring."
+    bashio::log.warning "Daily image needs BOTH daily_json_url and daily_image_url; ignoring."
 fi
 
 if [[ "${usable_folders}" -eq 0 ]] \
@@ -107,21 +133,21 @@ fi
 jq -n \
     --argjson port "${PORT}" \
     --arg data_dir "${DATA_DIR}" \
-    --argjson master_max_px "$(opt 'master_max_px' 3840)" \
-    --argjson cache_max_mb "$(opt 'cache_max_mb' 2048)" \
-    --argjson render_threads "$(opt 'render_threads' 2)" \
-    --argjson scan_minutes "$(opt 'folder_scan_minutes' 10)" \
-    --argjson rot_min "$(opt 'rotation_min_minutes' 15)" \
-    --argjson rot_max "$(opt 'rotation_max_minutes' 20)" \
+    --argjson master_max_px "$(int 'master_max_px' 3840)" \
+    --argjson cache_max_mb "$(int 'cache_max_mb' 2048)" \
+    --argjson render_threads "$(int 'render_threads' 2)" \
+    --argjson scan_minutes "$(int 'folder_scan_minutes' 10)" \
+    --argjson rot_min "$(int 'rotation_min_minutes' 15)" \
+    --argjson rot_max "$(int 'rotation_max_minutes' 20)" \
     --argjson folders "${folders}" \
     --argjson captioners "${captioners}" \
     --argjson static_manifest "${static_manifest}" \
     --argjson daily "${daily}" \
-    --argjson caption_enabled "$(bashio::config.true 'caption_enabled' && echo true || echo false)" \
+    --argjson caption_enabled "${captions_on}" \
     --arg caption_language "$(opt 'caption_language' 'English')" \
     --arg caption_spelling "$(opt 'caption_spelling' 'British')" \
-    --argjson caption_min_words "$(opt 'caption_min_words' 30)" \
-    --argjson caption_max_words "$(opt 'caption_max_words' 45)" \
+    --argjson caption_min_words "$(int 'caption_min_words' 30)" \
+    --argjson caption_max_words "$(int 'caption_max_words' 45)" \
     '{
         port: $port,
         data_dir: $data_dir,
@@ -141,14 +167,15 @@ jq -n \
             min_words: $caption_min_words,
             max_words: $caption_max_words
         }
-     } | del(..|nulls)' > "${CONFIG_FILE}"
+     } | del(..|nulls)' > "${CONFIG_FILE}.tmp"
+mv "${CONFIG_FILE}.tmp" "${CONFIG_FILE}"
 
 export WE_CONFIG="${CONFIG_FILE}"
 export WE_DATA_DIR="${DATA_DIR}"
 
-bashio::log.info "Matchy Wallpapers: port ${PORT}, ${usable_folders} source folder(s), captions $(bashio::config.true 'caption_enabled' && echo on || echo off), ${captioner_count} captioner(s)."
-if [[ "${captioner_count}" -eq 0 ]]; then
-    bashio::log.info "No captioner configured: images will rotate without gallery labels."
+bashio::log.info "Matchy Wallpapers: port ${PORT}, ${usable_folders} source folder(s), captions ${captions_on}, ${captioner_count} captioner(s)."
+if [[ "${captions_on}" == "true" ]] && [[ "${captioner_count}" -eq 0 ]]; then
+    bashio::log.warning "Captions are on but no captioner is configured: the first image will be shown with its file metadata and will NOT rotate. Add a captioner, or set caption_enabled to false. See DOCS.md."
 fi
 
 exec python3 /app/engine.py
