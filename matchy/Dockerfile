@@ -2,7 +2,8 @@
 #
 # BUILD_FROM is no longer injected by the Supervisor (removed in 2026.04.0) unless a
 # deprecated build.yaml is present, so the base is pinned here as an ARG default and can
-# still be overridden by a build arg. Verified multi-arch (amd64 + arm64) on 2026-10-13.
+# still be overridden by a build arg. Verified multi-arch (amd64 + arm64) on 2026-10-13; built natively
+# on both on 2026-10-14 with raqm on and byte-identical label renders (tests/label_diff.py).
 ARG BUILD_FROM=ghcr.io/home-assistant/base-debian:trixie-2026.10.0@sha256:a7f262f331e2a4f4e3e02173da932a8d8c26f3d5758a5f59903d46de1f728e5b
 
 # Pull four Noto faces out of Debian's fonts-noto-core instead of shipping the whole pack.
