@@ -1,0 +1,186 @@
+# Matchy: lint, engine tests, a per-architecture image build with a render probe, and a
+# cross-architecture label diff. Publishing is a separate, opt-in job that stays off until the
+# repository variable MATCHY_IMAGE is set (see docs/DECISIONS.md).
+#
+# Third-party actions are pinned to the commit of a verified release (tag in the comment).
+# Home Assistant's arch names map to Docker platforms: amd64 -> linux/amd64, aarch64 -> linux/arm64.
+
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Add-on configuration against the Supervisor schema
+        uses: frenck/action-app-linter@b9cfd1bc62ba60d2c4fc96317b5f7ada5923f4a7 # v2.21.1
+        with:
+          path: ./matchy
+
+      - name: shellcheck run.sh
+        run: shellcheck -s bash matchy/run.sh
+
+      - name: Python byte-compiles
+        run: python3 -m compileall -q matchy/app tests
+
+  test:
+    name: Engine tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Install Pillow
+        run: python -m pip install --disable-pip-version-check "pillow>=11,<12"
+
+      - name: tests/run_tests.py
+        run: python tests/run_tests.py
+
+  build:
+    name: Image (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+          - arch: aarch64
+            platform: linux/arm64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: QEMU (aarch64 build and probe on an amd64 runner)
+        if: matrix.arch != 'amd64'
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build matchy:${{ matrix.arch }}
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ./matchy
+          platforms: ${{ matrix.platform }}
+          load: true
+          push: false
+          tags: matchy:${{ matrix.arch }}
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
+
+      - name: Probe inside the image (raqm, fonts, one label render)
+        run: |
+          mkdir -p out
+          docker run --rm --platform ${{ matrix.platform }} \
+            -v "$PWD/tests:/tests:ro" -v "$PWD/out:/out" \
+            --entrypoint python3 matchy:${{ matrix.arch }} \
+            /tests/ci_probe.py --out /out/label-${{ matrix.arch }}.jpg
+          docker image inspect matchy:${{ matrix.arch }} --format 'image size: {{ .Size }} bytes'
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: label-${{ matrix.arch }}
+          path: out/label-${{ matrix.arch }}.jpg
+          if-no-files-found: error
+          retention-days: 7
+
+  compare:
+    name: Same label on both architectures
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Install Pillow
+        run: python -m pip install --disable-pip-version-check "pillow>=11,<12"
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: label-*
+          merge-multiple: true
+          path: labels
+
+      - name: tests/label_diff.py amd64 vs aarch64
+        # The two renders have been byte-identical so far; fail on any pixel over the tolerance.
+        run: python tests/label_diff.py labels/label-amd64.jpg labels/label-aarch64.jpg --max-frac 0 --out labels/diff.png
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: label-diff
+          path: labels/
+          retention-days: 7
+
+  # Opt-in: builds one multi-arch manifest and pushes it on a version tag, only when the repository
+  # variable MATCHY_IMAGE names the image (e.g. ghcr.io/<owner>/matchy). Unset = the job is skipped
+  # and nothing leaves the runner. The tag must equal `version` in matchy/config.yaml.
+  publish:
+    name: Publish multi-arch image (opt-in)
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && vars.MATCHY_IMAGE != ''
+    needs: [lint, test, compare]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Tag matches the add-on version
+        run: |
+          want="${GITHUB_REF_NAME#v}"
+          grep -Eq "^version: \"?${want}\"?$" matchy/config.yaml \
+            || { echo "matchy/config.yaml version is not ${want}"; exit 1; }
+
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to GHCR
+        if: startsWith(vars.MATCHY_IMAGE, 'ghcr.io/')
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ vars.MATCHY_IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+
+      - name: Build and push amd64 + arm64
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ./matchy
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: |
+            type=gha,scope=amd64
+            type=gha,scope=aarch64

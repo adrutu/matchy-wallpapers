@@ -1,0 +1,16 @@
+[Unit]
+Description=Matchy client: span the shared wallpaper over this machine's monitors
+Documentation=file://%h/.local/bin/wallpaper-follow
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+# The host port you published for the add-on (or the Docker port).
+Environment=MATCHY_URL=http://<your-ha-host>:<port>
+ExecStart=%h/.local/bin/wallpaper-follow
+Restart=always
+RestartSec=15
+Nice=10
+
+[Install]
+WantedBy=graphical-session.target

@@ -1,0 +1,344 @@
+#!/usr/bin/python3
+"""wallpaper-follow: keep this machine's GNOME wallpaper on Matchy.
+
+Every 30 s, and a few seconds after a monitor change, it:
+  1. reads the live monitor layout from Mutter (DisplayConfig.GetCurrentState, read-only: it never
+     changes the layout),
+  2. turns it into the engine's span spec, e.g. "1200x1920+0+0,3440x1440+1200+0p" (canvas pixels,
+     p = primary, which gets the caption label),
+  3. reads the engine's current.json,
+  4. when the picture or the layout changed, downloads ONE spanned JPEG for the whole desktop to
+     ~/.local/share/backgrounds/matchy/<version>-<layouthash>.jpg (a new name every time,
+     GNOME caches by URI) and points org.gnome.desktop.background at it with picture-options 'spanned'.
+
+Engine down or away from home: nothing changes, one journal line per outage, quiet retries. If the
+monitors changed meanwhile (undocked, then woke up away), it reuses the newest saved image made for
+that exact layout, if there is one, instead of leaving a stretched span.
+Kill switch: touch ~/.config/matchy/disabled. Never touches org.gnome.desktop.screensaver.
+
+Undo: systemctl --user disable --now wallpaper-follow, then run the gsettings lines in
+~/.local/share/backgrounds/matchy-undo.txt (written before the first change if missing).
+Debug: wallpaper-follow --spec (print the live layout spec), wallpaper-follow --once (one tick).
+"""
+import hashlib
+import json
+import os
+import re
+import socket
+import sys
+import time
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+# Where Matchy answers: the host port you published in the add-on's Network section, or the Docker
+# port. Set MATCHY_URL in the systemd unit; this default only works where mDNS resolves it.
+BASE = os.environ.get("MATCHY_URL", "http://homeassistant.local:8160").rstrip("/")
+TICK_S = 30
+SETTLE_S = 3  # after MonitorsChanged, let a dock/hotplug finish before reading the layout
+HOME = Path.home()
+OUT_DIR = HOME / ".local/share/backgrounds/matchy"
+UNDO = HOME / ".local/share/backgrounds/matchy-undo.txt"
+KILL = HOME / ".config/matchy/disabled"
+SCHEMA = "org.gnome.desktop.background"
+KEEP_RECENT = 2        # current + previous
+KEEP_OTHER_LAYOUTS = 4  # plus the newest image of up to 4 other layouts (fallback when away)
+# Engine limits (API contract): each monitor side 320..7680, canvas <= 12000x8000
+MAX_SIDE, MAX_W, MAX_H = 7680, 12000, 8000
+VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$")
+UA = f"wallpaper-follow/1 ({socket.gethostname()})"
+
+
+def log(msg):
+    print(msg, file=sys.stderr, flush=True)
+
+
+class Problem(Exception):
+    """Expected trouble (engine down, away from home, odd reply). kind = what to log once per outage."""
+
+    def __init__(self, kind, msg):
+        super().__init__(msg)
+        self.kind = kind
+
+
+# ---------------------------------------------------------------- layout -> spec (pure, unit-tested)
+
+def layout_spec(state):
+    """Unpacked GetCurrentState() -> (spec, (canvas_w, canvas_h)), or (None, None) with no monitor on.
+
+    Logical layout mode (1, GNOME's default): positions are logical pixels, a monitor's logical size is
+    its mode size / its scale. GNOME stretches a spanned picture over the logical stage, so the canvas is
+    the logical layout times S = the largest scale: the highest-DPI monitor gets 1:1 pixels.
+    Physical mode (2): positions and sizes are already device pixels. Transforms 90/270 (odd values,
+    flipped ones too) swap width and height.
+    """
+    _serial, monitors, logical_monitors, props = state
+    current = {}
+    for mon_spec, modes, _mprops in monitors:
+        for mode in modes:
+            if mode[6].get("is-current"):
+                current[mon_spec[0]] = (mode[1], mode[2])
+    physical = props.get("layout-mode", 1) == 2
+    scale_s = 1.0 if physical else max((lm[2] for lm in logical_monitors), default=1.0)
+
+    rects = []  # [x0, y0, x1, y1, primary] in canvas pixels
+    for x, y, scale, transform, primary, mons, _lprops in logical_monitors:
+        size = next((current[m[0]] for m in mons if m[0] in current), None)
+        if size is None:
+            continue
+        w, h = size
+        if transform % 2:
+            w, h = h, w
+        if physical:
+            rects.append([x, y, x + w, y + h, bool(primary)])
+        else:
+            lw, lh = round(w / scale), round(h / scale)  # Mutter's logical size
+            rects.append([round(x * scale_s), round(y * scale_s),
+                          round((x + lw) * scale_s), round((y + lh) * scale_s), bool(primary)])
+    if not rects:
+        return None, None
+
+    # normalise to (0,0) and fit the engine's limits, keeping proportions (GNOME stretches anyway)
+    ox, oy = min(r[0] for r in rects), min(r[1] for r in rects)
+    for r in rects:
+        r[0] -= ox; r[2] -= ox; r[1] -= oy; r[3] -= oy
+    cw, ch = max(r[2] for r in rects), max(r[3] for r in rects)
+    side = max(max(r[2] - r[0], r[3] - r[1]) for r in rects)
+    f = min(1.0, MAX_W / cw, MAX_H / ch, MAX_SIDE / side)
+    if f < 1.0:
+        for r in rects:
+            r[:4] = [round(v * f) for v in r[:4]]
+        cw, ch = max(r[2] for r in rects), max(r[3] for r in rects)
+    if not any(r[4] for r in rects):  # GNOME always has one; be safe
+        max(rects, key=lambda r: (r[2] - r[0]) * (r[3] - r[1]))[4] = True
+
+    rects.sort(key=lambda r: (r[0], r[1]))
+    spec = ",".join(f"{r[2] - r[0]}x{r[3] - r[1]}+{r[0]}+{r[1]}{'p' if r[4] else ''}" for r in rects)
+    return spec, (cw, ch)
+
+
+def layout_hash(spec):
+    return hashlib.sha1(spec.encode()).hexdigest()[:8]
+
+
+def jpeg_size(data):
+    """(width, height) from a JPEG's SOF header, or None if it isn't a whole JPEG."""
+    if data[:2] != b"\xff\xd8" or b"\xff\xd9" not in data[-32:]:
+        return None
+    i = 2
+    while i + 9 <= len(data):
+        if data[i] != 0xFF:
+            return None
+        marker = data[i + 1]
+        if marker == 0xFF:
+            i += 1
+            continue
+        if marker == 0x01 or 0xD0 <= marker <= 0xD8:
+            i += 2
+            continue
+        seg = int.from_bytes(data[i + 2:i + 4], "big")
+        if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
+            return int.from_bytes(data[i + 7:i + 9], "big"), int.from_bytes(data[i + 5:i + 7], "big")
+        i += 2 + seg
+    return None
+
+
+# ---------------------------------------------------------------- GNOME + engine I/O
+
+def read_layout():
+    from gi.repository import Gio
+    try:
+        bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        res = bus.call_sync("org.gnome.Mutter.DisplayConfig", "/org/gnome/Mutter/DisplayConfig",
+                            "org.gnome.Mutter.DisplayConfig", "GetCurrentState", None, None,
+                            Gio.DBusCallFlags.NONE, 5000, None)
+    except Exception as e:  # GLib.Error: no Mutter (not a GNOME session yet)
+        raise Problem("layout", f"cannot read the monitor layout from Mutter: {e}") from None
+    return res.unpack()
+
+
+def http_get(url, timeout, limit):
+    req = urllib.request.Request(url, headers={"User-Agent": UA, "Cache-Control": "no-cache"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = r.read(limit + 1)
+    except Exception as e:  # URLError, HTTPError, timeout, TLS, DNS: all "engine not reachable"
+        raise Problem("engine", f"{url}: {e}") from None
+    if len(data) > limit:
+        raise Problem("engine", f"{url}: reply larger than {limit} bytes")
+    return data
+
+
+def fetch_current():
+    raw = http_get(BASE + "/current.json", 8, 1_000_000)
+    try:
+        cur = json.loads(raw)
+        version, span = cur["version"], cur["urls"]["span"]
+    except Exception:
+        raise Problem("engine", "current.json is not the engine's JSON (away from home?)") from None
+    if not (isinstance(version, str) and VERSION_RE.match(version)
+            and isinstance(span, str) and span.startswith("/") and "{layout}" in span):
+        raise Problem("engine", f"current.json has an unexpected version/span: {version!r} {span!r}")
+    return version, span
+
+
+def download(span_tpl, spec, canvas, dest):
+    url = BASE + span_tpl.replace("{layout}", urllib.parse.quote(spec, safe=""))
+    data = http_get(url, 90, 60_000_000)
+    size = jpeg_size(data)
+    if size != tuple(canvas):
+        raise Problem("image", f"span image is {size}, expected {canvas[0]}x{canvas[1]}: {url}")
+    tmp = dest.with_name(f".{dest.name}.part")
+    with open(tmp, "wb") as fh:
+        fh.write(data)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, dest)
+
+
+def prune(keep):
+    """Keep the current file, the newest KEEP_RECENT overall, and the newest file of a few other layouts."""
+    files = sorted(OUT_DIR.glob("*.jpg"), key=lambda p: p.stat().st_mtime, reverse=True)
+    kept = {keep} | set(files[:KEEP_RECENT])
+    layouts = {p.stem.rsplit("-", 1)[-1] for p in kept}
+    for p in files:
+        lh = p.stem.rsplit("-", 1)[-1]
+        if p not in kept and lh not in layouts and len(layouts) < KEEP_RECENT + KEEP_OTHER_LAYOUTS:
+            kept.add(p)
+            layouts.add(lh)
+    for p in files:
+        if p not in kept:
+            p.unlink(missing_ok=True)
+    for p in OUT_DIR.glob(".*.part"):
+        p.unlink(missing_ok=True)
+
+
+def cached_for_layout(spec):
+    hits = sorted(OUT_DIR.glob(f"*-{layout_hash(spec)}.jpg"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return hits[0] if hits else None
+
+
+class Follower:
+    def __init__(self):
+        from gi.repository import Gio
+        self.settings = Gio.Settings.new(SCHEMA)
+        self.applied = None   # (version, spec) last set by us
+        self.problem = None   # kind of the outage already logged
+        self.disabled = False
+        self.bad = None       # (version, spec) whose image failed validation: don't refetch it
+
+    def write_undo_once(self):
+        uri = self.settings.get_string("picture-uri")
+        if UNDO.exists() or OUT_DIR.as_uri() in uri:
+            return
+        lines = [f"# Wallpaper before wallpaper-follow took over ({time.strftime('%F %T')}). Undo:"]
+        for key in ("picture-options", "picture-uri", "picture-uri-dark"):
+            val = self.settings.get_string(key).replace("'", "'\\''")
+            lines.append(f"gsettings set {SCHEMA} {key} '{val}'")
+        UNDO.parent.mkdir(parents=True, exist_ok=True)
+        UNDO.write_text("\n".join(lines) + "\n")
+
+    def set_background(self, path):
+        from gi.repository import Gio
+        self.write_undo_once()
+        uri = path.as_uri()
+        s = self.settings
+        s.delay()
+        if s.get_string("picture-options") != "spanned":
+            s.set_string("picture-options", "spanned")
+        s.set_string("picture-uri", uri)
+        s.set_string("picture-uri-dark", uri)
+        s.apply()
+        Gio.Settings.sync()
+
+    def tick(self):
+        if KILL.exists():
+            if not self.disabled:
+                log(f"kill switch {KILL} present: standing by")
+                self.disabled = True
+            return
+        if self.disabled:
+            log("kill switch removed: following the engine again")
+            self.disabled, self.applied = False, None
+        spec = None
+        try:
+            spec, canvas = layout_spec(read_layout())
+            if spec is None:
+                raise Problem("layout", "no monitor is on")
+            version, span_tpl = fetch_current()
+            if (version, spec) != self.applied and (version, spec) != self.bad:
+                OUT_DIR.mkdir(parents=True, exist_ok=True)
+                path = OUT_DIR / f"{version}-{layout_hash(spec)}.jpg"
+                if not path.exists():
+                    try:
+                        download(span_tpl, spec, canvas, path)
+                    except Problem as e:
+                        if e.kind == "image":
+                            self.bad = (version, spec)
+                        raise
+                self.set_background(path)
+                self.applied = (version, spec)
+                prune(path)
+                log(f"wallpaper {version} on {spec} ({canvas[0]}x{canvas[1]}) -> {path.name}")
+            if self.problem:
+                log(f"engine reachable again (after: {self.problem})")
+                self.problem = None
+        except Problem as e:
+            if e.kind != self.problem:
+                log(f"standing by, retrying quietly every {TICK_S} s: {e}")
+                self.problem = e.kind
+            self.fallback(spec)
+        except Exception as e:  # never die on one bad tick; systemd restarts us if we do
+            log(f"unexpected error: {e!r}")
+
+    def fallback(self, spec):
+        """Monitors changed while the engine is unreachable: reuse a saved image made for this layout."""
+        if not spec or not self.applied or self.applied[1] == spec:
+            return
+        path = cached_for_layout(spec)
+        if path:
+            self.set_background(path)
+            self.applied = (path.stem.rsplit("-", 1)[0], spec)
+            log(f"engine unreachable, layout changed: reused {path.name} for {spec}")
+
+
+def main():
+    if "--spec" in sys.argv:
+        spec, canvas = layout_spec(read_layout())
+        print(spec, f"{canvas[0]}x{canvas[1]}" if canvas else "")
+        return
+    f = Follower()
+    if "--once" in sys.argv:
+        f.tick()
+        return
+
+    from gi.repository import Gio, GLib
+    loop = GLib.MainLoop()
+    pending = {"id": 0}
+
+    def run_tick():
+        pending["id"] = 0
+        f.tick()
+        return False
+
+    def on_monitors_changed(*_args):
+        if pending["id"]:
+            GLib.source_remove(pending["id"])
+        pending["id"] = GLib.timeout_add_seconds(SETTLE_S, run_tick)
+
+    def every_tick():
+        f.tick()
+        return True
+
+    bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+    bus.signal_subscribe("org.gnome.Mutter.DisplayConfig", "org.gnome.Mutter.DisplayConfig",
+                         "MonitorsChanged", "/org/gnome/Mutter/DisplayConfig", None,
+                         Gio.DBusSignalFlags.NONE, on_monitors_changed)
+    log(f"following {BASE} every {TICK_S} s")
+    f.tick()
+    GLib.timeout_add_seconds(TICK_S, every_tick)
+    loop.run()
+
+
+if __name__ == "__main__":
+    main()
