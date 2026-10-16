@@ -101,7 +101,8 @@ if bashio::config.exists 'captioners'; then
         captioners="$(jq -c --argjson e "${entry}" '. + [$e]' <<<"${captioners}")"
     done
 fi
-readonly captioner_count="$(jq 'length' <<<"${captioners}")"
+captioner_count="$(jq 'length' <<<"${captioners}")"
+readonly captioner_count
 
 # ------------------------------------------------------------------ excluded ids
 # Glob patterns on picture ids (e.g. "aether-*"): matching pictures never enter the library.
