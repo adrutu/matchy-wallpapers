@@ -4,7 +4,7 @@
 # SILENTLY DISCARDED — no error, the feature just does not exist. Only add keys that
 # are in supervisor/apps/validate.py.
 name: Matchy Wallpapers
-version: "0.2.2"
+version: "0.2.3"
 slug: matchy
 description: >-
   One wallpaper, matched across every screen. Rotates a captioned wallpaper and serves it
@@ -59,6 +59,7 @@ options:
   source_folders:
     - /media/wallpapers
   exclude: []
+  sets: []
   rotation_min_minutes: 15
   rotation_max_minutes: 20
   folder_scan_minutes: 10
@@ -77,6 +78,13 @@ schema:
     - str
   exclude:
     - str
+  sets:
+    - folder: str
+      id_prefix: "str?"
+      name: "str?"
+      credit: "str?"
+      context: "str?"
+      abstract: "bool?"
   rotation_min_minutes: int(1,1440)
   rotation_max_minutes: int(1,1440)
   folder_scan_minutes: int(1,1440)

@@ -104,6 +104,29 @@ fi
 captioner_count="$(jq 'length' <<<"${captioners}")"
 readonly captioner_count
 
+# ------------------------------------------------------------------ picture sets
+# Settings for a sub-folder of a source folder, matched by its name in every source folder:
+# the id prefix, the collection name and credit the captioner is told, a context sentence, and
+# `abstract` (digital or illustrated art, so the captioner never treats it as a real place).
+sets='{}'
+if bashio::config.exists 'sets'; then
+    for idx in $(bashio::config 'sets|keys'); do
+        s_folder="$(opt "sets[${idx}].folder" '')"
+        [[ -n "${s_folder}" ]] || continue
+        entry='{}'
+        for key in id_prefix name credit context; do
+            if bashio::config.has_value "sets[${idx}].${key}"; then
+                entry="$(jq -c --arg k "${key}" --arg v "$(bashio::config "sets[${idx}].${key}")" \
+                    '.[$k] = $v' <<<"${entry}")"
+            fi
+        done
+        if [[ "$(opt "sets[${idx}].abstract" false)" == "true" ]]; then
+            entry="$(jq -c '.abstract = true' <<<"${entry}")"
+        fi
+        sets="$(jq -c --arg f "${s_folder}" --argjson e "${entry}" '.[$f] = $e' <<<"${sets}")"
+    done
+fi
+
 # ------------------------------------------------------------------ excluded ids
 # Glob patterns on picture ids (e.g. "aether-*"): matching pictures never enter the library.
 exclude='[]'
@@ -152,6 +175,7 @@ jq -n \
     --argjson rot_min "$(int 'rotation_min_minutes' 15)" \
     --argjson rot_max "$(int 'rotation_max_minutes' 20)" \
     --argjson folders "${folders}" \
+    --argjson sets "${sets}" \
     --argjson exclude "${exclude}" \
     --argjson captioners "${captioners}" \
     --argjson static_manifest "${static_manifest}" \
@@ -169,7 +193,7 @@ jq -n \
         render_threads: $render_threads,
         folder_scan_minutes: $scan_minutes,
         rotation: {min_minutes: $rot_min, max_minutes: $rot_max},
-        folders: $folders,
+        folders: ($folders | map(. + {sets: $sets})),
         exclude: $exclude,
         captioners: $captioners,
         static_manifest: $static_manifest,

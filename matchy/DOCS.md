@@ -29,6 +29,7 @@ section and pick a host port there. Leave it unpublished and only the sidebar pa
 | :--- | :--- | :--- | :--- |
 | `source_folders` | list of paths | `["/media/wallpapers"]` | Folders of images, scanned recursively. Must be under `/media` or `/share`; an add-on cannot read arbitrary host paths. A folder that does not exist is logged and skipped. |
 | `exclude` | list of patterns | `[]` | Picture ids to leave out, as shell-style globs (`aether-*`, `art-great-wave`). Matching pictures never enter the library, so they are not shown, captioned or rendered. Ids are listed in the panel and in `library.json`. |
+| `sets` | list | `[]` | Settings for a sub-folder, matched by name in every source folder: `folder` (required), `id_prefix` (ids become `<prefix>-<name>`), `name` (the collection name the captioner is told), `credit` (shown on the label), `context` (one sentence of facts), `abstract` (true for digital or illustrated art, so the captioner describes it as art, never as a real place). |
 | `rotation_min_minutes` | int, 1–1440 | 15 | Shortest time on one image. |
 | `rotation_max_minutes` | int, 1–1440 | 20 | Longest time on one image. The actual interval is drawn at random between the two. |
 | `folder_scan_minutes` | int, 1–1440 | 10 | How often it looks for new, changed or removed files. |

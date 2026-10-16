@@ -83,6 +83,8 @@ registry image, no add-on store listing; the add-on builds locally from this rep
 - `tests/run_tests.py`: integration tests against the real engine (rotation, panel controls, access
   tiers, request bodies, oversized images). `uv run --with pillow python tests/run_tests.py`, or any
   Python 3 with Pillow; about a minute.
+- `tests/run_sh_test.py`: `run.sh` turning add-on options into `config.json`, with bashio stubbed
+  by jq (bash and jq needed).
 - `tests/label_diff.py`: compares two rendered labels and reports JPEG noise against real layout
   differences; `tests/ci_probe.py` renders one inside a built image.
 - `.github/workflows/build.yml`: lint, tests, an amd64 and an aarch64 image build with a per-arch

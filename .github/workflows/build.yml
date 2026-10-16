@@ -65,6 +65,9 @@ jobs:
       - name: tests/run_tests.py
         run: python tests/run_tests.py
 
+      - name: tests/run_sh_test.py (add-on options -> config.json; bash + jq are on the runner)
+        run: python tests/run_sh_test.py
+
   build:
     name: Image (${{ matrix.arch }})
     runs-on: ubuntu-latest

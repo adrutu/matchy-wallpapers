@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.3 (2026-10-17)
+
+- `sets` option: per sub-folder id prefix, collection name, credit, context and `abstract`, as the
+  engine config already allowed.
+- `tests/run_sh_test.py`: the add-on's option handling tested with bashio stubbed (16 checks), also in CI.
+
 ## 0.2.2 (2026-10-16)
 
 - `meta.json` next to the pictures (title, place, credit, context per file) grounds the captions and
