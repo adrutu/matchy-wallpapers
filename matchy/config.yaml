@@ -4,7 +4,7 @@
 # SILENTLY DISCARDED — no error, the feature just does not exist. Only add keys that
 # are in supervisor/apps/validate.py.
 name: Matchy Wallpapers
-version: "0.2.1"
+version: "0.2.2"
 slug: matchy
 description: >-
   One wallpaper, matched across every screen. Rotates a captioned wallpaper and serves it
