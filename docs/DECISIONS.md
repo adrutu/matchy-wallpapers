@@ -1,8 +1,16 @@
-# Open decisions
+# Decisions
 
-Things only the owner can settle before Matchy goes anywhere beyond this house. Each one lists the
-options with a one-line trade-off; the current state of the repository is marked. Answer them in one
-go and the rest is mechanical.
+Things only the owner could settle before Matchy went anywhere beyond this house, with the options
+that were weighed. **All six were answered on 2026-10-16:**
+
+1. Licence: **MIT**.
+2. Name: **Matchy**, kept after a clash check (no Home Assistant add-on or integration uses the
+   slug; the nearest is an unrelated US trademark for a mobile puzzle game). Placeholder artwork stays.
+3. Container user: **A, stay root**, like official add-ons.
+4. Repository: **private on GitHub** (`adrutu/matchy`) for now; no images published.
+5. `POST /api/next` without a body: **kept**.
+6. The existing install and the add-on run **side by side for a few days** first; each client moves
+   only on the owner's say-so.
 
 ## 1. Licence (ticket #131)
 
@@ -19,8 +27,7 @@ The repository ships `LICENSE` as **MIT, Copyright (c) 2026 Andrei Drutu**, chos
 Bundled content is unaffected: the Noto fonts are OFL-1.1 whatever the code licence, Pillow is
 MIT-CMU, libraqm MIT. No pictures ship.
 
-**Needed:** confirm MIT, or name another; then `LICENSE`, the Dockerfile label and README change
-together.
+**Decided 2026-10-16: MIT.**
 
 ## 2. Name and artwork
 
@@ -33,7 +40,10 @@ together.
   larger copies under `docs/`. Options: keep them; redraw by hand or commission; or a wordmark only.
   Nothing in the code depends on them.
 
-**Needed:** keep the name or not; keep the artwork or replace it (and with what).
+**Decided 2026-10-16: keep Matchy and the placeholder artwork.** Clash check the same day: no `matchy`
+slug in the official, community or HACS lists or in Home Assistant's add-on analytics; `matchy` is
+taken on PyPI, npm and crates.io by unrelated projects; US trademark MATCHY (reg. 7385917, class 9)
+covers a mobile puzzle game.
 
 ## 3. Container user: root or not (ticket #130)
 
@@ -49,7 +59,7 @@ Docker's default capabilities. The full write-up with evidence is on #130.
 Recommendation on the ticket: **B, in 0.3.x**, after a test on the real install. DOCS.md states the
 current posture either way.
 
-**Needed:** A or B, and if B, whether 0.3.0 may ship it.
+**Decided 2026-10-16: A, stay root.**
 
 ## 4. Public or private repository, and where
 
@@ -71,7 +81,8 @@ Related choices that fall out of this one:
 - **Repository URL** in `config.yaml`, `repository.yaml`, the Dockerfile labels and README.
 - **Maintainer line** in `repository.yaml` (currently a name, no e-mail, on purpose).
 
-**Needed:** private, public or neither; the owner/name; whether to publish images.
+**Decided 2026-10-16: private on GitHub as `adrutu/matchy`, no images published** (`MATCHY_IMAGE`
+unset, `image:` stays commented). Going public is a separate decision.
 
 ## 5. `POST /api/next` without a JSON body
 
@@ -85,7 +96,7 @@ browser on your LAN trigger it (no CORS preflight for a bodyless POST). Every ot
 | **Keep it** (current) | Backwards compatible; worst case is a skipped picture. | A deliberate inconsistency, documented as a known gap. |
 | **Require JSON like the others** | One rule for every control. | Breaks bodyless callers; the HA recipe in `docs/clients/home-assistant.md` needs `content_type` and `payload: "{}"` added. |
 
-**Needed:** keep or tighten (if tightened, in which release).
+**Decided 2026-10-16: keep it.**
 
 ## 6. The live installation
 
@@ -93,3 +104,5 @@ The Pi stack this add-on was spun out of still runs the older copy of the engine
 laptops and dashboard, and the add-on's port on Home Assistant is not published. Either the Pi moves
 onto this code (one engine, one set of captions) or the two stay separate. Not a repository decision,
 but it decides which install the client recipes point at.
+
+**Decided 2026-10-16: side by side for a few days first.** The plan lives with the installation, not here.

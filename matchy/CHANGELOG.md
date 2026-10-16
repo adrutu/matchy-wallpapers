@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Captioner: works with servers that refuse `response_format: json_object` (LM Studio), `max_tokens`
+  or a non-default `temperature` (newer OpenAI models): the parameter a `400`/`422` names is dropped
+  or renamed for that endpoint and the request retried. Replies in content parts or with an inline
+  `<think>` block are read; an empty reply says so (`finish_reason`) instead of failing to parse.
+- Captioner errors are logged with the server's own reason (`HTTP 404: …`), and with every endpoint
+  skipped, captioning resumes as soon as the first skip runs out instead of a minute later.
+- Tests for a picky server (key inline, all three refusals, content parts, `<think>`) and for every
+  captioner unreachable: the wallpaper keeps rotating uncaptioned and captions arrive once one is back.
 - Integration tests in the repository (`tests/run_tests.py`, 63 checks against the real engine) and a
   cross-architecture label diff (`tests/label_diff.py`, `tests/ci_probe.py`).
 - The image builds natively on amd64 and aarch64 from the same Dockerfile; the four fonts load and

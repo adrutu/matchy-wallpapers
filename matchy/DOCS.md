@@ -50,7 +50,8 @@ Only options you set are written to the engine's config; everything else keeps t
 
 Any server that speaks the OpenAI chat-completions API with an `image_url` content part will do.
 Matchy sends one request per image, `stream: false`, with `response_format: {"type": "json_object"}`,
-and expects `{"title": "...", "blurb": "..."}` back (a JSON object inside a code fence is accepted too).
+and expects `{"title": "...", "blurb": "..."}` back (a JSON object inside a code fence, after an inline
+`<think>` block, or in content parts is accepted too).
 
 - **llama.cpp** (`llama-server` with a vision model and its mmproj):
   `url: http://<llama-host>:8080/v1/chat/completions`, `model` as the server names it.
@@ -62,8 +63,13 @@ and expects `{"title": "...", "blurb": "..."}` back (a JSON object inside a code
 
 List two endpoints if you have a fast one that is not always awake and a slower one that is: Matchy
 tries them in order, and an endpoint that refuses or times out is skipped for ten minutes. Matchy
-never wakes a sleeping machine itself. The server must accept `response_format: json_object`; one
-that rejects it with an HTTP error is treated as down (see Troubleshooting).
+never wakes a sleeping machine itself.
+
+Servers differ in what they accept, so a `400` or `422` that names a parameter is handled once per
+endpoint and logged as `retrying with …`: `response_format` is left out (LM Studio; the prompt still
+asks for JSON), `max_tokens` becomes `max_completion_tokens`, and `temperature` is left at the
+server's default (newer OpenAI models). A `400` that names none of them is blamed on
+`response_format`.
 
 A local 8-billion-parameter vision model takes a couple of seconds per picture on a desktop GPU.
 
@@ -206,8 +212,8 @@ The gallery page draws the buttons a viewer may not use as disabled, with the re
   at mode 600 and re-written on every start. It never appears in the generated config file or in
   the log. Like every add-on option it is also in Home Assistant's own `options.json` for the add-on.
 - The engine runs as **root inside its container**, as official add-ons do; the Supervisor offers no
-  option to change that. Dropping to an unprivileged user is planned as a later change (it changes
-  the ownership of existing data). `/media` and `/share` are mounted read-only.
+  option to change that, and Matchy does not drop privileges itself. `/media` and `/share` are
+  mounted read-only.
 
 ## Where things live
 
@@ -232,10 +238,12 @@ the add-on. Check the log: a missing folder is named there and skipped. The pane
 until the first scan finishes.
 
 **Captions never appear.** Check `caption_enabled`, then the captioner `url`: it must be the full
-`/v1/chat/completions` path, not just the host. The log says `unreachable … skipping it for 10 min`
-when an endpoint refuses, times out or answers an HTTP error (a server that rejects
-`response_format: json_object` looks exactly like that), and `postponed` while no endpoint is
-available. A blurb that breaks the word-count or grounding rules is retried once immediately with the
+`/v1/chat/completions` path, not just the host. The log says `failed (…); skipping it for 10 min`
+when an endpoint refuses, times out or answers an HTTP error (with the server's own reason, e.g.
+`HTTP 404: model not found`), and `postponed` while no endpoint is available; captioning resumes
+by itself when the skip runs out, and the wallpaper keeps rotating uncaptioned meanwhile. `empty
+reply (finish_reason: length)` means a reasoning model spent `caption.max_tokens` thinking: raise it
+or pick a non-thinking model. A blurb that breaks the word-count or grounding rules is retried once immediately with the
 reason, then that picture is retried six hours later; the panel card shows the last error.
 
 **The same image never changes.** Check how many images it actually found: the panel's library count,
@@ -304,7 +312,7 @@ generates, with its defaults:
 Extra keys the engine understands but the add-on does not expose: per-folder `credit` and `sets`
 (`{"<sub-folder>": {"id_prefix", "name", "title", "credit", "context", "abstract"}}`), per-id
 `overrides` (`{"<id>": {"place": "…"}}`), `captioners[].api_key_file`, `down_minutes` (10),
-`gap_seconds` (0, a pause after each caption) and `json_mode` (true), `caption.max_tokens` (300),
+`gap_seconds` (0, a pause after each caption) and `json_mode` (true; false never sends `response_format`), `caption.max_tokens` (300),
 `temperature` (0.4), `image_px` (1024, the size sent to the model), `retry_failed_hours` (6),
 `forbidden_titles`, `rotation.caption_priority`, `dedupe.avoid_prefixes` and `ladder_prefer`
 (`"4k"`), `lan_cidrs`, `ingress_peers`, `size_limits`, `bind` and `style` (label proportions,

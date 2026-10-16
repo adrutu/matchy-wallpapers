@@ -75,8 +75,6 @@ registry image, no add-on store listing; the add-on builds locally from this rep
   the controls that change the library work only from the sidebar panel. Keep it on your own network.
 - Images must live under `/media` or `/share` when running as an add-on.
 - Formats: JPEG, PNG and WebP, up to 50 megapixels.
-- The captioner must accept `response_format: {"type": "json_object"}`; one that rejects it is
-  treated as unreachable.
 - One rotation for every screen: no per-screen pictures, no quiet hours yet.
 - The engine runs as root inside its container, as Home Assistant add-ons do.
 
@@ -89,11 +87,10 @@ registry image, no add-on store listing; the add-on builds locally from this rep
   differences; `tests/ci_probe.py` renders one inside a built image.
 - `.github/workflows/build.yml`: lint, tests, an amd64 and an aarch64 image build with a per-arch
   render probe, and a cross-arch label diff. Publishing is opt-in and off.
-- Open decisions (licence, name and artwork, container user, public repository):
-  [docs/DECISIONS.md](docs/DECISIONS.md).
+- Decisions made so far (licence, name, container user, repository): [docs/DECISIONS.md](docs/DECISIONS.md).
 
 ## Licence
 
-Code: see [LICENSE](LICENSE) (MIT, pending confirmation; see `docs/DECISIONS.md`). The bundled fonts
+Code: MIT, see [LICENSE](LICENSE). The bundled fonts
 are Noto, under the SIL Open Font Licence 1.1, and their licence travels with the image. No pictures
 ship with Matchy; the ones you point it at stay yours, and their licences are your business.
