@@ -16,6 +16,8 @@ import warnings
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, features
 
+from library import log
+
 # 8K is 33 MP; 50 MP leaves room for a wide panorama and decodes to ~200 MB, which the host survives
 # (the add-on has no memory limit). The 1x-2x band is only a warning in Pillow: make it an error, so
 # one cap applies and library.open_image can skip the file instead of decoding it.
@@ -24,6 +26,7 @@ warnings.simplefilter("error", Image.DecompressionBombWarning)
 
 HAVE_RAQM = features.check("raqm")
 _LAYOUT = ImageFont.Layout.RAQM if HAVE_RAQM else ImageFont.Layout.BASIC
+_font_missing = set()  # font files already reported unusable
 
 DEFAULT_STYLE = {
     "card_frac_landscape": 0.24,
@@ -75,7 +78,14 @@ class Renderer:
             f = _font_cache.get(key)
             if f is None:
                 path = os.path.join(self.st["font_dir"], self.st["fonts"][role])
-                f = ImageFont.truetype(path, px, layout_engine=_LAYOUT)
+                try:
+                    f = ImageFont.truetype(path, px, layout_engine=_LAYOUT)
+                except OSError as e:
+                    # Outside the image the fonts may be missing: a plainer label beats an HTTP 500.
+                    if path not in _font_missing:
+                        _font_missing.add(path)
+                        log("font", path, "unusable (%s); using Pillow's built-in font" % e)
+                    f = ImageFont.load_default(size=px).font_variant(layout_engine=_LAYOUT)
                 _font_cache[key] = f
         return f
 

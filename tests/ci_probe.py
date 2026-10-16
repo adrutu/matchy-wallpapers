@@ -55,11 +55,13 @@ def main():
     style = {"font_dir": os.environ.get("WE_FONT_DIR", "/fonts")}
     renderer = render.Renderer(style)
     for role in sorted(renderer.st["fonts"]):
-        try:
-            f = renderer.font(role, 24)
-            print("font %-8s %-32s %s ok" % (role, renderer.st["fonts"][role], f.getname()))
-        except OSError as e:
-            print("FAIL: font %s: %s" % (role, e))
+        # render falls back to Pillow's built-in font rather than fail, so check the file and family.
+        path = os.path.join(renderer.st["font_dir"], renderer.st["fonts"][role])
+        name = renderer.font(role, 24).getname()
+        if os.path.isfile(path) and name[0].startswith("Noto"):
+            print("font %-8s %-32s %s ok" % (role, renderer.st["fonts"][role], name))
+        else:
+            print("FAIL: font %s: %s not loaded (got %s)" % (role, path, name))
             ok = False
 
     if ok:

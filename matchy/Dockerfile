@@ -45,4 +45,10 @@ LABEL \
     org.opencontainers.image.source="https://github.com/adrutu/matchy" \
     org.opencontainers.image.licenses="MIT"
 
+# Health for the Supervisor (in place of config.yaml's obsolete `watchdog:` URL): with the app's
+# Watchdog toggle on, a container Docker marks unhealthy is restarted. /healthz answers during a
+# cold scan, because the engine binds before it scans.
+HEALTHCHECK --interval=60s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -fsS --max-time 8 -o /dev/null http://127.0.0.1:8160/healthz || exit 1
+
 CMD [ "/run.sh" ]

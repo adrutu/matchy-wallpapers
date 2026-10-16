@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.4 (2026-10-17)
+
+- Health check: a Docker `HEALTHCHECK` on `/healthz` replaces the `watchdog:` URL, which the app
+  linter reports as obsolete; the Watchdog toggle restarts an unhealthy container just the same.
+- `backup`, `boot` and `startup` left at their defaults instead of restating them.
+- A missing label font falls back to Pillow's built-in font (logged once) instead of failing the
+  render with HTTP 500; `tests/ci_probe.py` now checks the font files and families itself.
+
 ## 0.2.3 (2026-10-17)
 
 - `sets` option: per sub-folder id prefix, collection name, credit, context and `abstract`, as the

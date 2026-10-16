@@ -4,7 +4,7 @@
 # SILENTLY DISCARDED — no error, the feature just does not exist. Only add keys that
 # are in supervisor/apps/validate.py.
 name: Matchy Wallpapers
-version: "0.2.3"
+version: "0.2.4"
 slug: matchy
 description: >-
   One wallpaper, matched across every screen. Rotates a captioned wallpaper and serves it
@@ -16,8 +16,6 @@ arch:
 
 # Required for the s6-overlay v3 entrypoint in the HA base images.
 init: false
-startup: application
-boot: auto
 
 # The sidebar panel. Authenticated by Home Assistant.
 ingress: true
@@ -43,14 +41,8 @@ map:
 # The render cache is rebuildable, so keep it out of backups. Masters and sidecars stay in.
 # Name the DIRECTORY: the Supervisor matches excludes with PurePath.match(), where "**" is not
 # recursive, and the cache nests as cache/<id>/<rev>/<file>.jpg — so "cache/**" excludes nothing.
-backup: hot
 backup_exclude:
   - "cache"
-
-# Probed every 120 s at the container's own address, so it works with 8160 unpublished; two
-# misses in a row restart the app. Only active once the user turns on the Watchdog toggle.
-# /healthz answers during a cold scan (the engine binds before scanning).
-watchdog: "http://[HOST]:[PORT:8160]/healthz"
 
 # image: "ghcr.io/adrutu/matchy"   # uncomment once CI publishes a multi-arch manifest;
                                    # commented out = the Supervisor builds locally.

@@ -302,7 +302,10 @@ json.dump({"test-0.jpg": {"title": "Red Field", "place": "Nowhere, Testshire", "
                           "context": "A red test card.", "rating": "ignored"},
            "missing.jpg": {"title": "Not here"}}, open(os.path.join(gdir, "meta.json"), "w"))
 pg = start("G", {"port": G, "ingress_peers": ["127.0.0.0/8"], "captioners": [], "caption": {"enabled": False},
-                 "exclude": ["test-3", "nomatch-*"], "_imgs": gdir})
+                 "exclude": ["test-3", "nomatch-*"], "_imgs": gdir,
+                 # names no system has: Pillow searches the system font folders by file name otherwise
+                 "style": {"font_dir": os.path.join(S, "no-fonts"),
+                           "fonts": {r: "Matchy-Missing-%s.ttf" % r for r in ("title", "place", "body", "dropcap")}}})
 try:
     L = lib(G); items = {i["id"]: i for i in L["items"]}
     check("G meta.json fills title/place/credit", items.get("test-0", {}).get("title") == "Red Field"
@@ -310,6 +313,11 @@ try:
     check("G meta.json leaves others alone", items.get("test-1", {}).get("title") != "Red Field", items.get("test-1"))
     check("G exclude glob drops the id", "test-3" not in items and len(items) == 3, sorted(items))
     st, _, txt, _ = req(G, "GET", "/"); check("G page shows the meta title", "Red Field" in txt)
+    st, _, _, h = req(G, "GET", "/current/label/640x360.jpg")
+    check("G label renders without the fonts", st == 200 and h.get("Content-Type") == "image/jpeg", (st, h))
+    req(G, "GET", "/current/label/1280x720.jpg")
+    missing = [l for l in open(os.path.join(S, "log-G.txt")).read().splitlines() if "unusable" in l]
+    check("G missing font logged once per file", missing and len(missing) == len({l.split()[3] for l in missing}), missing)
 finally:
     pg.terminate(); pg.wait()
 
