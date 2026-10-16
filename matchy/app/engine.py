@@ -480,8 +480,8 @@ class Engine:
             except RuntimeError as e:
                 if "no caption endpoint available" in str(e) or not any(
                         ep for ep in self.captioner.available()):
-                    log("caption", iid, "postponed:", e)
-                    gap = 60
+                    gap = self.captioner.retry_in()
+                    log("caption", iid, "postponed %ds:" % gap, e)
                 else:
                     self._mark_failed(iid, it, str(e), recap)
             except ValueError as e:

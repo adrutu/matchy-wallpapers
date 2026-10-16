@@ -4,7 +4,7 @@ images and a fake OpenAI-compatible captioner (tests/fakecap.py).
 
     uv run --with pillow python tests/run_tests.py      # or any python3 with Pillow
 
-MATCHY_TEST_PORT moves the six ports it uses (default 18160..18170). Takes about three minutes.
+MATCHY_TEST_PORT moves the ports it uses (default 18160..18173). Takes about three minutes.
 """
 import http.client, json, os, shutil, socket, subprocess, sys, tempfile, time
 
@@ -45,7 +45,7 @@ def req(port, method, path, body=None, ctype="application/json", raw=None):
     data = raw if raw is not None else (json.dumps(body).encode() if body is not None else None)
     h = {"Content-Type": ctype} if ctype and data is not None else {}
     c.request(method, path, body=data, headers=h)
-    r = c.getresponse(); txt = r.read().decode()
+    r = c.getresponse(); txt = r.read().decode(errors="replace")
     hdrs = dict(r.getheaders()); c.close()
     try: j = json.loads(txt)
     except ValueError: j = None
@@ -239,6 +239,60 @@ try:
     st, *_ = req(D, "POST", "/api/hide", {"id": left[0]}); check("D cannot hide last decodable one", st == 409 and len(left) == 1, (st, left))
 finally:
     pd.terminate(); pd.wait()
+
+# ---------------- E: a picky OpenAI-compatible server, key given inline ----------------
+# Needs the key, refuses response_format (LM Studio-style), max_tokens and temperature 0.4 (newer
+# OpenAI models), and answers in content parts with an inline <think> block.
+E = BASE + 8
+fe = subprocess.Popen([sys.executable, os.path.join(HERE, "fakecap.py"), str(BASE + 11), FAIL_FLAG,
+                       "key=k1", "no-json-mode", "new-openai", "parts", "think"])
+pe = start("E", {"port": E, "ingress_peers": ["127.0.0.0/8"],
+                 "captioners": [{"name": "picky", "url": "http://127.0.0.1:%d/v1/chat/completions" % (BASE + 11),
+                                 "model": "x", "api_key": "k1", "timeout": 10}],
+                 "caption": {"enabled": True, "min_words": 30, "max_words": 45}})
+try:
+    for _ in range(60):
+        if all(i["status"] == "captioned" for i in lib(E)["items"]): break
+        time.sleep(1)
+    L = lib(E); check("E picky server captions everything", all(i["status"] == "captioned" for i in L["items"]),
+                      [(i["status"], i["error"]) for i in L["items"]])
+    logE = open(os.path.join(S, "log-E.txt")).read()
+    for what in ("no response_format", "max_completion_tokens instead of max_tokens", "the server's default temperature"):
+        check("E adapted: %s" % what, logE.count("retrying with " + what) == 1, logE[-600:])
+    check("E endpoint never skipped", L["captioner"]["endpoints"][0]["skipped_until"] is None, L["captioner"])
+finally:
+    pe.terminate(); pe.wait(); fe.terminate()
+
+# ---------------- F: every captioner unreachable, then one comes back ----------------
+F = BASE + 12
+dead = "http://127.0.0.1:%d/v1/chat/completions" % (BASE + 13)  # nothing listens here yet
+pf = start("F", {"port": F, "ingress_peers": ["127.0.0.0/8"], "rotation": {"min_minutes": 15, "max_minutes": 20},
+                 "captioners": [{"name": "dead", "url": dead, "model": "x", "timeout": 5, "down_minutes": 0.1}],
+                 "caption": {"enabled": True, "min_words": 30, "max_words": 45}})
+ff = None
+try:
+    for _ in range(40):
+        L = lib(F)
+        if L["captioner"]["endpoints"][0]["skipped_until"]: break
+        time.sleep(0.5)
+    check("F unreachable endpoint is skipped for a while", L["captioner"]["endpoints"][0]["skipped_until"], L["captioner"])
+    check("F nothing marked failed", all(i["status"] == "pending" for i in L["items"]), [i["status"] for i in L["items"]])
+    c = cur(F); check("F serves uncaptioned", c["captioned"] is False, c)
+    seen = {c["id"]}
+    for _ in range(4):
+        st, j, *_ = req(F, "POST", "/api/next", {}); seen.add(cur(F)["id"])
+    check("F still rotates without a captioner", len(seen) >= 2, seen)
+    st, *_ = req(F, "GET", "/current/label/640x360.jpg"); check("F label renders uncaptioned", st == 200, st)
+    check("F postponed, not failed, in the log", "postponed" in open(os.path.join(S, "log-F.txt")).read())
+    ff = subprocess.Popen([sys.executable, os.path.join(HERE, "fakecap.py"), str(BASE + 13), FAIL_FLAG])
+    for _ in range(60):
+        if all(i["status"] == "captioned" for i in lib(F)["items"]): break
+        time.sleep(1)
+    check("F captions once the captioner is back", all(i["status"] == "captioned" for i in lib(F)["items"]),
+          [i["status"] for i in lib(F)["items"]])
+finally:
+    pf.terminate(); pf.wait()
+    if ff: ff.terminate()
 
 print("\n%d passed, %d failed (logs in %s)" % (ok, fail, S))
 if not fail:

@@ -1,6 +1,8 @@
 """Caption images once with an OpenAI-compatible vision model (llama.cpp, Ollama, vLLM...).
 
-Endpoints are tried in order; one that refuses/times out is skipped for `down_minutes`.
+Endpoints are tried in order; one that refuses, times out or errors is skipped for `down_minutes`.
+A 400/422 naming a parameter the server does not take (`response_format`, `max_tokens`,
+`temperature`) drops or renames it for that endpoint and retries.
 The engine never wakes a sleeping endpoint itself.
 """
 import base64
@@ -60,6 +62,38 @@ def proper_nouns(blurb, allowed_text):
     return bad
 
 
+def http_error_text(e):
+    """The server's own reason for an HTTP error: OpenAI-style `error.message` or the raw body."""
+    try:
+        raw = e.read(4000).decode("utf-8", "replace").strip()
+    except Exception:  # noqa: BLE001 - a body we cannot read just means no detail
+        return ""
+    try:
+        err = json.loads(raw)
+        err = err.get("error", err) if isinstance(err, dict) else err
+        if isinstance(err, dict):
+            err = err.get("message") or err
+        return " ".join(str(err).split())
+    except ValueError:
+        return " ".join(raw.split())
+
+
+def reply_text(resp):
+    """The assistant's text from a chat-completions reply, or ValueError saying why there is none."""
+    try:
+        choice = resp["choices"][0]
+        msg = choice["message"]
+    except (KeyError, IndexError, TypeError):
+        err = resp.get("error") if isinstance(resp, dict) else None
+        raise ValueError("no choices in the reply" + (": %s" % err if err else ""))
+    content = msg.get("content")
+    if isinstance(content, list):  # some servers answer with content parts, like the request
+        content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
+    if not content or not content.strip():
+        raise ValueError("empty reply (finish_reason: %s)" % choice.get("finish_reason"))
+    return content
+
+
 def image_data_url(path, px):
     with Image.open(path) as im:
         im.draft("RGB", (px, px))
@@ -94,6 +128,12 @@ class Captioner:
     def available(self):
         now = time.time()
         return [ep for ep in self.endpoints if self.down_until.get(ep["name"], 0) <= now]
+
+    def retry_in(self, cap=60.0):
+        """Seconds until a skipped endpoint may be tried again: at least 5, at most `cap`."""
+        now = time.time()
+        waits = [self.down_until.get(ep["name"], 0) - now for ep in self.endpoints]
+        return max(5.0, min([cap] + waits))
 
     # ---------- prompt ----------
     def prompt(self, meta, feedback=None):
@@ -138,7 +178,7 @@ class Captioner:
         return text
 
     # ---------- transport ----------
-    def call(self, ep, prompt, data_url):
+    def body(self, ep, prompt, data_url):
         c = self.cfg
         body = {
             "model": ep["model"],
@@ -146,24 +186,57 @@ class Captioner:
                 {"type": "text", "text": prompt},
                 {"type": "image_url", "image_url": {"url": data_url}},
             ]}],
-            "max_tokens": c["max_tokens"],
-            "temperature": c["temperature"],
+            ep.get("_max_tokens_key", "max_tokens"): c["max_tokens"],
             "stream": False,
         }
+        if not ep.get("_no_temperature"):
+            body["temperature"] = c["temperature"]
         if ep.get("json_mode", True):
             body["response_format"] = {"type": "json_object"}
-        data = json.dumps(body).encode()
-        try:
-            return self.post(ep, data)
-        except urllib.error.HTTPError as e:
-            # A rotated key file (the add-on rewrites them on every start) is the usual cause of a
-            # 401/403: re-read it and retry once. Any other failure is "endpoint down" for a while.
-            if e.code in (401, 403) and ep.get("api_key_file"):
-                old = ep.get("_key")
-                if self.load_key(ep) != old:
-                    log("captioner", ep["name"], "HTTP %d: key file changed, retrying with the new key" % e.code)
-                    return self.post(ep, data)
-            raise
+        return body
+
+    def call(self, ep, prompt, data_url):
+        key_retried = False
+        while True:
+            body = self.body(ep, prompt, data_url)
+            try:
+                return self.post(ep, json.dumps(body).encode())
+            except urllib.error.HTTPError as e:
+                e.detail = http_error_text(e)
+                # A rotated key file (the add-on rewrites them on every start) is the usual cause of a
+                # 401/403: re-read it and retry once. Any other failure is "endpoint down" for a while.
+                if e.code in (401, 403) and ep.get("api_key_file") and not key_retried:
+                    key_retried = True
+                    old = ep.get("_key")
+                    if self.load_key(ep) != old:
+                        log("captioner", ep["name"], "HTTP %d: key file changed, retrying with the new key" % e.code)
+                        continue
+                if e.code in (400, 422) and self.adapt(ep, body, e.code, e.detail):
+                    continue
+                raise
+
+    @staticmethod
+    def adapt(ep, body, code, detail):
+        """Drop or rename the request parameter a 400/422 objects to, for this endpoint from now on.
+
+        LM Studio refuses `response_format: json_object`; newer OpenAI models refuse `max_tokens`
+        (they want `max_completion_tokens`) and any temperature but the default. A refusal that names
+        none of them is blamed on `response_format`, the usual one. Each change is made at most once,
+        so the caller's retry loop ends; False when there is nothing left to change."""
+        d = detail.lower()
+        if "max_tokens" in body and "max_tokens" in d:
+            ep["_max_tokens_key"] = "max_completion_tokens"
+            what = "max_completion_tokens instead of max_tokens"
+        elif "temperature" in body and "temperature" in d:
+            ep["_no_temperature"] = True
+            what = "the server's default temperature"
+        elif "response_format" in body:
+            ep["json_mode"] = False
+            what = "no response_format (the prompt still asks for JSON)"
+        else:
+            return False
+        log("captioner", ep["name"], "HTTP %d (%s): retrying with %s" % (code, detail[:160] or "no detail", what))
+        return True
 
     def post(self, ep, data):
         headers = {"Content-Type": "application/json"}
@@ -172,10 +245,11 @@ class Captioner:
         req = urllib.request.Request(ep["url"], data=data, headers=headers, method="POST")
         with urllib.request.urlopen(req, timeout=ep.get("timeout", 120)) as r:
             resp = json.loads(r.read())
-        return resp["choices"][0]["message"]["content"]
+        return reply_text(resp)
 
     @staticmethod
     def parse(text):
+        text = re.sub(r"<think>.*?</think>", "", text, flags=re.S)  # reasoning models that inline it
         text = re.sub(r"^```(?:json)?|```$", "", text.strip(), flags=re.M).strip()
         m = re.search(r"\{.*\}", text, re.S)
         if not m:
@@ -216,8 +290,11 @@ class Captioner:
             try:
                 return self._caption_with(ep, meta, data_url), ep
             except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as e:
-                self.down_until[ep["name"]] = time.time() + 60 * ep.get("down_minutes", 10)
-                log("captioner", ep["name"], "unreachable (%s); skipping it for %d min" % (e, ep.get("down_minutes", 10)))
+                mins = ep.get("down_minutes", 10)
+                self.down_until[ep["name"]] = time.time() + 60 * mins
+                if isinstance(e, urllib.error.HTTPError):
+                    e = "HTTP %d: %s" % (e.code, getattr(e, "detail", "") or e.reason)
+                log("captioner", ep["name"], "failed (%s); skipping it for %g min" % (str(e)[:300], mins))
                 last_err = e
             except ValueError as e:  # model answered but never usably
                 last_err = e
