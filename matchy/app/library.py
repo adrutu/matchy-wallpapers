@@ -1,4 +1,5 @@
 """Image library: sources (folders, a static-file manifest, a daily-photo JSON), ids, sidecars, masters."""
+import fnmatch
 import hashlib
 import json
 import os
@@ -265,7 +266,9 @@ class Library:
             rest.append(opts[0][1])
 
         # 3) ids + metadata
+        # ids + metadata. A folder may hold meta.json {"file.jpg": {title, place, credit, context}}.
         items = {}
+        meta_files = {}
         for fi, root, rel, full, sha in sorted(rest, key=lambda f: (f[0], f[2])):
             folder = self.cfg["folders"][fi]
             setname = os.path.dirname(rel).split(os.sep)[0] if os.sep in rel else ""
@@ -289,6 +292,13 @@ class Library:
                 "meta": {"title": scfg.get("title", ""), "place": "", "credit": scfg.get("credit", folder.get("credit", "")),
                          "context": scfg.get("context", ""), "collection": collection, "abstract": scfg.get("abstract", False)},
             }
+            mpath = os.path.join(os.path.dirname(full), folder.get("meta_file", "meta.json"))
+            if mpath not in meta_files:
+                meta_files[mpath] = read_json(mpath, {}) or {}
+            per = meta_files[mpath].get(os.path.basename(rel)) if isinstance(meta_files[mpath], dict) else None
+            if isinstance(per, dict):
+                items[iid]["meta"].update({k: str(v) for k, v in per.items()
+                                           if k in ("title", "place", "credit", "context") and v is not None})
         return items
 
     def remote_items(self):
@@ -307,6 +317,9 @@ class Library:
         for iid, ov in (self.cfg.get("overrides") or {}).items():
             if iid in items:
                 items[iid]["meta"].update(ov)
+        excl = self.cfg.get("exclude") or []  # id globs kept out of the library, e.g. "aether-*"
+        for iid in [i for i in items if any(fnmatch.fnmatchcase(i, pat) for pat in excl)]:
+            del items[iid]
         with self.lock:
             added = set(items) - set(self.items)
             gone = set(self.items) - set(items)

@@ -38,6 +38,7 @@ DEFAULTS = {
     "render_threads": 2,
     "rotation": {"min_minutes": 15, "max_minutes": 20, "caption_priority": []},
     "folders": [],
+    "exclude": [],  # id globs kept out of the library
     "folder_scan_minutes": 10,
     "dedupe": {"avoid_prefixes": [], "ladder_prefer": "4k"},
     "static_manifest": {"enabled": False, "refresh_hours": 24},

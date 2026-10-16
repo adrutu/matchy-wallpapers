@@ -2,6 +2,9 @@
 
 ## 0.2.1 (2026-10-16)
 
+- `meta.json` next to the pictures (title, place, credit, context per file) grounds the captions and
+  fills the label, as in the engine this add-on came from.
+- `exclude` option: id globs kept out of the library.
 - `watchdog:` on `/healthz` (active once the Watchdog toggle is on).
 - Captioner: works with servers that refuse `response_format: json_object` (LM Studio), `max_tokens`
   or a non-default `temperature` (newer OpenAI models): the parameter a `400`/`422` names is dropped

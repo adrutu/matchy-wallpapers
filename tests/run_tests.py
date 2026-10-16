@@ -4,7 +4,7 @@ images and a fake OpenAI-compatible captioner (tests/fakecap.py).
 
     uv run --with pillow python tests/run_tests.py      # or any python3 with Pillow
 
-MATCHY_TEST_PORT moves the ports it uses (default 18160..18173). Takes about three minutes.
+MATCHY_TEST_PORT moves the ports it uses (default 18160..18174). Takes about three minutes.
 """
 import http.client, json, os, shutil, socket, subprocess, sys, tempfile, time
 
@@ -293,6 +293,25 @@ try:
 finally:
     pf.terminate(); pf.wait()
     if ff: ff.terminate()
+
+# ---------------- G: per-folder meta.json and exclude globs ----------------
+G = BASE + 14
+gdir = os.path.join(S, "imgs-meta")
+shutil.copytree(IMGS, gdir)
+json.dump({"test-0.jpg": {"title": "Red Field", "place": "Nowhere, Testshire", "credit": "Photo: Tester",
+                          "context": "A red test card.", "rating": "ignored"},
+           "missing.jpg": {"title": "Not here"}}, open(os.path.join(gdir, "meta.json"), "w"))
+pg = start("G", {"port": G, "ingress_peers": ["127.0.0.0/8"], "captioners": [], "caption": {"enabled": False},
+                 "exclude": ["test-3", "nomatch-*"], "_imgs": gdir})
+try:
+    L = lib(G); items = {i["id"]: i for i in L["items"]}
+    check("G meta.json fills title/place/credit", items.get("test-0", {}).get("title") == "Red Field"
+          and items["test-0"]["place"] == "Nowhere, Testshire" and items["test-0"]["credit"] == "Photo: Tester", items.get("test-0"))
+    check("G meta.json leaves others alone", items.get("test-1", {}).get("title") != "Red Field", items.get("test-1"))
+    check("G exclude glob drops the id", "test-3" not in items and len(items) == 3, sorted(items))
+    st, _, txt, _ = req(G, "GET", "/"); check("G page shows the meta title", "Red Field" in txt)
+finally:
+    pg.terminate(); pg.wait()
 
 print("\n%d passed, %d failed (logs in %s)" % (ok, fail, S))
 if not fail:

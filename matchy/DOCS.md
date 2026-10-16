@@ -28,6 +28,7 @@ section and pick a host port there. Leave it unpublished and only the sidebar pa
 | Option | Type | Default | Meaning |
 | :--- | :--- | :--- | :--- |
 | `source_folders` | list of paths | `["/media/wallpapers"]` | Folders of images, scanned recursively. Must be under `/media` or `/share`; an add-on cannot read arbitrary host paths. A folder that does not exist is logged and skipped. |
+| `exclude` | list of patterns | `[]` | Picture ids to leave out, as shell-style globs (`aether-*`, `art-great-wave`). Matching pictures never enter the library, so they are not shown, captioned or rendered. Ids are listed in the panel and in `library.json`. |
 | `rotation_min_minutes` | int, 1–1440 | 15 | Shortest time on one image. |
 | `rotation_max_minutes` | int, 1–1440 | 20 | Longest time on one image. The actual interval is drawn at random between the two. |
 | `folder_scan_minutes` | int, 1–1440 | 10 | How often it looks for new, changed or removed files. |
@@ -100,6 +101,11 @@ So: usable almost immediately, fully captioned after a while.
   captioner is told about. Inside a sub-folder, a file name that starts with a number becomes
   `<folder>-<number>` and the rest of the name is dropped, so give files real names.
 - Anything over 50 megapixels is refused (see Troubleshooting).
+- A `meta.json` next to the pictures gives the captioner facts it may state, per file:
+  `{"great-wave.jpg": {"title": "…", "place": "…", "credit": "…", "context": "…"}}`. A known `title`
+  is used as is, `place` and `credit` go on the label, and `context` (one sentence on what the
+  picture shows) grounds the blurb. Other keys are ignored, so you can keep provenance notes there.
+  Without it the captioner describes only what it sees, and never names a place.
 
 ## Using it
 

@@ -103,6 +103,17 @@ if bashio::config.exists 'captioners'; then
 fi
 readonly captioner_count="$(jq 'length' <<<"${captioners}")"
 
+# ------------------------------------------------------------------ excluded ids
+# Glob patterns on picture ids (e.g. "aether-*"): matching pictures never enter the library.
+exclude='[]'
+if bashio::config.exists 'exclude'; then
+    for idx in $(bashio::config 'exclude|keys'); do
+        pattern="$(bashio::config "exclude[${idx}]")"
+        [[ -n "${pattern}" ]] || continue
+        exclude="$(jq -c --arg p "${pattern}" '. + [$p]' <<<"${exclude}")"
+    done
+fi
+
 # -------------------------------------------------------------- optional sources
 # A remote manifest (a JSON index of images served over HTTP) and a daily image.
 # Both off unless the user gives a URL.
@@ -140,6 +151,7 @@ jq -n \
     --argjson rot_min "$(int 'rotation_min_minutes' 15)" \
     --argjson rot_max "$(int 'rotation_max_minutes' 20)" \
     --argjson folders "${folders}" \
+    --argjson exclude "${exclude}" \
     --argjson captioners "${captioners}" \
     --argjson static_manifest "${static_manifest}" \
     --argjson daily "${daily}" \
@@ -157,6 +169,7 @@ jq -n \
         folder_scan_minutes: $scan_minutes,
         rotation: {min_minutes: $rot_min, max_minutes: $rot_max},
         folders: $folders,
+        exclude: $exclude,
         captioners: $captioners,
         static_manifest: $static_manifest,
         daily: $daily,

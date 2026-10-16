@@ -58,6 +58,7 @@ watchdog: "http://[HOST]:[PORT:8160]/healthz"
 options:
   source_folders:
     - /media/wallpapers
+  exclude: []
   rotation_min_minutes: 15
   rotation_max_minutes: 20
   folder_scan_minutes: 10
@@ -73,6 +74,8 @@ options:
 
 schema:
   source_folders:
+    - str
+  exclude:
     - str
   rotation_min_minutes: int(1,1440)
   rotation_max_minutes: int(1,1440)
