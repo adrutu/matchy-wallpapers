@@ -47,8 +47,10 @@ backup: hot
 backup_exclude:
   - "cache"
 
-# watchdog: not set yet. The blocker is gone (the engine now binds before the first scan
-# and checkpoints its hashes), but turn it on only after testing it on a real install.
+# Probed every 120 s at the container's own address, so it works with 8160 unpublished; two
+# misses in a row restart the app. Only active once the user turns on the Watchdog toggle.
+# /healthz answers during a cold scan (the engine binds before scanning).
+watchdog: "http://[HOST]:[PORT:8160]/healthz"
 
 # image: "ghcr.io/adrutu/matchy"   # uncomment once CI publishes a multi-arch manifest;
                                    # commented out = the Supervisor builds locally.
