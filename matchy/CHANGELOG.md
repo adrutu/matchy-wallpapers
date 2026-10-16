@@ -1,7 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.2.1 (2026-10-16)
 
+- `watchdog:` on `/healthz` (active once the Watchdog toggle is on).
 - Captioner: works with servers that refuse `response_format: json_object` (LM Studio), `max_tokens`
   or a non-default `temperature` (newer OpenAI models): the parameter a `400`/`422` names is dropped
   or renamed for that endpoint and the request retried. Replies in content parts or with an inline
