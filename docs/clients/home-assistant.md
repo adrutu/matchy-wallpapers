@@ -1,6 +1,6 @@
 # Home Assistant dashboards and wall tablets
 
-Three pieces, each optional:
+Three pieces, each optional, and a fourth for the Screens list (section 4):
 
 1. A **package** that turns `current.json` into entities: a sensor with the picture's title, blurb
    and image URLs, an `image` entity with the labelled render, and a *Next wallpaper* script.
@@ -177,6 +177,108 @@ wallpanel:
 `media-entity-image://` follows the `image` entity: the screensaver switches pictures when
 `image.matchy_label` changes, i.e. on every rotation, with no reload. The label is baked into that
 render, so it shows on the screensaver even though the dashboard tiles hide it.
+
+## 4. Screens (0.3.0): one switch per tablet
+
+Matchy's **Screens** list (see DOCS.md) lets you turn one screen off without touching the others. On
+Home Assistant each wall tablet logs in as its own user, so the user name makes a good screen name.
+Three changes, all optional.
+
+**Package.** Add `screens_off` to the feed and to `sensor.matchy`, a `rest_command`, and one template
+switch per tablet (here a tablet whose Home Assistant user is called `Hall tablet`):
+
+```yaml
+rest:
+  - resource: <matchy-url>/current.json
+    sensor:
+      - name: Matchy feed
+        json_attributes:
+          # ... the list from section 1, plus:
+          - screens_off
+
+template:
+  - sensor:
+      - name: Matchy
+        attributes:
+          # ... as in section 1, plus:
+          screens_off: "{{ state_attr('sensor.matchy_feed', 'screens_off') or [] }}"
+  - switch:
+      - name: Matchy on the hall tablet
+        unique_id: matchy_screen_hall_tablet
+        icon: mdi:tablet
+        state: "{{ 'Hall tablet' not in (state_attr('sensor.matchy', 'screens_off') or []) }}"
+        availability: "{{ has_value('sensor.matchy') }}"
+        turn_on:
+          - action: rest_command.matchy_screen
+            data: {screen: Hall tablet, follow: true}
+          - action: homeassistant.update_entity
+            target: {entity_id: sensor.matchy_feed}
+        turn_off:
+          - action: rest_command.matchy_screen
+            data: {screen: Hall tablet, follow: false}
+          - action: homeassistant.update_entity
+            target: {entity_id: sensor.matchy_feed}
+
+rest_command:
+  matchy_screen:
+    url: <matchy-url>/api/screen
+    method: POST
+    content_type: application/json
+    payload: '{"id": {{ screen | to_json }}, "follow": {{ follow | bool | to_json }}}'
+    timeout: 15
+```
+
+`POST /api/screen` answers `404` until that tablet has asked for a picture with its name once, so
+set up the theme below first.
+
+**Theme.** In the `card-mod-view` rule from section 2, name the screen after the user and render
+nothing for a user that is turned off; the theme's own background then shows. Leave personal
+accounts out of the list (`personal` below): a phone is not a screen.
+
+```yaml
+  card-mod-view: |
+    {%- set u = state_attr('sensor.matchy', 'background_url') %}
+    {%- set off = state_attr('sensor.matchy', 'screens_off') or [] %}
+    {%- set personal = ['Alex', 'Sam'] %}
+    {%- set q = '' if user in personal else '?screen=' ~ (user | urlencode) %}
+    {%- if u and states('sensor.matchy') not in ['unknown', 'unavailable'] and user not in off %}
+    hui-view-background {
+      --view-background: linear-gradient(rgba(0, 0, 0, 0.22), rgba(0, 0, 0, 0.22)) fixed,
+                         center / cover no-repeat fixed url('{{ u }}{{ q }}'),
+                         center / cover no-repeat fixed url('/local/fallback.jpg') !important;
+    }
+    {%- endif %}
+```
+
+**Screensaver.** `image.matchy_label` is shared, so a tablet turned off would still show Matchy when
+it goes idle. Give each tablet its own `image` entity and point that tablet's Wallpanel at it:
+
+```yaml
+template:
+  - image:
+      # The labelled picture while the hall tablet follows Matchy, your own picture while it is off.
+      - name: Matchy screensaver hall tablet
+        unique_id: matchy_screensaver_hall_tablet
+        url: >-
+          {% set off = 'Hall tablet' in (state_attr('sensor.matchy', 'screens_off') or []) %}
+          {{ 'http://127.0.0.1:8123/local/fallback.jpg' if off else state_attr('sensor.matchy', 'label_url') }}
+        availability: "{{ has_value('sensor.matchy') }}"
+```
+
+```yaml
+wallpanel:
+  image_url: media-entity-image://image.matchy_screensaver_hall_tablet
+```
+
+The `image` entity is fetched by Home Assistant itself, so the fallback needs an address Home
+Assistant can reach without a login: `/local` files are served without one, and
+`http://127.0.0.1:8123` works when Home Assistant serves plain HTTP on its default port (use your
+`https://` name otherwise). Its picture only changes when the URL does: add a `?d=` that changes daily
+if the fallback file is replaced in place.
+
+One thing to know: the screensaver's picture is fetched by Home Assistant, not by the tablet, so a
+tablet that spends the day in its screensaver shows an old *last seen* in `/screens.json` while it
+still follows Matchy.
 
 ## Checking
 

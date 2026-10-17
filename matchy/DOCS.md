@@ -5,7 +5,8 @@
 ## What it does
 
 Matchy picks one picture for the whole house and serves that same picture to every screen, rendered to
-each screen's own shape and size. It moves to the next picture every 15 to 20 minutes (configurable).
+each screen's own shape and size. It moves to the next picture every 15 to 20 minutes by default; the
+panel's **How often** slider goes from every 15 minutes to every 12 hours, or sunrise and sunset.
 Each picture gets an art-gallery label baked into the bottom-right corner: title, credit and a short
 blurb written by a vision model you point it at. The blurb is grounded on the metadata the picture
 already carries, and a blurb that names a place, person or thing not in that metadata is rejected.

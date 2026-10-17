@@ -66,6 +66,17 @@ systemctl --user disable --now wallpaper-follow
 bash ~/.local/share/backgrounds/matchy-undo.txt
 ```
 
+## Screens (0.3.0)
+
+Every request names the machine with `?screen=<hostname>`, so it shows up in the panel's **Screens**
+box under its host name. **Turn off** there and within a tick the follower puts back the wallpaper
+saved in `~/.local/share/backgrounds/matchy-undo.txt` and stands by. **Turn on** and it saves the undo
+file again (from whatever wallpaper you picked meanwhile) and follows the next picture. With no undo
+file it leaves the wallpaper as it is while off.
+
+Turning the machine off in Matchy and the local pause file are separate: the pause file stops the
+follower from asking at all, so Matchy stops seeing that machine.
+
 ## Notes
 
 - The engine's limits apply to the span: each monitor side 320–7680 px, canvas up to 12000x8000,

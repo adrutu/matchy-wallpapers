@@ -94,6 +94,29 @@ Hide, unhide, edit caption, re-caption and the rotation window work only from th
 sidebar panel (`403 Home Assistant sidebar panel only` from anywhere else); see *Access tiers* in
 `DOCS.md`.
 
+## Screens (0.3.0)
+
+Add `?screen=<name>` to any `GET` and the client shows up in the panel's **Screens** box. The name is 1
+to 40 characters of letters, digits, space and `. _ : @ -`, starting with a letter or digit (quote a
+space as `%20`). Only clients with a private address are listed.
+
+```bash
+# this client is the screen "desk"; with ?screen=, current.json also answers "follow"
+curl -s "$MATCHY/current.json?screen=desk"
+
+# every screen: id, follow, first_seen, last_seen, age_s, ip, agent, image (private addresses only)
+curl -s $MATCHY/screens.json
+
+# turn "desk" off, then on again (404 for a name Matchy has never seen)
+curl -s -X POST -H 'Content-Type: application/json' -d '{"id": "desk", "follow": false}' $MATCHY/api/screen
+curl -s -X POST -H 'Content-Type: application/json' -d '{"id": "desk", "follow": true}' $MATCHY/api/screen
+```
+
+Off is advisory: Matchy keeps serving "desk", and `current.json?screen=desk` answers `"follow": false`.
+Every `current.json` also lists the screens that are off in `"screens_off"`. What off means is up to
+the client: the GNOME follower puts back the wallpaper it found, a dashboard drops the background.
+**Forget** (dropping a screen from the list) is in the sidebar panel only.
+
 ## The library
 
 ```bash

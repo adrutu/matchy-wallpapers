@@ -31,10 +31,14 @@ curl -s http://<homepage-host>:3000/api/revalidate      # {"revalidated":true}
 ```js
 /* Matchy: keep Homepage's #background on the engine's current picture.
    settings.yaml background.image only paints the first frame; this swaps the url() on every
-   rotation (polls current.json once a minute, preloads the new image, then swaps). */
+   rotation (polls current.json once a minute, preloads the new image, then swaps).
+   Matchy's Screens list calls this "homepage" (one switch for every browser). Turned off there,
+   current.json says follow:false and the background goes plain until it is turned back on. */
 (function () {
   var BASE = "<matchy-url>";
+  var SCREEN = "screen=homepage";
   var shown = null;
+  var original = null; // the background-image string Homepage painted, so "on" can put a url() back
 
   // A few fixed sizes keep the engine's render cache warm.
   function size() {
@@ -49,17 +53,28 @@ curl -s http://<homepage-host>:3000/api/revalidate      # {"revalidated":true}
   function swap(url, version) {
     var bg = document.getElementById("background");
     if (!bg) return;
-    bg.style.backgroundImage = bg.style.backgroundImage.replace(/url\((['"]?).*?\1\)/, 'url("' + url + '")');
+    if (original === null) original = bg.style.backgroundImage;
+    bg.style.backgroundImage = original.replace(/url\((['"]?).*?\1\)/, 'url("' + url + '")');
     shown = version;
   }
 
+  function plain() {
+    var bg = document.getElementById("background");
+    if (!bg) return;
+    if (original === null) original = bg.style.backgroundImage;
+    bg.style.backgroundImage = "none";
+    shown = "off";
+  }
+
   function tick() {
-    fetch(BASE + "/current.json", { cache: "no-store" })
+    fetch(BASE + "/current.json?" + SCREEN, { cache: "no-store" })
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (cur) {
-        if (!cur || cur.version === shown) return;
+        if (!cur) return;
+        if (cur.follow === false) { if (shown !== "off") plain(); return; }
+        if (cur.version === shown) return;
         var s = size();
-        var url = BASE + cur.urls.clean.replace("{w}", s[0]).replace("{h}", s[1]);
+        var url = BASE + cur.urls.clean.replace("{w}", s[0]).replace("{h}", s[1]) + "?" + SCREEN;
         var img = new Image();
         img.onload = function () { swap(url, cur.version); };
         img.src = url;
@@ -75,6 +90,11 @@ curl -s http://<homepage-host>:3000/api/revalidate      # {"revalidated":true}
 `current.json` is served with `Access-Control-Allow-Origin: *`, so the browser may read it from the
 Homepage origin. The clean image is used on purpose: Homepage's cards cover the corner where the
 label sits.
+
+**Screens (0.3.0):** every browser showing Homepage counts as one screen, `homepage`, in the panel's
+**Screens** box (rename it in `SCREEN`). Turn it off there and within a minute the background goes
+plain (no picture); turn it on and the next tick paints the current picture again. A Matchy older
+than 0.3.0 ignores `?screen=` and never sends `follow`, so the script works with both.
 
 ## 3. `custom.css`: keep the cards readable (optional)
 

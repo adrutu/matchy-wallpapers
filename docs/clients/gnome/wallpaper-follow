@@ -15,6 +15,8 @@ Engine down or away from home: nothing changes, one journal line per outage, qui
 monitors changed meanwhile (undocked, then woke up away), it reuses the newest saved image made for
 that exact layout, if there is one, instead of leaving a stretched span.
 Kill switch: touch ~/.config/matchy/disabled. Never touches org.gnome.desktop.screensaver.
+Matchy's Screens list: every request names this machine (?screen=<hostname>). Turned off there, the
+engine answers "follow": false and this puts back the wallpaper from the undo file until it is turned on.
 
 Undo: systemctl --user disable --now wallpaper-follow, then run the gsettings lines in
 ~/.local/share/backgrounds/matchy-undo.txt (written before the first change if missing).
@@ -24,6 +26,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import socket
 import sys
 import time
@@ -46,7 +49,9 @@ KEEP_OTHER_LAYOUTS = 4  # plus the newest image of up to 4 other layouts (fallba
 # Engine limits (API contract): each monitor side 320..7680, canvas <= 12000x8000
 MAX_SIDE, MAX_W, MAX_H = 7680, 12000, 8000
 VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$")
-UA = f"wallpaper-follow/1 ({socket.gethostname()})"
+SCREEN = socket.gethostname()
+UA = f"wallpaper-follow/1 ({SCREEN})"
+UNDO_KEYS = ("picture-options", "picture-uri", "picture-uri-dark")
 
 
 def log(msg):
@@ -121,6 +126,23 @@ def layout_hash(spec):
     return hashlib.sha1(spec.encode()).hexdigest()[:8]
 
 
+def undo_settings(text):
+    """The undo file's gsettings lines -> {key: value}, only the background keys write_undo_once saves."""
+    out = {}
+    for line in text.splitlines():
+        try:
+            parts = shlex.split(line, comments=True)
+        except ValueError:
+            continue
+        if len(parts) == 5 and parts[:3] == ["gsettings", "set", SCHEMA] and parts[3] in UNDO_KEYS:
+            out[parts[3]] = parts[4]
+    return out
+
+
+def with_screen(url):
+    return url + ("&" if "?" in url else "?") + "screen=" + urllib.parse.quote(SCREEN, safe="")
+
+
 def jpeg_size(data):
     """(width, height) from a JPEG's SOF header, or None if it isn't a whole JPEG."""
     if data[:2] != b"\xff\xd8" or b"\xff\xd9" not in data[-32:]:
@@ -170,7 +192,9 @@ def http_get(url, timeout, limit):
 
 
 def fetch_current():
-    raw = http_get(BASE + "/current.json", 8, 1_000_000)
+    """(version, span template, follow). follow is False only when this screen was turned off in Matchy;
+    an engine without the Screens list never sends it."""
+    raw = http_get(with_screen(BASE + "/current.json"), 8, 1_000_000)
     try:
         cur = json.loads(raw)
         version, span = cur["version"], cur["urls"]["span"]
@@ -179,11 +203,11 @@ def fetch_current():
     if not (isinstance(version, str) and VERSION_RE.match(version)
             and isinstance(span, str) and span.startswith("/") and "{layout}" in span):
         raise Problem("engine", f"current.json has an unexpected version/span: {version!r} {span!r}")
-    return version, span
+    return version, span, cur.get("follow") is not False
 
 
 def download(span_tpl, spec, canvas, dest):
-    url = BASE + span_tpl.replace("{layout}", urllib.parse.quote(spec, safe=""))
+    url = with_screen(BASE + span_tpl.replace("{layout}", urllib.parse.quote(spec, safe="")))
     data = http_get(url, 90, 60_000_000)
     size = jpeg_size(data)
     if size != tuple(canvas):
@@ -225,14 +249,16 @@ class Follower:
         self.applied = None   # (version, spec) last set by us
         self.problem = None   # kind of the outage already logged
         self.disabled = False
+        self.off = False      # turned off in Matchy's Screens list: own wallpaper restored
         self.bad = None       # (version, spec) whose image failed validation: don't refetch it
 
-    def write_undo_once(self):
+    def write_undo_once(self, refresh=False):
+        """refresh: turned back on in Matchy, so save the wallpaper picked while it was off."""
         uri = self.settings.get_string("picture-uri")
-        if UNDO.exists() or OUT_DIR.as_uri() in uri:
+        if (UNDO.exists() and not refresh) or OUT_DIR.as_uri() in uri:
             return
         lines = [f"# Wallpaper before wallpaper-follow took over ({time.strftime('%F %T')}). Undo:"]
-        for key in ("picture-options", "picture-uri", "picture-uri-dark"):
+        for key in UNDO_KEYS:
             val = self.settings.get_string(key).replace("'", "'\\''")
             lines.append(f"gsettings set {SCHEMA} {key} '{val}'")
         UNDO.parent.mkdir(parents=True, exist_ok=True)
@@ -251,6 +277,23 @@ class Follower:
         s.apply()
         Gio.Settings.sync()
 
+    def restore_own(self):
+        from gi.repository import Gio
+        try:
+            saved = undo_settings(UNDO.read_text())
+        except OSError:
+            saved = {}
+        if not saved:
+            log(f"turned off in Matchy: standing by; no {UNDO.name}, so the wallpaper stays as it is")
+            return
+        s = self.settings
+        s.delay()
+        for key, val in saved.items():
+            s.set_string(key, val)
+        s.apply()
+        Gio.Settings.sync()
+        log("turned off in Matchy: back to this machine's own wallpaper")
+
     def tick(self):
         if KILL.exists():
             if not self.disabled:
@@ -265,8 +308,15 @@ class Follower:
             spec, canvas = layout_spec(read_layout())
             if spec is None:
                 raise Problem("layout", "no monitor is on")
-            version, span_tpl = fetch_current()
-            if (version, spec) != self.applied and (version, spec) != self.bad:
+            version, span_tpl, follow = fetch_current()
+            if not follow and not self.off:
+                self.restore_own()
+                self.off, self.applied = True, None  # applied=None also keeps fallback() away
+            elif follow and self.off:
+                log("turned back on in Matchy: following again")
+                self.write_undo_once(refresh=True)
+                self.off = False
+            if follow and (version, spec) != self.applied and (version, spec) != self.bad:
                 OUT_DIR.mkdir(parents=True, exist_ok=True)
                 path = OUT_DIR / f"{version}-{layout_hash(spec)}.jpg"
                 if not path.exists():
