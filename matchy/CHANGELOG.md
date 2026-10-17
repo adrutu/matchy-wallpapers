@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.1 (2026-10-17)
+
+- Captions: a blurb may use a place adjective or plural of a name in the known facts (Andes ->
+  Andean, Iceland -> Icelandic, Cuba -> Cuban, Italy -> Italian) and the possessive of a known name
+  (Church's); invented names are still rejected. `tests/caption_test.py`, also in CI.
+- Client recipes: Screens in each one. The GNOME follower names itself `?screen=<hostname>` and
+  puts back your own wallpaper while it is turned off; Homepage is the screen `homepage`; Home
+  Assistant gets one switch and one screensaver image per tablet, so a tablet that is turned off no
+  longer shows Matchy when it goes idle.
+
 ## 0.3.0 (2026-10-17)
 
 - Screens: a client can name itself with `?screen=<name>` on any request, and the sidebar panel lists
