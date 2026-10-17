@@ -1,0 +1,113 @@
+---
+configuration:
+  source_folders:
+    name: Picture folders
+    description: >-
+      Folders of pictures, scanned with their sub-folders. They must be under /media or /share.
+  exclude:
+    name: Leave out
+    description: >-
+      Picture ids to keep out of the library, as patterns such as aether-* (ids are listed in the
+      sidebar panel).
+  sets:
+    name: Sub-folder settings
+    description: >-
+      Settings for a sub-folder of the picture folders, matched by its name.
+    fields:
+      folder:
+        name: Sub-folder
+        description: The sub-folder's name, e.g. art.
+      id_prefix:
+        name: Id prefix
+        description: Picture ids in this sub-folder become <prefix>-<file name>.
+      name:
+        name: Collection name
+        description: What the captioner is told the collection is called.
+      credit:
+        name: Credit
+        description: Shown on the label when a picture has no credit of its own.
+      context:
+        name: Context
+        description: One sentence of facts the captioner may use.
+      abstract:
+        name: Abstract art
+        description: >-
+          On for digital or illustrated art, so a caption describes it as art and never as a
+          real place.
+  rotation_min_minutes:
+    name: Shortest time on one picture
+    description: >-
+      Minutes. The sidebar panel's How often slider overrides both times until these options
+      change.
+  rotation_max_minutes:
+    name: Longest time on one picture
+    description: Minutes. Each interval is picked at random between the two.
+  folder_scan_minutes:
+    name: Folder check
+    description: Minutes between looks for new, changed or removed pictures.
+  master_max_px:
+    name: Master size
+    description: >-
+      Longest edge, in pixels, of the copy every render is cut from. Larger is sharper on big
+      screens and slower to build.
+  cache_max_mb:
+    name: Render cache
+    description: Megabytes of rendered pictures to keep; the least recently used go first.
+  render_threads:
+    name: Render threads
+    description: Pictures rendered at the same time.
+  caption_enabled:
+    name: Gallery captions
+    description: >-
+      Write a short blurb for each picture with a vision model. Off: the label shows the title
+      and credit only.
+  caption_language:
+    name: Caption language
+    description: The language the blurb is asked for.
+  caption_spelling:
+    name: Spelling
+    description: British also corrects common American spellings in what comes back.
+  caption_min_words:
+    name: Shortest caption
+    description: Words. A shorter blurb is asked for again.
+  caption_max_words:
+    name: Longest caption
+    description: Words. A longer blurb is asked for again.
+  captioners:
+    name: Captioners
+    description: >-
+      OpenAI-compatible vision servers (llama.cpp, Ollama, LM Studio or a cloud API), tried in
+      order. One that fails is skipped for ten minutes.
+    fields:
+      name:
+        name: Name
+        description: A label for the logs.
+      url:
+        name: URL
+        description: The full chat completions address, ending in /v1/chat/completions.
+      model:
+        name: Model
+        description: The model name as the server knows it.
+      api_key:
+        name: API key
+        description: Only for servers that need one.
+      timeout:
+        name: Timeout
+        description: Seconds to wait for one caption (default 120).
+  remote_manifest_url:
+    name: Remote folder
+    description: >-
+      Optional. A web folder with a manifest.json listing pictures to download, checked once a
+      day.
+  daily_json_url:
+    name: Picture of the day (details)
+    description: >-
+      Optional. A JSON document describing a picture that changes daily. Needs the image address
+      below too.
+  daily_image_url:
+    name: Picture of the day (image)
+    description: Optional. The image that goes with the details above.
+network:
+  8160/tcp: >-
+    For screens other than the sidebar panel: desktops, wall tablets, dashboard backgrounds.
+    Leave it empty and only the panel works.

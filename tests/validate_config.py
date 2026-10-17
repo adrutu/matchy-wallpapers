@@ -5,7 +5,8 @@ the start-time check of the default `options` against `schema` (supervisor/apps/
 AppOptions). On top of that it fails where the Supervisor only logs or stays silent:
   - a key that the schema drops (`extra=vol.REMOVE_EXTRA`) or a migration renames;
   - any advisory the Supervisor logs for a local app (deprecated field, legacy map type, ...);
-  - an option with no matching schema entry (AppOptions ignores it with a warning).
+  - an option with no matching schema entry (AppOptions ignores it with a warning);
+  - a translations/*.yaml key that is not an option, field or port, and an option English leaves unnamed.
 
 Usage: python3 tests/validate_config.py [--config matchy/config.yaml] [--supervisor-src DIR]
 Without --supervisor-src it clones the pinned tag into ~/.cache/matchy/ (needs git) and checks the
@@ -150,13 +151,50 @@ def main():
     except vol.Invalid as e:
         errors.append("default options do not match the schema: %s" % e)
 
+    # 3. translations/*.yaml, as the store reads them (an invalid file is only logged and skipped).
+    #    On top: every translated key must be a real option or port, and English must cover them all.
+    tdir = Path(ns.config).parent / "translations"
+    translations = sorted(tdir.glob("*.yaml")) if tdir.is_dir() else []
+    schema = config["schema"] or {}
+    for path in translations:
+        with open(path, encoding="utf-8") as f:
+            traw = yaml.safe_load(f) or {}
+        try:
+            tr = validate.SCHEMA_APP_TRANSLATIONS(copy.deepcopy(traw))
+        except vol.Invalid as e:
+            errors.append("%s: %s" % (path.name, humanize_error(traw, e)))
+            continue
+        for key in dropped_keys(traw, tr):
+            errors.append("%s: key '%s' is not in the translation schema" % (path.name, key))
+        conf = tr.get("configuration") or {}
+        for key, entry in conf.items():
+            if key not in schema:
+                errors.append("%s: '%s' is not an option" % (path.name, key))
+                continue
+            sub = schema[key][0] if isinstance(schema[key], list) and schema[key] else schema[key]
+            for field in entry.get("fields") or {}:
+                if not isinstance(sub, dict) or field not in sub:
+                    errors.append("%s: '%s.%s' is not a field of that option" % (path.name, key, field))
+        for port in tr.get("network") or {}:
+            if port not in (config.get("ports") or {}):
+                errors.append("%s: network '%s' is not a port" % (path.name, port))
+        if path.stem == "en":
+            for key in schema:
+                if key not in conf:
+                    errors.append("en.yaml: option '%s' has no name" % key)
+                elif isinstance(schema[key], list) and schema[key] and isinstance(schema[key][0], dict):
+                    for field in schema[key][0]:
+                        if field not in (conf[key].get("fields") or {}):
+                            errors.append("en.yaml: field '%s.%s' has no name" % (key, field))
+
     errors += ["Supervisor advisory: " + m for m in advisories.messages]
     for e in errors:
         print("FAIL " + e)
     if errors:
         sys.exit(1)
-    print("OK %s: valid for Supervisor %s (%s), %d keys kept, default options match the schema"
-          % (os.path.relpath(ns.config), SUPERVISOR_TAG, SUPERVISOR_COMMIT[:7], len(raw)))
+    print("OK %s: valid for Supervisor %s (%s), %d keys kept, default options match the schema, %d "
+          "translation file(s)" % (os.path.relpath(ns.config), SUPERVISOR_TAG, SUPERVISOR_COMMIT[:7],
+                                   len(raw), len(translations)))
 
 
 if __name__ == "__main__":
