@@ -110,6 +110,12 @@ identically on amd64 and aarch64 in CI. The HTTP API is documented but may still
   `tools/make_artwork.py` draws the icon and logo.
 - Decisions made so far: [docs/DECISIONS.md](docs/DECISIONS.md).
 
+## Credits
+
+Made by Andrei Drutu, with [Claude Code](https://claude.com/claude-code), Anthropic's coding agent,
+as co-developer: it wrote most of the code, tests and documentation to his direction and review, and
+the commits it worked on say so. Some first drafts came from local Qwen models through opencode.
+
 ## Licence
 
 Code: MIT, see [LICENSE](LICENSE). The bundled fonts are Noto, under the SIL Open Font Licence 1.1,
