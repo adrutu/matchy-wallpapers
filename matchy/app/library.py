@@ -273,7 +273,8 @@ class Library:
             folder = self.cfg["folders"][fi]
             setname = os.path.dirname(rel).split(os.sep)[0] if os.sep in rel else ""
             scfg = (folder.get("sets") or {}).get(setname, {})
-            prefix = scfg.get("id_prefix", slug(setname) if setname else "")
+            # slugged: an id ends up in URL paths, so "My Art" must become my-art, not "My Art-1"
+            prefix = slug(scfg["id_prefix"]) if scfg.get("id_prefix") else (slug(setname) if setname else "")
             stem = os.path.splitext(os.path.basename(rel))[0]
             stem = re.sub(r"[-_]\d+k$", "", stem, flags=re.I)
             num = re.match(r"^(\d+)", stem)
@@ -398,7 +399,7 @@ class Library:
         date = re.sub(r"\D", "", str(j.get("date", "")))[:8]
         if len(date) != 8:
             return None
-        iid = "%s-%s" % (c.get("id_prefix", "bing"), date)
+        iid = "%s-%s" % (c.get("id_prefix", "daily"), date)
         if iid in self.remote:
             return None
         data = http_get(c["image_url"], 60)

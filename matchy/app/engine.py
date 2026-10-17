@@ -44,7 +44,7 @@ DEFAULTS = {
     "folder_scan_minutes": 10,
     "dedupe": {"avoid_prefixes": [], "ladder_prefer": "4k"},
     "static_manifest": {"enabled": False, "refresh_hours": 24},
-    "daily": {"enabled": False, "check_minutes": 60, "id_prefix": "bing"},
+    "daily": {"enabled": False, "check_minutes": 60, "id_prefix": "daily"},
     "captioners": [],
     "caption": {"enabled": True, "language": "English", "spelling": "", "min_words": 30, "max_words": 45,
                 "max_tokens": 300, "temperature": 0.4, "image_px": 1024, "retry_failed_hours": 6,
@@ -99,7 +99,7 @@ CAPTION_LIMITS = {"title": 100, "place": 120, "credit": 200, "blurb": 600}
 
 # The Screens list: a client names itself with ?screen=<name> on any GET. "Off" is advisory: the
 # engine keeps serving it, and the client reads "follow" from /current.json and stands down itself.
-SCREEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._:@-]{0,39}$")
+SCREEN_RE = re.compile(r"^[^\W_][\w .:@-]{0,39}$")  # letters in any script (a user called Zoë), digits, " ._:@-"
 MAX_SCREENS = 24     # the direct port has no login, so nobody may grow the file without bound
 SCREEN_SAVE_S = 300  # last-seen times reach the disk at most this often
 

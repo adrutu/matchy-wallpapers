@@ -95,7 +95,9 @@ class Renderer:
         """Scale + centre-crop the master to exactly w x h."""
         mw, mh = master.size
         scale = max(w / mw, h / mh)
-        cw, ch = w / scale, h / scale
+        # w / (w / mw) can come out a hair above mw, which makes the box start at -1e-13 and Pillow
+        # refuses it ("box offset can't be negative"): about 4 % of picture and size pairs.
+        cw, ch = min(mw, w / scale), min(mh, h / scale)
         left = (mw - cw) / 2
         top = (mh - ch) / 2
         box = (left, top, left + cw, top + ch)

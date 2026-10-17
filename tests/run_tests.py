@@ -251,6 +251,10 @@ try:
     req(A, "GET", "/current.json?screen=" + urllib.parse.quote("Hall Panel"))
     page = req(A, "GET", "/")[2]
     check("A screen: a name with a space, attribute-escaped", '&quot;Hall Panel&quot;' in page and "onmouseover" not in page)
+    req(A, "GET", "/current.json?screen=" + urllib.parse.quote("Zoë"))
+    ids_seen = [x["id"] for x in req(A, "GET", "/screens.json")[1]["screens"]]
+    check("A screen: a name in another script (Zoë) is listed", "Zoë" in ids_seen
+          and not any("onmouseover" in i for i in ids_seen), ids_seen)
 finally:
     pa.terminate(); pa.wait(); fake.terminate()
 
