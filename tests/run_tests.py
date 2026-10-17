@@ -228,6 +228,9 @@ try:
     check("A screen: turned off", st == 200 and j2["follow"] is False and j2["screens_off"] == ["lap-1"], (st, j2))
     page = req(A, "GET", "/")[2]
     check("A page: screens box", "Turn on" in page and "Turn off" in page and "tag off" in page, page[-3000:])
+    hdrs = req(A, "GET", "/")[3]
+    check("A page: no CORS (it lists addresses)", "Access-Control-Allow-Origin" not in hdrs
+          and "Access-Control-Allow-Origin" in req(A, "GET", "/current.json")[3], hdrs)
     st, *_ = req(A, "POST", "/api/screen", {"id": "nope", "follow": False}); check("A screen: unknown 404", st == 404, st)
     st, *_ = req(A, "POST", "/api/screen", {"id": "lap-1", "follow": "no"}); check("A screen: follow not bool 400", st == 400, st)
     st, *_ = req(A, "POST", "/api/screen", {"id": "<x>", "follow": True}); check("A screen: bad id 400", st == 400, st)

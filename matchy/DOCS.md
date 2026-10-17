@@ -188,7 +188,7 @@ Read endpoints:
 Sizes: width and height 320–7680; a span canvas up to 12000x8000 with at most 8 monitors and one
 primary. A `<rev>` that is no longer current (the caption was edited) answers `302` to the current
 URL. `HEAD` works everywhere `GET` does. Every read response carries
-`Access-Control-Allow-Origin: *`.
+`Access-Control-Allow-Origin: *`, except the gallery page and `/screens.json`, which list the screens' addresses.
 
 Control endpoints are `POST`s with a JSON object body and **must** be sent with
 `Content-Type: application/json` (the one exception is `/api/next`, which also accepts an empty

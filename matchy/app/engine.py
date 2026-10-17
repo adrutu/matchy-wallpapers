@@ -993,7 +993,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"screens": eng.screens_view()}, head=head, cors=False)
         if path in ("/", "/index.html"):
             page = gallery_html(eng, control=self.client_is_lan(), admin=self.client_is_ingress())
-            return self.send(200, page, "text/html; charset=utf-8", {"Cache-Control": "no-store"}, head)
+            # No CORS: on this network the page lists the screens' addresses (see /screens.json).
+            return self.send(200, page, "text/html; charset=utf-8", {"Cache-Control": "no-store"}, head, cors=False)
 
         try:
             # /current/<kind>/<W>x<H>.jpg
