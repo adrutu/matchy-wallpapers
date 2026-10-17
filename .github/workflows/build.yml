@@ -46,7 +46,7 @@ jobs:
         run: shellcheck -s bash matchy/run.sh
 
       - name: Python byte-compiles
-        run: python3 -m compileall -q matchy/app tests
+        run: python3 -m compileall -q matchy/app tests tools
 
   test:
     name: Engine tests
