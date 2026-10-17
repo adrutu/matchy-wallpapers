@@ -238,12 +238,11 @@ try:
     check("A screen: forget", st == 200 and ids_seen == ["lap-1"], (st, ids_seen))
     for n in range(30):
         req(A, "GET", "/current.json?screen=s%d" % n)
-    n_screens = len(req(A, "GET", "/screens.json")[1]["screens"])
-    check("A screen: capped at 24", n_screens == 24, n_screens)
-    check("A screen: full list logged once", open(os.path.join(S, "log-A.txt")).read().count("the list is full") == 1)
+    ids_seen = [x["id"] for x in req(A, "GET", "/screens.json")[1]["screens"]]
+    check("A screen: capped at 24, the oldest following dropped, off ones kept", len(ids_seen) == 24
+          and "lap-1" in ids_seen and "s0" not in ids_seen and "s29" in ids_seen, ids_seen)
     hostile = 'x" onmouseover=alert(1) a'
     req(A, "GET", "/current.json?screen=" + urllib.parse.quote(hostile))  # breaks SCREEN_RE: never listed
-    req(A, "POST", "/api/screen/forget", {"id": "s0"})
     req(A, "GET", "/current.json?screen=" + urllib.parse.quote("Hall Panel"))
     page = req(A, "GET", "/")[2]
     check("A screen: a name with a space, attribute-escaped", '&quot;Hall Panel&quot;' in page and "onmouseover" not in page)
@@ -401,6 +400,18 @@ try:
     check("G missing font logged once per file", missing and len(missing) == len({l.split()[3] for l in missing}), missing)
 finally:
     pg.terminate(); pg.wait()
+
+# ---------------- H: a client off this network cannot add screens or read the list ----------------
+H = BASE + 5
+ph = start("H", {"port": H, "lan_cidrs": ["10.0.0.0/8"], "captioners": [], "caption": {"enabled": False}})
+try:
+    st, j, *_ = req(H, "GET", "/current.json?screen=outsider")
+    check("H screen from off-network still served", st == 200 and j["follow"] is True, (st, j))
+    st, _, txt, hdrs = req(H, "GET", "/screens.json")
+    check("H screens.json refused off-network, no CORS", st == 403 and "Access-Control-Allow-Origin" not in hdrs, (st, hdrs))
+    check("H off-network screen not listed", "outsider" not in req(H, "GET", "/")[2])
+finally:
+    ph.terminate(); ph.wait()
 
 print("\n%d passed, %d failed (logs in %s)" % (ok, fail, S))
 if not fail:

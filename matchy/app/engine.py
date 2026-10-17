@@ -398,10 +398,18 @@ class Engine:
             new = s is None
             if new:
                 if len(self.screens) >= MAX_SCREENS:
-                    if not self.screens_full_logged:
-                        log("screens: the list is full (%d); %r not added, forget one in the panel" % (MAX_SCREENS, sid))
-                        self.screens_full_logged = True
-                    return
+                    # Make room by dropping the screen unseen the longest that still follows (it comes back
+                    # the next time it asks). Screens turned off are a choice made in the panel: kept.
+                    following = [k for k, v in self.screens.items() if v.get("follow") is not False]
+                    if not following:
+                        if not self.screens_full_logged:
+                            log("screens: %d screens, all turned off; %r not added, forget one in the panel"
+                                % (MAX_SCREENS, sid))
+                            self.screens_full_logged = True
+                        return
+                    gone = min(following, key=lambda k: self.screens[k].get("last_seen") or 0)
+                    del self.screens[gone]
+                    log("screens: the list is full (%d); dropped %r, unseen the longest" % (MAX_SCREENS, gone))
                 s = self.screens[sid] = {"follow": True, "first_seen": now}
                 log("screens: new screen %r from %s" % (sid, ip))
             s.update(last_seen=now, ip=ip, agent=agent[:120])
@@ -793,10 +801,11 @@ class Handler(BaseHTTPRequestHandler):
         if not head and body:
             self.wfile.write(body)
 
-    def send_json(self, obj, code=200, headers=None, head=False):
+    def send_json(self, obj, code=200, headers=None, head=False, cors=True):
         h = {"Cache-Control": "no-store"}
         h.update(headers or {})
-        self.send(code, json.dumps(obj, ensure_ascii=False, indent=1), "application/json; charset=utf-8", h, head)
+        self.send(code, json.dumps(obj, ensure_ascii=False, indent=1), "application/json; charset=utf-8", h, head,
+                  cors)
 
     def ingress_base(self):
         """The path Home Assistant serves this page under, or "" for a direct request."""
@@ -836,8 +845,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def note_screen(self, sid, parts):
         """Remember a client that named itself, and which picture it fetched (images only: a poll of
-        current.json is not a picture on screen, least of all for a screen that is turned off)."""
+        current.json is not a picture on screen, least of all for a screen that is turned off).
+        Only clients on this network may add or refresh one: the port has no login. The address shown is
+        the first X-Forwarded-For hop when a proxy sent one (client_is_lan has checked every hop is
+        private), so it is a label, not proof."""
         eng = self.engine
+        if not self.client_is_lan():
+            return
         xff = self.headers.get("X-Forwarded-For")
         ip = xff.split(",")[0].strip() if xff else self.client_address[0]
         image = None
@@ -972,7 +986,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/library.json":
             return self.send_json(eng.library_view(), head=head)
         if path == "/screens.json":
-            return self.send_json({"screens": eng.screens_view()}, head=head)
+            # Addresses and browser strings of the house's screens: this network only, and no CORS, so
+            # another website open in a browser here cannot read them either.
+            if not self.client_is_lan():
+                return self.send(403, "LAN only\n", head=head, cors=False)
+            return self.send_json({"screens": eng.screens_view()}, head=head, cors=False)
         if path in ("/", "/index.html"):
             page = gallery_html(eng, control=self.client_is_lan(), admin=self.client_is_ingress())
             return self.send(200, page, "text/html; charset=utf-8", {"Cache-Control": "no-store"}, head)
@@ -1225,7 +1243,7 @@ def gallery_html(eng, control, admin):
             '<li><b>%s</b> %s<small class="mut">seen %s%s</small><div class="acts">'
             '<button data-act="screen" data-body="%s"%s>%s</button>'
             '<button data-act="screen/forget" data-body="%s"%s>Forget</button></div></li>' % (
-                esc(sc["id"]), tag, ago(sc["age_s"]), (" · " + esc(sc["ip"])) if sc["ip"] else "",
+                esc(sc["id"]), tag, ago(sc["age_s"]), (" · " + esc(sc["ip"])) if sc["ip"] and control else "",
                 esc(json.dumps({"id": sc["id"], "follow": not sc["follow"]}), quote=True), no_ctl,
                 "Turn off" if sc["follow"] else "Turn on",
                 esc(json.dumps({"id": sc["id"]}), quote=True), no_admin))

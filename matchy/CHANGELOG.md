@@ -6,6 +6,8 @@
   those screens (following or off, last seen) with **Turn off**, **Turn on** and **Forget**. Off is
   advisory: `/current.json` gains `screens_off` and, for a named screen, `follow`. New
   `GET /screens.json`, `POST /api/screen` (network tier) and `POST /api/screen/forget` (panel only).
+  Only clients on the network tier are listed; `/screens.json` is network-tier and sends no CORS;
+  a full list (24) drops the following screen unseen the longest.
 - Rotation: a **How often** slider (every 15 minutes to every 12 hours) replaces the minutes form,
   which stays under **Custom window**; `POST /api/rotation` takes `{"mode": "daynight"}`.
 - Day & night: one picture at sunrise, the next at sunset, at Home Assistant's location (read once at

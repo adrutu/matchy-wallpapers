@@ -153,8 +153,9 @@ moving the home location.
 
 Any client may add `?screen=<name>` to any `GET` (`/current.json`, `/current/...`, `/img/...`). The name
 is 1 to 40 characters of letters, digits, space and `. _ : @ -`, starting with a letter or digit; a
-request with any other name is served as usual but not listed. The panel's **Screens** box then shows
-that screen. Up to 24 are kept; a new one beyond that is ignored until you forget one.
+request with any other name is served as usual but not listed. Only clients on your own network (the
+Network tier below) are listed. The panel's **Screens** box then shows that screen. Up to 24 are kept: a
+new one beyond that replaces the following screen unseen the longest, and screens you turned off stay.
 
 **Turn off** is advisory: Matchy keeps serving that screen. `/current.json?screen=<name>` answers
 `"follow": false`, and every `/current.json` lists the screens that are off in `"screens_off"`. A client
@@ -174,7 +175,7 @@ Read endpoints:
 | :--- | :--- |
 | `GET /current.json` | The current picture: `id`, `rev`, `version`, `title`, `place`, `credit`, `blurb`, `since`, `next_change` (null while paused), `paused`, `captioned`, and `urls` (`original`, `clean`, `label`, `span` templates with `{w}`, `{h}`, `{layout}` to fill in). `version` changes on every rotation and every caption edit; clients compare it. `screens_off` lists the screens turned off; with `?screen=<name>`, `follow` says whether that one should follow. `503` while the library is empty. |
 | `GET /library.json` | Every picture with its status, caption, `hidden` and `recaption_queued` flags, plus the rotation (`mode` = `minutes` or `daynight`, the window, and `next_sun` = `{"at", "event"}` in Day & night) and captioner state. |
-| `GET /screens.json` | The Screens list (see Screens). |
+| `GET /screens.json` | The Screens list (see Screens). Network tier only, and without CORS, because it carries addresses. |
 | `GET /` | The gallery page. |
 | `GET /current/clean/WxH.jpg` | The current picture at any size, without the label. Sends an `ETag`; `If-None-Match` gets a `304` until the picture changes. |
 | `GET /current/label/WxH.jpg[?s=]` | The same with the label. `s` scales the label, 0.6–2.0 (wall tablets look right at about 1.35). |
