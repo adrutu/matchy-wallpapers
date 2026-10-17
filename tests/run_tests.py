@@ -6,7 +6,7 @@ images and a fake OpenAI-compatible captioner (tests/fakecap.py).
 
 MATCHY_TEST_PORT moves the ports it uses (default 18160..18174). Takes about three minutes.
 """
-import http.client, json, os, shutil, socket, subprocess, sys, tempfile, time
+import http.client, json, os, shutil, socket, subprocess, sys, tempfile, time, urllib.parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ENGINE = os.path.join(HERE, "..", "matchy", "app", "engine.py")
@@ -34,11 +34,16 @@ def make_images():
 
 make_images()
 ok = fail = 0
+sys.path.insert(0, os.path.dirname(ENGINE))
+import engine as engine_mod  # noqa: E402  (the pure helpers only; the server runs as a subprocess)
 
 def check(name, cond, extra=""):
     global ok, fail
     if cond: ok += 1; print("PASS", name)
     else: fail += 1; print("FAIL", name, extra)
+
+def utc_hm(t):
+    return time.strftime("%H:%M", time.gmtime(t))
 
 def req(port, method, path, body=None, ctype="application/json", raw=None):
     c = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
@@ -68,6 +73,14 @@ def start(name, cfg):
 
 def cur(port): return req(port, "GET", "/current.json")[1]
 def lib(port): return req(port, "GET", "/library.json")[1]
+
+# ---------------- sun_events (pure): Cork at the solstices, Svalbard in midnight sun ----------------
+import datetime as _dt
+r = engine_mod.sun_events(51.8985, -8.4756, _dt.date(2026, 6, 21))
+check("sun: Cork midsummer", "03:50" <= utc_hm(r[0]) <= "04:20" and "20:50" <= utc_hm(r[1]) <= "21:20", [utc_hm(t) for t in r])
+r = engine_mod.sun_events(51.8985, -8.4756, _dt.date(2026, 12, 21))
+check("sun: Cork midwinter", "08:20" <= utc_hm(r[0]) <= "08:50" and "16:10" <= utc_hm(r[1]) <= "16:40", [utc_hm(t) for t in r])
+check("sun: midnight sun has none", engine_mod.sun_events(78.2, 15.6, _dt.date(2026, 6, 21)) is None)
 
 # ---------------- A: the sidebar panel (localhost treated as the Supervisor) ----------------
 fake = subprocess.Popen([sys.executable, os.path.join(HERE, "fakecap.py"), str(BASE + 10), FAIL_FLAG])
@@ -181,8 +194,69 @@ try:
     req(A, "POST", "/api/rotation", {"min_minutes": 5, "max_minutes": 9})
     req(A, "POST", "/api/rotation", {"reset": True}); L = lib(A)
     check("A reset to options", L["rotation"]["source"] == "options" and L["rotation"]["min_minutes"] == 30, L["rotation"])
+
+    # How often: Day & night, then a slider stop, then back to the options
+    st, *_ = req(A, "POST", "/api/rotation", {"mode": "daynight"}); L = lib(A); c = cur(A)
+    nc = time.mktime(time.strptime(c["next_change"][:19], "%Y-%m-%dT%H:%M:%S"))
+    check("A day & night", st == 200 and L["rotation"]["mode"] == "daynight" and L["rotation"].get("next_sun")
+          and 0 < nc - time.time() < 86400, (st, L["rotation"], c["next_change"]))
+    page = req(A, "GET", "/")[2]
+    check("A page: slider on day & night", 'value="8"' in page and "07:00 and 19:00" in page)
+    st, *_ = req(A, "POST", "/api/rotation", {"mode": "weekly"}); check("A unknown mode 400", st == 400, st)
+    st, *_ = req(A, "POST", "/api/rotation", {"min_minutes": 60, "max_minutes": 60}); L = lib(A)
+    check("A slider stop leaves day & night", st == 200 and L["rotation"]["mode"] == "minutes"
+          and L["rotation"]["min_minutes"] == 60, L["rotation"])
+    check("A page: slider on every hour", 'value="3"' in req(A, "GET", "/")[2])
+    req(A, "POST", "/api/rotation", {"reset": True})
+    check("A page: options window labelled custom", "Custom: 30–40 minutes" in req(A, "GET", "/")[2])
+
+    # Screens
+    check("A page: no screens yet", "No screens yet" in req(A, "GET", "/")[2])
+    st, j, *_ = req(A, "GET", "/current.json?screen=lap-1")
+    check("A screen: follow and screens_off", st == 200 and j["follow"] is True and j["screens_off"] == [], j)
+    check("A screen: no follow without a name", "follow" not in cur(A) and cur(A)["screens_off"] == [])
+    req(A, "GET", "/current.json?screen=%3Cbad%3E")
+    ids_seen = [x["id"] for x in req(A, "GET", "/screens.json")[1]["screens"]]
+    check("A screen: listed, bad name ignored", ids_seen == ["lap-1"], ids_seen)
+    c = cur(A)
+    st, *_ = req(A, "GET", "/img/%s/%s/clean/640x360.jpg?screen=tab-1" % (c["id"], c["rev"]))
+    sc = {x["id"]: x for x in req(A, "GET", "/screens.json")[1]["screens"]}
+    check("A screen: image fetch records the picture", st == 200 and sc.get("tab-1", {}).get("image") == c["id"]
+          and sc["lap-1"]["image"] == "", sc)
+    st, j, *_ = req(A, "POST", "/api/screen", {"id": "lap-1", "follow": False})
+    st2, j2, *_ = req(A, "GET", "/current.json?screen=lap-1")
+    check("A screen: turned off", st == 200 and j2["follow"] is False and j2["screens_off"] == ["lap-1"], (st, j2))
+    page = req(A, "GET", "/")[2]
+    check("A page: screens box", "Turn on" in page and "Turn off" in page and "tag off" in page, page[-3000:])
+    st, *_ = req(A, "POST", "/api/screen", {"id": "nope", "follow": False}); check("A screen: unknown 404", st == 404, st)
+    st, *_ = req(A, "POST", "/api/screen", {"id": "lap-1", "follow": "no"}); check("A screen: follow not bool 400", st == 400, st)
+    st, *_ = req(A, "POST", "/api/screen", {"id": "<x>", "follow": True}); check("A screen: bad id 400", st == 400, st)
+    saved = json.load(open(os.path.join(S, "data-A", "screens.json")))
+    check("A screen: saved to disk", saved.get("lap-1", {}).get("follow") is False, saved)
+    st, *_ = req(A, "POST", "/api/screen/forget", {"id": "tab-1"})
+    ids_seen = [x["id"] for x in req(A, "GET", "/screens.json")[1]["screens"]]
+    check("A screen: forget", st == 200 and ids_seen == ["lap-1"], (st, ids_seen))
+    for n in range(30):
+        req(A, "GET", "/current.json?screen=s%d" % n)
+    n_screens = len(req(A, "GET", "/screens.json")[1]["screens"])
+    check("A screen: capped at 24", n_screens == 24, n_screens)
+    check("A screen: full list logged once", open(os.path.join(S, "log-A.txt")).read().count("the list is full") == 1)
+    hostile = 'x" onmouseover=alert(1) a'
+    req(A, "GET", "/current.json?screen=" + urllib.parse.quote(hostile))  # breaks SCREEN_RE: never listed
+    req(A, "POST", "/api/screen/forget", {"id": "s0"})
+    req(A, "GET", "/current.json?screen=" + urllib.parse.quote("Hall Panel"))
+    page = req(A, "GET", "/")[2]
+    check("A screen: a name with a space, attribute-escaped", '&quot;Hall Panel&quot;' in page and "onmouseover" not in page)
 finally:
     pa.terminate(); pa.wait(); fake.terminate()
+
+# restart A: screens and their switches survive
+pa = start("A", dict(cfgA, _fresh=False, rotation={"min_minutes": 30, "max_minutes": 40}))
+try:
+    j = req(A, "GET", "/current.json?screen=lap-1")[1]
+    check("A restart keeps screens", j["follow"] is False and j["screens_off"] == ["lap-1"], j)
+finally:
+    pa.terminate(); pa.wait()
 
 # ---------------- B: direct port, no captioner, captions off ----------------
 B = BASE + 2
@@ -198,6 +272,13 @@ try:
     for path, body in (("/api/hide", {"id": first}), ("/api/caption", {"id": first, "blurb": "x"}),
                        ("/api/recaption", {"id": first}), ("/api/rotation", {"reset": True}), ("/api/unhide", {"id": first})):
         st, *_ = req(B, "POST", path, body); check("B %s refused off-panel 403" % path, st == 403, st)
+    st, *_ = req(B, "POST", "/api/rotation", {"mode": "daynight"}); check("B day & night refused off-panel 403", st == 403, st)
+    req(B, "GET", "/current.json?screen=desk")
+    st, *_ = req(B, "POST", "/api/screen", {"id": "desk", "follow": False}); check("B screen off from LAN ok", st == 200, st)
+    st, *_ = req(B, "POST", "/api/screen/forget", {"id": "desk"}); check("B screen forget refused off-panel 403", st == 403, st)
+    txt = req(B, "GET", "/")[2]
+    check("B page: Forget and slider disabled", 'data-act="screen/forget" data-body="{&quot;id&quot;: &quot;desk&quot;}" disabled' in txt
+          and 'data-name="How often" disabled' in txt and 'data-act="screen" data-body' in txt, txt[-2500:])
     st, *_ = req(B, "POST", "/api/next"); check("B legacy bodyless /api/next still ok", st == 200)
 finally:
     pb.terminate(); pb.wait()

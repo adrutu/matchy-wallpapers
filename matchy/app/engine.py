@@ -10,6 +10,7 @@ import hashlib
 import html
 import ipaddress
 import json
+import math
 import os
 import random
 import re
@@ -37,6 +38,7 @@ DEFAULTS = {
     "cache_max_mb": 2048,
     "render_threads": 2,
     "rotation": {"min_minutes": 15, "max_minutes": 20, "caption_priority": []},
+    "location": None,  # {"latitude", "longitude"}: Day & night changes at sunrise and sunset there
     "folders": [],
     "exclude": [],  # id globs kept out of the library
     "folder_scan_minutes": 10,
@@ -95,6 +97,36 @@ class Refused(Exception):
 
 CAPTION_LIMITS = {"title": 100, "place": 120, "credit": 200, "blurb": 600}
 
+# The Screens list: a client names itself with ?screen=<name> on any GET. "Off" is advisory: the
+# engine keeps serving it, and the client reads "follow" from /current.json and stands down itself.
+SCREEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._:@-]{0,39}$")
+MAX_SCREENS = 24     # the direct port has no login, so nobody may grow the file without bound
+SCREEN_SAVE_S = 300  # last-seen times reach the disk at most this often
+
+# The panel's "How often" slider: (label, minutes), and None for Day & night.
+PACE_STOPS = [("Every 15 minutes", 15), ("Every 20 minutes", 20), ("Every half hour", 30), ("Every hour", 60),
+              ("Every 2 hours", 120), ("Every 4 hours", 240), ("Every 8 hours", 480), ("Every 12 hours", 720),
+              ("Day & night", None)]
+DAYNIGHT_FALLBACK = (7, 19)  # local hours with no location, or on a day the sun never rises or never sets
+
+
+def sun_events(lat, lon, day):
+    """(sunrise, sunset) as UTC epoch seconds on the date `day`, or None when the sun does not rise or
+    does not set. NOAA's general solar position formulas (zenith 90.833°): about a minute out."""
+    g = 2 * math.pi / 365 * (day.timetuple().tm_yday - 1)
+    eqtime = 229.18 * (0.000075 + 0.001868 * math.cos(g) - 0.032077 * math.sin(g)
+                       - 0.014615 * math.cos(2 * g) - 0.040849 * math.sin(2 * g))
+    decl = (0.006918 - 0.399912 * math.cos(g) + 0.070257 * math.sin(g) - 0.006758 * math.cos(2 * g)
+            + 0.000907 * math.sin(2 * g) - 0.002697 * math.cos(3 * g) + 0.00148 * math.sin(3 * g))
+    phi = math.radians(lat)
+    c = math.cos(math.radians(90.833)) / (math.cos(phi) * math.cos(decl)) - math.tan(phi) * math.tan(decl)
+    if not -1 <= c <= 1:
+        return None
+    ha = math.degrees(math.acos(c))
+    midnight = dt.datetime(day.year, day.month, day.day, tzinfo=dt.timezone.utc).timestamp()
+    return (midnight + (720 - 4 * (lon + ha) - eqtime) * 60,
+            midnight + (720 - 4 * (lon - ha) - eqtime) * 60)
+
 
 # ======================================================================
 class Engine:
@@ -126,6 +158,11 @@ class Engine:
         self.cache_bytes = None
         self.caption_busy = None
         self.stats = {"renders": 0, "render_ms_last": 0, "cache_hits": 0}
+        self.screens_path = os.path.join(cfg["data_dir"], "screens.json")
+        screens = read_json(self.screens_path, {})
+        self.screens = {k: v for k, v in screens.items() if isinstance(v, dict)} if isinstance(screens, dict) else {}
+        self.screens_saved = 0.0
+        self.screens_full_logged = False
 
     # ---------------- rotation ----------------
     def save_state(self):
@@ -144,13 +181,40 @@ class Engine:
         return captioned or sorted(shown)
 
     def rotation_window(self):
+        """(min, max, source) in minutes. Day & night has no window, so it reports the options' one."""
         ov = self.state.get("rotation_override")
-        if ov:
+        if ov and ov.get("mode") != "daynight":
             return ov["min_minutes"], ov["max_minutes"], "panel"
         r = self.cfg["rotation"]
-        return r["min_minutes"], r["max_minutes"], "options"
+        return r["min_minutes"], r["max_minutes"], "panel" if ov else "options"
+
+    def rotation_mode(self):
+        return "daynight" if (self.state.get("rotation_override") or {}).get("mode") == "daynight" else "minutes"
+
+    def next_sun_change(self, now):
+        """(epoch, name) of the first sunrise or sunset more than a minute after now. With no location, or
+        on a day the sun never rises or never sets, DAYNIGHT_FALLBACK's local hours stand in. Yesterday to
+        the day after tomorrow in UTC dates, so no time zone can skip one."""
+        loc = self.cfg.get("location") or {}
+        lat, lon = loc.get("latitude"), loc.get("longitude")
+        known = all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in (lat, lon))
+        today_utc = dt.datetime.fromtimestamp(now, dt.timezone.utc).date()
+        today_local = dt.datetime.fromtimestamp(now).date()
+        events = []
+        for offset in (-1, 0, 1, 2):
+            sun = sun_events(lat, lon, today_utc + dt.timedelta(days=offset)) if known else None
+            if sun:
+                events += [(sun[0], "sunrise"), (sun[1], "sunset")]
+                continue
+            d = today_local + dt.timedelta(days=offset)
+            events += [(time.mktime((d.year, d.month, d.day, h, 0, 0, 0, 0, -1)), name)
+                       for h, name in zip(DAYNIGHT_FALLBACK, ("morning", "evening"))]
+        return min(e for e in events if e[0] > now + 60)
 
     def interval(self):
+        if self.rotation_mode() == "daynight":
+            now = time.time()
+            return self.next_sun_change(now)[0] - now
         lo, hi, _src = self.rotation_window()
         return random.uniform(float(lo), float(hi)) * 60
 
@@ -306,6 +370,78 @@ class Engine:
         r = self.cfg["rotation"]
         self.set_rotation(r["min_minutes"], r["max_minutes"])
 
+    def set_daynight(self):
+        """One picture for the day, one for the night. Stored like a panel window ("options" included),
+        so changing the add-on options takes over again in the same way."""
+        r = self.cfg["rotation"]
+        with self.lock:
+            self.state["rotation_override"] = {"mode": "daynight", "options": [r["min_minutes"], r["max_minutes"]]}
+            at, name = self.next_sun_change(time.time())
+            if not self.state.get("paused") and self.state.get("current"):
+                self.state["next_change"] = at
+            self.save_state()
+        log("rotation set in the panel: day & night, next change at %s (%s)" % (iso(at), name))
+        self.wake.set()
+
+    # ---------------- screens ----------------
+    def save_screens(self):
+        """Caller holds self.lock."""
+        write_json(self.screens_path, self.screens)
+        self.screens_saved = time.time()
+
+    def saw_screen(self, sid, ip, agent, image=None):
+        if not SCREEN_RE.match(sid):
+            return
+        now = time.time()
+        with self.lock:
+            s = self.screens.get(sid)
+            new = s is None
+            if new:
+                if len(self.screens) >= MAX_SCREENS:
+                    if not self.screens_full_logged:
+                        log("screens: the list is full (%d); %r not added, forget one in the panel" % (MAX_SCREENS, sid))
+                        self.screens_full_logged = True
+                    return
+                s = self.screens[sid] = {"follow": True, "first_seen": now}
+                log("screens: new screen %r from %s" % (sid, ip))
+            s.update(last_seen=now, ip=ip, agent=agent[:120])
+            if image:
+                s["image"] = image
+            if new or now - self.screens_saved >= SCREEN_SAVE_S:
+                self.save_screens()
+
+    def screen_follows(self, sid):
+        return (self.screens.get(sid) or {}).get("follow", True) is not False
+
+    def screens_off(self):
+        return sorted(k for k, v in self.screens.items() if v.get("follow") is False)
+
+    def set_screen(self, sid, follow):
+        with self.lock:
+            if sid not in self.screens:
+                raise Refused(404, "no such screen")
+            self.screens[sid]["follow"] = follow
+            self.save_screens()
+        log("screen %s: %s" % (sid, "following" if follow else "off"))
+
+    def forget_screen(self, sid):
+        with self.lock:
+            if self.screens.pop(sid, None) is None:
+                raise Refused(404, "no such screen")
+            self.save_screens()
+            self.screens_full_logged = False
+        log("screen %s: forgotten" % sid)
+
+    def screens_view(self):
+        now = time.time()
+        with self.lock:
+            items = sorted(self.screens.items(), key=lambda kv: kv[0].lower())
+            return [{"id": k, "follow": v.get("follow") is not False,
+                     "first_seen": iso(v.get("first_seen") or now), "last_seen": iso(v.get("last_seen") or now),
+                     "age_s": int(now - (v.get("last_seen") or now)),
+                     "ip": v.get("ip", ""), "agent": v.get("agent", ""), "image": v.get("image", "")}
+                    for k, v in items]
+
     def current(self, base=""):
         with self.lock:
             cur = self.state.get("current")
@@ -358,9 +494,13 @@ class Engine:
                                   else sc.get("caption_error", "") if not d["blurb"] else "")})
         lo, hi, src = self.rotation_window()
         r = self.cfg["rotation"]
+        rot = {"min_minutes": lo, "max_minutes": hi, "source": src, "mode": self.rotation_mode(),
+               "options": {"min_minutes": r["min_minutes"], "max_minutes": r["max_minutes"]}}
+        if rot["mode"] == "daynight":
+            at, name = self.next_sun_change(time.time())
+            rot["next_sun"] = {"at": iso(at), "event": name}
         return {"items": out, "current": self.state.get("current"), "paused": bool(self.state.get("paused")),
-                "rotation": {"min_minutes": lo, "max_minutes": hi, "source": src,
-                             "options": {"min_minutes": r["min_minutes"], "max_minutes": r["max_minutes"]}},
+                "rotation": rot,
                 "captioning": self.caption_busy, "captioner": self.captioner_view()}
 
     # ---------------- background workers ----------------
@@ -694,6 +834,19 @@ class Handler(BaseHTTPRequestHandler):
         xff = self.headers.get("X-Forwarded-For")
         return all(inlan(a) for a in xff.split(",")) if xff else True
 
+    def note_screen(self, sid, parts):
+        """Remember a client that named itself, and which picture it fetched (images only: a poll of
+        current.json is not a picture on screen, least of all for a screen that is turned off)."""
+        eng = self.engine
+        xff = self.headers.get("X-Forwarded-For")
+        ip = xff.split(",")[0].strip() if xff else self.client_address[0]
+        image = None
+        if len(parts) >= 3 and parts[0] == "img" and parts[1] in eng.lib.items:
+            image = parts[1]
+        elif len(parts) == 3 and parts[0] == "current":
+            image = eng.state.get("current")
+        eng.saw_screen(sid, ip, self.headers.get("User-Agent") or "", image)
+
     def do_OPTIONS(self):
         if urllib.parse.urlsplit(self.path).path.startswith("/api/"):
             # No CORS on the control API: the browser then refuses another website's JSON POST
@@ -803,14 +956,23 @@ class Handler(BaseHTTPRequestHandler):
         path, q = u.path, urllib.parse.parse_qs(u.query)
         parts = [p for p in path.split("/") if p]
         immut = {"Cache-Control": "public, max-age=31536000, immutable"}
+        screen = q.get("screen", [""])[0].strip()
+        if screen:
+            self.note_screen(screen, parts)
 
         if path == "/healthz":
             return self.send(200, "ok\n", head=head, headers={"Cache-Control": "no-store"})
         if path == "/current.json":
             cur = eng.current(self.ingress_base())
+            if cur:
+                cur["screens_off"] = eng.screens_off()
+                if screen:
+                    cur["follow"] = eng.screen_follows(screen)
             return self.send_json(cur or {"error": "library empty"}, 200 if cur else 503, head=head)
         if path == "/library.json":
             return self.send_json(eng.library_view(), head=head)
+        if path == "/screens.json":
+            return self.send_json({"screens": eng.screens_view()}, head=head)
         if path in ("/", "/index.html"):
             page = gallery_html(eng, control=self.client_is_lan(), admin=self.client_is_ingress())
             return self.send(200, page, "text/html; charset=utf-8", {"Cache-Control": "no-store"}, head)
@@ -883,6 +1045,29 @@ def arg_caption(a):
     return out
 
 
+def arg_screen(a):
+    sid = a.get("id")
+    if not isinstance(sid, str) or not SCREEN_RE.match(sid):
+        raise Refused(400, "id required")
+    return sid
+
+
+def arg_follow(a):
+    if not isinstance(a.get("follow"), bool):
+        raise Refused(400, "follow must be true or false")
+    return a["follow"]
+
+
+def rotation_action(eng, a):
+    if a.get("reset") is True:
+        return eng.reset_rotation()
+    if "mode" in a:
+        if a["mode"] != "daynight":
+            raise Refused(400, "mode must be daynight")
+        return eng.set_daynight()
+    return eng.set_rotation(*arg_window(a))
+
+
 def arg_window(a):
     lo, hi = a.get("min_minutes"), a.get("max_minutes")
     if not all(isinstance(v, int) and not isinstance(v, bool) and 1 <= v <= 1440 for v in (lo, hi)):
@@ -904,8 +1089,9 @@ ACTIONS = {
     "/api/unhide": ("panel", lambda eng, a: eng.unhide(arg_id(a))),
     "/api/caption": ("panel", lambda eng, a: eng.set_caption(arg_id(a), arg_caption(a))),
     "/api/recaption": ("panel", lambda eng, a: eng.recaption(arg_id(a))),
-    "/api/rotation": ("panel", lambda eng, a: eng.reset_rotation() if a.get("reset") is True
-                      else eng.set_rotation(*arg_window(a))),
+    "/api/rotation": ("panel", rotation_action),
+    "/api/screen": ("lan", lambda eng, a: eng.set_screen(arg_screen(a), arg_follow(a))),
+    "/api/screen/forget": ("panel", lambda eng, a: eng.forget_screen(arg_screen(a))),
 }
 
 
@@ -991,11 +1177,64 @@ def gallery_html(eng, control, admin):
             opt["min_minutes"], opt["max_minutes"], no_admin)
     else:
         source = "From the add-on options."
-    window = ('<form id="window" class="window">Change every <input name="min" type="number" min="1" max="1440" '
+    stops = [m for _label, m in PACE_STOPS]
+    if rot["mode"] == "daynight":
+        pos, pace_label = len(PACE_STOPS) - 1, PACE_STOPS[-1][0]
+        ns = rot.get("next_sun") or {}
+        if eng.cfg.get("location"):
+            source = "Changes at sunrise and sunset; next: %s at %s." % (esc(ns.get("event", "")), esc(hhmm(ns.get("at"))))
+        else:
+            source = ("Changes at %02d:00 and %02d:00, because Home Assistant's location is not known."
+                      % DAYNIGHT_FALLBACK)
+    elif rot["min_minutes"] == rot["max_minutes"] and rot["min_minutes"] in stops:
+        pos = stops.index(rot["min_minutes"])
+        pace_label = PACE_STOPS[pos][0]
+    else:  # a window from the options or the custom form: the nearest stop, labelled as it really is
+        pos = min((i for i, m in enumerate(stops) if m), key=lambda i: abs(stops[i] - rot["min_minutes"]))
+        pace_label = "Custom: %s–%s minutes" % (rot["min_minutes"], rot["max_minutes"])
+    window = ('<form id="pace" class="pace"><label for="pace-r">How often</label><input id="pace-r" type="range" '
+              'min="0" max="%d" step="1" value="%d" data-name="How often"%s><output id="pace-out" for="pace-r">%s'
+              '</output></form><p class="mut small">%s</p>'
+              '<details class="custom"><summary>Custom window</summary>'
+              '<form id="window" class="window">Change every <input name="min" type="number" min="1" max="1440" '
               'step="1" value="%s" aria-label="Shortest minutes"%s> to <input name="max" type="number" min="1" '
               'max="1440" step="1" value="%s" aria-label="Longest minutes"%s> minutes <button%s>Save</button></form>'
-              '<p class="mut small">%s</p>') % (
-        rot["min_minutes"], no_admin, rot["max_minutes"], no_admin, no_admin, source)
+              '</details>') % (
+        len(PACE_STOPS) - 1, pos, no_admin, esc(pace_label), source,
+        rot["min_minutes"], no_admin, rot["max_minutes"], no_admin, no_admin)
+
+    def ago(s):
+        if s < 90:
+            return "just now"
+        if s < 90 * 60:
+            return "%d min ago" % round(s / 60)
+        if s < 36 * 3600:
+            return "%d h ago" % round(s / 3600)
+        return "%d days ago" % round(s / 86400)
+
+    rows = []
+    for sc in eng.screens_view():
+        days = sc["age_s"] // 86400
+        if not sc["follow"]:
+            tag = '<span class="tag off">Off</span>'
+        elif days > 7:  # an off screen stops asking, so only a following one can go stale
+            tag = '<span class="tag stale">Not seen for %d days</span>' % days
+        else:
+            tag = '<span class="tag on">Following</span>'
+        rows.append(
+            '<li><b>%s</b> %s<small class="mut">seen %s%s</small><div class="acts">'
+            '<button data-act="screen" data-body="%s"%s>%s</button>'
+            '<button data-act="screen/forget" data-body="%s"%s>Forget</button></div></li>' % (
+                esc(sc["id"]), tag, ago(sc["age_s"]), (" · " + esc(sc["ip"])) if sc["ip"] else "",
+                esc(json.dumps({"id": sc["id"], "follow": not sc["follow"]}), quote=True), no_ctl,
+                "Turn off" if sc["follow"] else "Turn on",
+                esc(json.dumps({"id": sc["id"]}), quote=True), no_admin))
+    if rows:
+        screens = ('<ul class="screens">%s</ul><p class="mut small">Off: that screen stops following Matchy and goes '
+                   'back to its own wallpaper. Forget drops it from this list until it asks again.</p>') % "".join(rows)
+    else:
+        screens = ('<p class="mut">No screens yet. A screen shows up here the first time it asks for a picture '
+                   'with <code>?screen=&lt;name&gt;</code> on the address.</p>')
 
     if not cap["enabled"]:
         capline = 'Captioner: <b>off</b>. <code>caption_enabled</code> is false, so labels carry titles only.'
@@ -1018,9 +1257,11 @@ def gallery_html(eng, control, admin):
                                                  (" · %d hidden" % n_hidden) if n_hidden else "")
 
     data = {"version": cur.get("version"),
-            "items": [{k: i[k] for k in ("id", "title", "place", "credit", "blurb")} for i in items]}
+            "items": [{k: i[k] for k in ("id", "title", "place", "credit", "blurb")} for i in items],
+            "pace": [{"label": label, "body": {"min_minutes": m, "max_minutes": m} if m else {"mode": "daynight"}}
+                     for label, m in PACE_STOPS]}
     return PAGE.substitute(
-        top=top, state=state, toggle=toggle, window=window, capline=capline, summary=esc(summary),
+        top=top, state=state, toggle=toggle, window=window, screens=screens, capline=capline, summary=esc(summary),
         cards="\n".join(cards), data=json.dumps(data, ensure_ascii=False).replace("<", "\\u003c"),
         lim_title=CAPTION_LIMITS["title"], lim_place=CAPTION_LIMITS["place"],
         lim_credit=CAPTION_LIMITS["credit"], lim_blurb=CAPTION_LIMITS["blurb"])
@@ -1047,6 +1288,11 @@ button.primary{background:var(--acc);border-color:var(--acc);color:#0b120e;font-
 button.link{border:0;padding:0;color:var(--acc);text-decoration:underline;font-size:inherit}
 .acts{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
 .window input{width:4.5em;font:inherit;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:4px 6px}
+.pace{display:grid;grid-template-columns:auto 1fr;gap:6px 12px;align-items:center;margin:10px 0 4px}
+.pace input{width:100%;accent-color:var(--acc)}.pace output{grid-column:1/-1;font-weight:600}
+details.custom{margin-top:8px}details.custom summary{cursor:pointer;color:var(--mut);font-size:13px}
+.screens{list-style:none;margin:0;padding:0}.screens li{padding:8px 0;border-top:1px solid var(--line)}
+.screens li:first-child{border-top:0}.screens small{display:block}.screens .acts{margin-top:6px}
 .lib{margin:28px 0 0}.lib small{color:var(--mut);font-weight:400;margin-left:8px}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:14px;margin-top:12px}
 .card{margin:0;background:var(--card);border-radius:10px;overflow:hidden;display:flex;flex-direction:column}
@@ -1056,7 +1302,7 @@ figcaption{padding:10px 12px;display:flex;flex-direction:column;flex:1}figcaptio
 figcaption p{margin:.4em 0 0;font-size:13px;color:#c9d0cc;flex:1}
 .tags{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px}.tag{font-size:11px;border-radius:6px;padding:1px 7px;background:#333}
 .tag.captioned{background:#24402d}.tag.failed{background:#5a2a2a}.tag.pending{background:#40391f}
-.tag.on{background:var(--acc);color:#0b120e}.tag.hid{background:#3a3f55}
+.tag.on{background:var(--acc);color:#0b120e}.tag.hid{background:#3a3f55}.tag.off{background:#5a2a2a}.tag.stale{background:#40391f}
 dialog{background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:12px;width:min(640px,calc(100vw - 32px));padding:18px}
 dialog::backdrop{background:#000a}dialog label{display:block;margin:10px 0 0;font-size:13px;color:var(--mut)}
 dialog input,dialog textarea{display:block;width:100%;margin-top:4px;font:15px/1.4 system-ui,sans-serif;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:6px 8px}
@@ -1069,6 +1315,7 @@ $top
 <section class="panels">
 <div class="box"><h2>Rotation</h2><p>$state</p><div class="acts">$toggle</div>$window</div>
 <div class="box"><h2>Captions</h2><p>$capline</p></div>
+<div class="box"><h2>Screens</h2>$screens</div>
 </section>
 <h2 class="lib">Library <small>$summary</small></h2>
 <div class="grid">$cards</div>
@@ -1102,7 +1349,7 @@ async function run(btn, path, body) {
   btn.disabled = true;
   msg.textContent = '';
   try { await post(path, body); location.reload(); }
-  catch (e) { msg.textContent = btn.textContent + ' did not work: ' + e.message; btn.disabled = false; }
+  catch (e) { msg.textContent = (btn.dataset.name || btn.textContent) + ' did not work: ' + e.message; btn.disabled = false; }
 }
 function edit(id) {
   const it = byId[id];
@@ -1127,6 +1374,11 @@ document.addEventListener('click', e => {
   if (b.dataset.act === 'edit') return edit(id);
   run(b, b.dataset.act, b.dataset.body ? JSON.parse(b.dataset.body) : (id ? {id: id} : {}));
 });
+// How often: the label follows the slider; letting go saves.
+const pace = document.getElementById('pace-r'), paceOut = document.getElementById('pace-out');
+pace.addEventListener('input', () => { paceOut.textContent = data.pace[pace.value].label; });
+pace.addEventListener('change', () => run(pace, 'rotation', data.pace[pace.value].body));
+document.getElementById('pace').addEventListener('submit', e => e.preventDefault());
 const win = document.getElementById('window');
 win.addEventListener('submit', e => {
   e.preventDefault();

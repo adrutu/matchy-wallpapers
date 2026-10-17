@@ -124,8 +124,12 @@ page reloads itself when the picture changes (it checks every 30 seconds). From 
   hand-written caption is never overwritten by the captioner.
 - **Re-caption** a picture: it jumps the captioning queue and replaces even a hand-written caption.
   If the captioner fails, the old caption stays.
-- **Change every … to … minutes.** This lasts until you change the rotation options in the add-on
-  configuration, so whichever was set last wins; **Use the options** goes back to them.
+- **How often**: a slider from every 15 minutes to every 12 hours, plus **Day & night**. It saves
+  when you let go. The shortest/longest window is still there under **Custom window**. A choice made
+  here lasts until you change the rotation options in the add-on configuration, so whichever was set
+  last wins; **Use the options** goes back to them.
+- **Screens**: every screen that has named itself (see below), whether it follows Matchy, when it was
+  last seen and from which address. **Turn off** / **Turn on** one screen, or **Forget** it.
 - See whether each captioner is ready or being skipped, what it is writing now and how many pictures
   are waiting.
 
@@ -137,14 +141,40 @@ Clients fetch images directly from `http://<your-ha-host>:<published port>`. Eac
 the size it wants and gets a JPEG; nothing is pre-rendered. Recipes for a GNOME desktop, a Homepage
 dashboard, Home Assistant tablets and plain `curl` are in the repository under `docs/clients/`.
 
+### Day & night
+
+**Day & night** puts one picture up at sunrise and the next at sunset. The add-on reads Home
+Assistant's latitude and longitude once at start (that is what its Home Assistant API access,
+`homeassistant_api`, is for; nothing else uses it). Without a location, or on a day the sun does not
+rise or does not set there, it changes at 07:00 and 19:00 local time instead. Restart the add-on after
+moving the home location.
+
+### Screens
+
+Any client may add `?screen=<name>` to any `GET` (`/current.json`, `/current/...`, `/img/...`). The name
+is 1 to 40 characters of letters, digits, space and `. _ : @ -`, starting with a letter or digit; a
+request with any other name is served as usual but not listed. The panel's **Screens** box then shows
+that screen. Up to 24 are kept; a new one beyond that is ignored until you forget one.
+
+**Turn off** is advisory: Matchy keeps serving that screen. `/current.json?screen=<name>` answers
+`"follow": false`, and every `/current.json` lists the screens that are off in `"screens_off"`. A client
+that honours it goes back to its own wallpaper, and follows again when it is turned back on.
+`GET /screens.json` lists every screen with `id`, `follow`, `first_seen`,
+`last_seen`, `age_s`, `ip`, `agent` and `image` (the last picture it fetched).
+
+For Home Assistant dashboards, a card-mod theme rule can add `?screen={{ user | urlencode }}` to the
+background URL, so each tablet's Home Assistant user becomes a screen, and leave the background out for
+a user listed in `screens_off`.
+
 ### HTTP API
 
 Read endpoints:
 
 | Endpoint | Description |
 | :--- | :--- |
-| `GET /current.json` | The current picture: `id`, `rev`, `version`, `title`, `place`, `credit`, `blurb`, `since`, `next_change` (null while paused), `paused`, `captioned`, and `urls` (`original`, `clean`, `label`, `span` templates with `{w}`, `{h}`, `{layout}` to fill in). `version` changes on every rotation and every caption edit; clients compare it. `503` while the library is empty. |
-| `GET /library.json` | Every picture with its status, caption, `hidden` and `recaption_queued` flags, plus the rotation window and captioner state. |
+| `GET /current.json` | The current picture: `id`, `rev`, `version`, `title`, `place`, `credit`, `blurb`, `since`, `next_change` (null while paused), `paused`, `captioned`, and `urls` (`original`, `clean`, `label`, `span` templates with `{w}`, `{h}`, `{layout}` to fill in). `version` changes on every rotation and every caption edit; clients compare it. `screens_off` lists the screens turned off; with `?screen=<name>`, `follow` says whether that one should follow. `503` while the library is empty. |
+| `GET /library.json` | Every picture with its status, caption, `hidden` and `recaption_queued` flags, plus the rotation (`mode` = `minutes` or `daynight`, the window, and `next_sun` = `{"at", "event"}` in Day & night) and captioner state. |
+| `GET /screens.json` | The Screens list (see Screens). |
 | `GET /` | The gallery page. |
 | `GET /current/clean/WxH.jpg` | The current picture at any size, without the label. Sends an `ETag`; `If-None-Match` gets a `304` until the picture changes. |
 | `GET /current/label/WxH.jpg[?s=]` | The same with the label. `s` scales the label, 0.6–2.0 (wall tablets look right at about 1.35). |
@@ -176,7 +206,9 @@ undecodable one, re-captioning with no captioner) or `413` (body over 64 KB).
 | `POST /api/unhide` | `{"id": "<id>"}` | Panel | Put it back. |
 | `POST /api/caption` | `{"id", "title", "place", "credit", "blurb"}` | Panel | Write the caption by hand; `blurb` is required, the others may be empty. |
 | `POST /api/recaption` | `{"id": "<id>"}` | Panel | Ask the captioner for a fresh caption. |
-| `POST /api/rotation` | `{"min_minutes": 10, "max_minutes": 12}` or `{"reset": true}` | Panel | Set the rotation window (whole minutes, 1–1440), or go back to the options. |
+| `POST /api/rotation` | `{"min_minutes": 10, "max_minutes": 12}`, `{"mode": "daynight"}` or `{"reset": true}` | Panel | Set the rotation window (whole minutes, 1–1440), switch to Day & night, or go back to the options. |
+| `POST /api/screen` | `{"id": "<name>", "follow": false}` | Network | Turn one screen off (`true`: on again). `404` for a screen Matchy has not seen. |
+| `POST /api/screen/forget` | `{"id": "<name>"}` | Panel | Drop a screen from the list until it asks again. |
 
 For example, a Home Assistant `rest_command` that pauses the rotation:
 
@@ -196,8 +228,8 @@ Who may call what depends only on where the request comes from:
 | Tier | Who gets it | What it covers |
 | :--- | :--- | :--- |
 | **Public** | anything that can reach the port | every `GET`: pictures, captions, the library, the gallery page |
-| **Network** | the sidebar panel, or a client whose address is private (`10/8`, `172.16/12`, `192.168/16`, `100.64/10`, loopback, IPv6 ULA and link-local); if the request carries `X-Forwarded-For`, every address in it must be private too | next, pause, resume, show now |
-| **Panel** | the sidebar panel only: a request proxied by the Supervisor (its address `172.30.32.2`), which only forwards sessions Home Assistant has authenticated | hide, unhide, edit caption, re-caption, rotation window |
+| **Network** | the sidebar panel, or a client whose address is private (`10/8`, `172.16/12`, `192.168/16`, `100.64/10`, loopback, IPv6 ULA and link-local); if the request carries `X-Forwarded-For`, every address in it must be private too | next, pause, resume, show now, turn a screen on or off |
+| **Panel** | the sidebar panel only: a request proxied by the Supervisor (its address `172.30.32.2`), which only forwards sessions Home Assistant has authenticated | hide, unhide, edit caption, re-caption, how often, forget a screen |
 
 The gallery page draws the buttons a viewer may not use as disabled, with the reason as a tooltip.
 
@@ -231,7 +263,8 @@ add-on (`backup: hot`, the render cache excluded):
 | :--- | :--- |
 | `config.json` | Generated from the options on every start. |
 | `secrets/captioner-<n>.key` | Captioner keys, mode 600. |
-| `state.json` | What is on screen, the shuffle bag, hidden ids, the panel's rotation window, history. |
+| `state.json` | What is on screen, the shuffle bag, hidden ids, the panel's rotation choice, history. |
+| `screens.json` | The Screens list: on or off, first and last seen (last seen is written at most every 5 minutes). |
 | `library/<id>.json` | One sidecar per picture: the caption and where it came from. A hand edit here (set `"edited": true`) is picked up within a minute. |
 | `masters/` | The downscaled master copy of each picture. |
 | `originals/`, `remote.json` | Pictures fetched from a remote manifest or the daily URL, and their index. |

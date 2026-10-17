@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.0 (2026-10-17)
+
+- Screens: a client can name itself with `?screen=<name>` on any request, and the sidebar panel lists
+  those screens (following or off, last seen) with **Turn off**, **Turn on** and **Forget**. Off is
+  advisory: `/current.json` gains `screens_off` and, for a named screen, `follow`. New
+  `GET /screens.json`, `POST /api/screen` (network tier) and `POST /api/screen/forget` (panel only).
+- Rotation: a **How often** slider (every 15 minutes to every 12 hours) replaces the minutes form,
+  which stays under **Custom window**; `POST /api/rotation` takes `{"mode": "daynight"}`.
+- Day & night: one picture at sunrise, the next at sunset, at Home Assistant's location (read once at
+  start through the new `homeassistant_api` access); 07:00 and 19:00 when the location is not known.
+
 ## 0.2.4 (2026-10-17)
 
 - Health check: a Docker `HEALTHCHECK` on `/healthz` replaces the `watchdog:` URL, which the app
