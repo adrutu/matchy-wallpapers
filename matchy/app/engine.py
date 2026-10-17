@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Wallpaper engine: one rotating, captioned wallpaper served to every screen.
+"""Matchy Wallpapers engine: one rotating, captioned wallpaper served to every screen.
 
 Config: JSON file at $WE_CONFIG (default /config/config.json); WE_PORT / WE_DATA_DIR override.
-Stdlib HTTP server + Pillow. See README.md for the API.
+Stdlib HTTP server + Pillow. See matchy/DOCS.md for the API.
 """
 import copy
 import datetime as dt

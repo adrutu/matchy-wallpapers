@@ -9,41 +9,55 @@ each screen's own shape and size. It moves to the next picture every 15 to 20 mi
 panel's **How often** slider goes from every 15 minutes to every 12 hours, or sunrise and sunset.
 Each picture gets an art-gallery label baked into the bottom-right corner: title, credit and a short
 blurb written by a vision model you point it at. The blurb is grounded on the metadata the picture
-already carries, and a blurb that names a place, person or thing not in that metadata is rejected.
+already carries: a blurb that names something (a capitalised word) that is not in that metadata is
+rejected and asked for again.
 
 ## Installation
 
+It runs on Home Assistant OS or a Supervised install on **amd64** or **aarch64**. A Raspberry Pi 4 or 5
+needs the 64-bit Home Assistant OS; 32-bit (armv7) systems cannot install it.
+
 1. In Home Assistant, go to **Settings → Add-ons → Add-on store** (newer releases call them *Apps*),
-   open the three-dot menu, choose **Repositories** and add this repository's URL.
-2. Install **Matchy Wallpapers** from the store.
-3. Put some images under `/media` or `/share` (for example `/media/wallpapers`) and set
-   `source_folders` to match.
-4. Start the add-on. Open **Matchy** from the sidebar to see the gallery page.
+   open the three-dot menu, choose **Repositories** and add
+   `https://github.com/adrutu/matchy-wallpapers`.
+2. Install **Matchy Wallpapers** from the store. No pre-built image is published, so Home Assistant
+   builds it on your machine: about a minute on a PC, several on a Raspberry Pi, and again on each
+   update. A failed build is reported under **Settings → System → Logs → Supervisor**, not in the
+   add-on's own log.
+3. Create the picture folder **before the first start**, for example `/media/wallpapers` (the default
+   in `source_folders`): upload pictures under **Media → My media**, copy them onto the `media` Samba
+   share, or use an SSH add-on. If none of the folders in `source_folders` exists, and no remote or
+   daily source is set, the add-on refuses to start and its log says why.
+4. Start the add-on. Turn on **Show in sidebar** on its page for a **Matchy Wallpapers** entry in the
+   sidebar (or use **Open Web UI**), and **Watchdog** if Home Assistant should restart it when its
+   health check fails.
+5. Optional: a captioner for the blurbs (below), and the port for screens other than the panel.
 
 ## Configuration
 
 The container always listens on port **8160**. If you want clients other than the sidebar panel to
-reach it (desktops, tablets, a dashboard background) publish that port under the add-on's **Network**
-section and pick a host port there. Leave it unpublished and only the sidebar panel works.
+reach it (desktops, tablets, a dashboard background), type a host port (8160 is fine) in the add-on's
+**Network** section, save and restart. Clients then use `http://<your Home Assistant address>:<that
+port>`. Leave it empty and only the sidebar panel works.
 
 | Option | Type | Default | Meaning |
 | :--- | :--- | :--- | :--- |
-| `source_folders` | list of paths | `["/media/wallpapers"]` | Folders of images, scanned recursively. Must be under `/media` or `/share`; an add-on cannot read arbitrary host paths. A folder that does not exist is logged and skipped. |
+| `source_folders` | list of paths | `["/media/wallpapers"]` | Folders of images, scanned recursively. Must be under `/media` or `/share`; an add-on cannot read arbitrary host paths. A folder that does not exist is logged and skipped; if none exists, the add-on does not start. |
 | `exclude` | list of patterns | `[]` | Picture ids to leave out, as shell-style globs (`aether-*`, `art-great-wave`). Matching pictures never enter the library, so they are not shown, captioned or rendered. Ids are listed in the panel and in `library.json`. |
-| `sets` | list | `[]` | Settings for a sub-folder, matched by name in every source folder: `folder` (required), `id_prefix` (ids become `<prefix>-<name>`), `name` (the collection name the captioner is told), `credit` (shown on the label), `context` (one sentence of facts), `abstract` (true for digital or illustrated art, so the captioner describes it as art, never as a real place). |
-| `rotation_min_minutes` | int, 1–1440 | 15 | Shortest time on one image. |
+| `sets` | list | `[]` | Settings for a sub-folder, matched by name in every source folder: `folder` (required), `id_prefix` (ids become `<prefix>-<file name>`; lower-case letters, digits and hyphens, anything else becomes a hyphen), `name` (the collection name the captioner is told), `credit` (shown on the label), `context` (one sentence of facts), `abstract` (true for digital or illustrated art, so the captioner describes it as art, never as a real place). |
+| `rotation_min_minutes` | int, 1–1440 | 15 | Shortest time on one image. Keep it at or below the longest. |
 | `rotation_max_minutes` | int, 1–1440 | 20 | Longest time on one image. The actual interval is drawn at random between the two. |
 | `folder_scan_minutes` | int, 1–1440 | 10 | How often it looks for new, changed or removed files. |
 | `master_max_px` | int, 1280–7680 | 3840 | Longest edge of the cached master copy every render is cut from. |
 | `cache_max_mb` | int, 128–65536 | 2048 | Render cache size. Evicted least-recently-used down to 85 % when it overflows. |
 | `render_threads` | int, 1–8 | 2 | Renders running at the same time. |
-| `caption_enabled` | bool | true | Write gallery blurbs at all. Off: labels carry the title and credit only. |
-| `caption_language` | string | English | Language the blurb is asked for. |
+| `caption_enabled` | bool | true | Write gallery blurbs at all. Off: labels carry the title, place and credit only (from `meta.json` or `sets`). |
+| `caption_language` | string | English | Language the blurb is asked for. The grounding check rejects capitalised words that are not in the metadata, so a language that capitalises every noun (German) gets most blurbs rejected. |
 | `caption_spelling` | `British` or `American` | British | British also rewrites common American spellings in what comes back (colour, grey, centre…). |
-| `caption_min_words` | int, 5–200 | 30 | Shortest blurb accepted. |
-| `caption_max_words` | int, 5–200 | 45 | Longest blurb accepted. |
+| `caption_min_words` | int, 5–200 | 30 | Shortest blurb asked for. Keep it at or below the longest. |
+| `caption_max_words` | int, 5–200 | 45 | Longest blurb asked for. After a second try, a blurb within three words of the range is kept. |
 | `captioners` | list of objects | `[]` | OpenAI-compatible vision endpoints, tried in order. Fields: `name` (required), `url` (required, the full `/v1/chat/completions` URL), `model` (required), `api_key` (optional), `timeout` (seconds, 5–600, default 120). |
-| `remote_manifest_url` | URL | unset | Optional. Base URL of a web folder holding a `manifest.json` (`[{"name": "…", "file": "…"}]`) with the image files next to it. Fetched once a day; new files are downloaded into the add-on's data and get ids `remote-<file name>`. |
+| `remote_manifest_url` | URL | unset | Optional. Base URL of a web folder holding a `manifest.json` (`[{"name": "…", "file": "…"}]`) with the image files next to it. Fetched once a day; new files are downloaded into the add-on's data and get ids `remote-<file name>` (lower-cased, without the extension). Only `.jpg`, `.jpeg`, `.png` and `.webp` entries without a `/` are taken. |
 | `daily_json_url` | URL | unset | Optional. A JSON document `{date, title or caption, place, copyright}` describing a picture that changes daily. Checked hourly; each new date is stored as `daily-YYYYMMDD`. Needs `daily_image_url` too. |
 | `daily_image_url` | URL | unset | Optional. The image URL that goes with `daily_json_url`. |
 
@@ -63,6 +77,20 @@ and expects `{"title": "...", "blurb": "..."}` back (a JSON object inside a code
 - **LM Studio**: `url: http://<lm-studio-host>:1234/v1/chat/completions`, `model` as shown in its
   server tab.
 - **A cloud API**: the provider's `/v1/chat/completions` URL, its model name, and the key in `api_key`.
+
+Use the server's address on your network, never `localhost`: inside the add-on, `localhost` is the
+add-on itself. In YAML (the options page, **⋮ → Edit in YAML**):
+
+```yaml
+captioners:
+  - name: desktop
+    url: http://<llm-host>:8080/v1/chat/completions
+    model: <vision model>
+  - name: cloud
+    url: https://<provider>/v1/chat/completions
+    model: <vision model>
+    api_key: <key>
+```
 
 List two endpoints if you have a fast one that is not always awake and a slower one that is: Matchy
 tries them in order, and an endpoint that refuses or times out is skipped for ten minutes. Matchy
@@ -113,7 +141,8 @@ So: usable almost immediately, fully captioned after a while.
 
 ### The sidebar panel
 
-Open **Matchy** from the Home Assistant sidebar. This route is authenticated by Home Assistant. The
+Open **Matchy Wallpapers** from the sidebar (or **Open Web UI** on the add-on's page). This route is
+authenticated by Home Assistant. The
 page reloads itself when the picture changes (it checks every 30 seconds). From there you can:
 
 - **Next picture**, **Pause rotation** / **Resume rotation**. Paused holds whatever is on screen;
@@ -128,7 +157,7 @@ page reloads itself when the picture changes (it checks every 30 seconds). From 
 - **How often**: a slider from every 15 minutes to every 12 hours, plus **Day & night**. It saves
   when you let go. The shortest/longest window is still there under **Custom window**. A choice made
   here lasts until you change the rotation options in the add-on configuration, so whichever was set
-  last wins; **Use the options** goes back to them.
+  last wins; **Use the options** goes back to them (in Day & night, pick a stop on the slider instead).
 - **Screens**: every screen that has named itself (see below) and whether it follows Matchy.
   **Turn off** / **Turn on** one screen, or **Forget** it. When and from where each was last seen is in
   `/screens.json`.
@@ -141,7 +170,8 @@ Every thumbnail opens the labelled picture at 2560x1440.
 
 Clients fetch images directly from `http://<your-ha-host>:<published port>`. Each client asks for
 the size it wants and gets a JPEG; nothing is pre-rendered. Recipes for a GNOME desktop, a Homepage
-dashboard, Home Assistant tablets and plain `curl` are in the repository under `docs/clients/`.
+dashboard, Home Assistant tablets and plain `curl` are in the repository:
+<https://github.com/adrutu/matchy-wallpapers/tree/main/docs/clients>.
 
 ### Day & night
 
@@ -154,10 +184,11 @@ moving the home location.
 ### Screens
 
 Any client may add `?screen=<name>` to any `GET` (`/current.json`, `/current/...`, `/img/...`). The name
-is 1 to 40 characters of letters, digits, space and `. _ : @ -`, starting with a letter or digit; a
-request with any other name is served as usual but not listed. Only clients on your own network (the
-Network tier below) are listed. The panel's **Screens** box then shows that screen. Up to 24 are kept: a
-new one beyond that replaces the following screen unseen the longest, and screens you turned off stay.
+is 1 to 40 characters of letters (in any script), digits, space and `. _ : @ -`, starting with a letter
+or digit; a request with any other name is served as usual but not listed. Only clients on your own
+network (the Network tier below) are listed. The panel's **Screens** box then shows that screen. Up to
+24 are kept: a new one beyond that replaces the following screen unseen the longest, and screens you
+turned off stay (so with 24 screens all turned off, a new one is not added).
 
 **Turn off** is advisory: Matchy keeps serving that screen. `/current.json?screen=<name>` answers
 `"follow": false`, and every `/current.json` lists the screens that are off in `"screens_off"`. A client
@@ -167,7 +198,8 @@ that honours it goes back to its own wallpaper, and follows again when it is tur
 
 For Home Assistant dashboards, a card-mod theme rule can add `?screen={{ user | urlencode }}` to the
 background URL, so each tablet's Home Assistant user becomes a screen, and leave the background out for
-a user listed in `screens_off`.
+a user listed in `screens_off`. A tablet that spends the day in a screensaver fed by Home Assistant
+(not by the tablet's browser) shows an old *last seen* while it still follows.
 
 ### HTTP API
 
@@ -176,28 +208,28 @@ Read endpoints:
 | Endpoint | Description |
 | :--- | :--- |
 | `GET /current.json` | The current picture: `id`, `rev`, `version`, `title`, `place`, `credit`, `blurb`, `since`, `next_change` (null while paused), `paused`, `captioned`, and `urls` (`original`, `clean`, `label`, `span` templates with `{w}`, `{h}`, `{layout}` to fill in). `version` changes on every rotation and every caption edit; clients compare it. `screens_off` lists the screens turned off; with `?screen=<name>`, `follow` says whether that one should follow. `503` while the library is empty. |
-| `GET /library.json` | Every picture with its status, caption, `hidden` and `recaption_queued` flags, plus the rotation (`mode` = `minutes` or `daynight`, the window, and `next_sun` = `{"at", "event"}` in Day & night) and captioner state. |
+| `GET /library.json` | Every picture with its status, caption, `hidden` and `recaption_queued` flags, plus the rotation (`mode` = `minutes` or `daynight`, the window, and `next_sun` = `{"at", "event"}` in Day & night, `event` being `sunrise`/`sunset`, or `morning`/`evening` without a location) and captioner state. |
 | `GET /screens.json` | The Screens list (see Screens). Network tier only, and without CORS, because it carries addresses. |
-| `GET /` | The gallery page. |
+| `GET /` (also `/index.html`) | The gallery page. |
 | `GET /current/clean/WxH.jpg` | The current picture at any size, without the label. Sends an `ETag`; `If-None-Match` gets a `304` until the picture changes. |
 | `GET /current/label/WxH.jpg[?s=]` | The same with the label. `s` scales the label, 0.6–2.0 (wall tablets look right at about 1.35). |
 | `GET /img/<id>/<rev>/clean/WxH.jpg` | One specific picture; cacheable for a year. |
 | `GET /img/<id>/<rev>/label/WxH.jpg[?s=]` | The same with the label. |
 | `GET /img/<id>/<rev>/span.jpg?layout=WxH+X+Y[p],...[&s=]` | One picture composed across a multi-monitor layout: each monitor as `width x height + x + y`, `p` marks the primary, which gets the label (the largest screen if none is marked). Gaps are black. |
-| `GET /img/<id>/original.jpg` | The untouched original (PNG and WebP sources are re-encoded as JPEG). |
+| `GET /img/<id>/original.jpg` | The original: PNG and WebP pictures from your folders are re-encoded as JPEG; pictures downloaded from a remote manifest or the daily URL are served as downloaded. |
 | `GET /healthz` | Liveness; answers `ok` even before the first scan. |
 
-Sizes: width and height 320–7680; a span canvas up to 12000x8000 with at most 8 monitors and one
-primary. A `<rev>` that is no longer current (the caption was edited) answers `302` to the current
+Sizes: width and height 320–7680 (outside that, `/img/...` answers `400` and `/current/...` `404`); a
+span canvas up to 12000x8000 with at most 8 monitors and one primary. A `<rev>` that is no longer current (the caption was edited) answers `302` to the current
 URL. `HEAD` works everywhere `GET` does. Every read response carries
 `Access-Control-Allow-Origin: *`, except the gallery page and `/screens.json`, which name the screens (and the latter their addresses).
 
 Control endpoints are `POST`s with a JSON object body and **must** be sent with
-`Content-Type: application/json` (the one exception is `/api/next`, which also accepts an empty
-body with no content type, for older clients). They answer `{"ok": true, "current": {...}}`
+`Content-Type: application/json` (the one exception is `/api/next`, which ignores the body and its
+content type, for older clients). They answer `{"ok": true, "current": {...}}`
 (`/api/next` answers the new `current.json`), or `403` (wrong tier, see Access tiers), `415` (not
 JSON), `400` (bad arguments), `404` (unknown id), `409` (refused: hiding the last picture, showing an
-undecodable one, re-captioning with no captioner) or `413` (body over 64 KB).
+undecodable one, re-captioning with no captioner) or `413` (body over 64 KB, or chunked).
 
 | Endpoint | Body | Tier | Description |
 | :--- | :--- | :--- | :--- |
@@ -206,7 +238,7 @@ undecodable one, re-captioning with no captioner) or `413` (body over 64 KB).
 | `POST /api/resume` | `{}` | Network | Rotate again, a full interval from now. |
 | `POST /api/show` | `{"id": "<id>"}` | Network | Put this picture on screen now. |
 | `POST /api/hide` | `{"id": "<id>"}` | Panel | Keep this picture out of rotation. |
-| `POST /api/unhide` | `{"id": "<id>"}` | Panel | Put it back. |
+| `POST /api/unhide` | `{"id": "<id>"}` | Panel | Put it back (an id that is not hidden changes nothing). |
 | `POST /api/caption` | `{"id", "title", "place", "credit", "blurb"}` | Panel | Write the caption by hand; `blurb` is required, the others may be empty. |
 | `POST /api/recaption` | `{"id": "<id>"}` | Panel | Ask the captioner for a fresh caption. |
 | `POST /api/rotation` | `{"min_minutes": 10, "max_minutes": 12}`, `{"mode": "daynight"}` or `{"reset": true}` | Panel | Set the rotation window (whole minutes, 1–1440), switch to Day & night, or go back to the options. |
@@ -230,7 +262,7 @@ Who may call what depends only on where the request comes from:
 
 | Tier | Who gets it | What it covers |
 | :--- | :--- | :--- |
-| **Public** | anything that can reach the port | every `GET`: pictures, captions, the library, the gallery page |
+| **Public** | anything that can reach the port | every `GET` except `/screens.json`: pictures, captions, the library, the gallery page |
 | **Network** | the sidebar panel, or a client whose address is private (`10/8`, `172.16/12`, `192.168/16`, `100.64/10`, loopback, IPv6 ULA and link-local); if the request carries `X-Forwarded-For`, every address in it must be private too | next, pause, resume, show now, turn a screen on or off |
 | **Panel** | the sidebar panel only: a request proxied by the Supervisor (its address `172.30.32.2`), which only forwards sessions Home Assistant has authenticated | hide, unhide, edit caption, re-caption, how often, forget a screen |
 
@@ -246,10 +278,11 @@ The gallery page draws the buttons a viewer may not use as disabled, with the re
   library holds or what the labels say works only through the sidebar.
 - The JSON control endpoints are not reachable from another website open in a browser on your
   network: a cross-site JSON `POST` is preflighted, and the add-on answers the preflight on `/api/`
-  without CORS headers, so the browser refuses it. Two known gaps: a page could still issue a
-  bodyless `POST /api/next` (no preflight needed), and a page using DNS rebinding could reach the
-  Network tier. Either way the worst outcome is a skipped or paused wallpaper, never a changed
-  caption or library.
+  without CORS headers, so the browser refuses it. Known gaps: a page could still issue a simple
+  `POST /api/next` (no preflight needed), a page using DNS rebinding could reach the Network tier,
+  and a page can add made-up names to the Screens list (an image tag with `?screen=`), which can push
+  real screens out of a full list until they next ask. The worst outcome is a skipped or paused
+  wallpaper or a cluttered Screens list, never a changed caption or library.
 - An API key you enter for a captioner is written to a file inside the add-on's own data directory
   at mode 600 and re-written on every start. It never appears in the generated config file or in
   the log. Like every add-on option it is also in Home Assistant's own `options.json` for the add-on.
@@ -277,16 +310,18 @@ add-on (`backup: hot`, the render cache excluded):
 ## Troubleshooting
 
 **No images found.** `source_folders` must point at paths under `/media` or `/share` that exist inside
-the add-on. Check the log: a missing folder is named there and skipped. The panel says *Nothing yet*
-until the first scan finishes.
+the add-on. Check the log: a missing folder is named there and skipped, and with no existing folder at
+all the add-on stops with `No image source`. The panel says *Nothing yet* until the first scan
+finishes.
 
 **Captions never appear.** Check `caption_enabled`, then the captioner `url`: it must be the full
 `/v1/chat/completions` path, not just the host. The log says `failed (…); skipping it for 10 min`
 when an endpoint refuses, times out or answers an HTTP error (with the server's own reason, e.g.
 `HTTP 404: model not found`), and `postponed` while no endpoint is available; captioning resumes
 by itself when the skip runs out, and the wallpaper keeps rotating uncaptioned meanwhile. `empty
-reply (finish_reason: length)` means a reasoning model spent `caption.max_tokens` thinking: raise it
-or pick a non-thinking model. A blurb that breaks the word-count or grounding rules is retried once immediately with the
+reply (finish_reason: length)` means a reasoning model spent its token budget thinking: pick a
+non-thinking model (the budget, `caption.max_tokens`, can only be raised when running without Home
+Assistant). A blurb that breaks the word-count or grounding rules is retried once immediately with the
 reason, then that picture is retried six hours later; the panel card shows the last error.
 
 **The same image never changes.** Check how many images it actually found: the panel's library count,
@@ -328,7 +363,7 @@ docker run -d --name matchy -p 8160:8160 \
   --entrypoint python3 matchy /app/engine.py
 ```
 
-`config.json` is deep-merged over the engine's defaults; this is the whole of what the add-on
+`config.json` is deep-merged over the engine's defaults. This is the shape of what the add-on
 generates, with its defaults:
 
 ```json
@@ -340,7 +375,10 @@ generates, with its defaults:
   "render_threads": 2,
   "folder_scan_minutes": 10,
   "rotation": {"min_minutes": 15, "max_minutes": 20},
-  "folders": [{"path": "/sources/wallpapers"}],
+  "location": {"latitude": 53.35, "longitude": -6.26},
+  "folders": [{"path": "/sources/wallpapers",
+               "sets": {"art": {"id_prefix": "art", "name": "Classic Art", "abstract": false}}}],
+  "exclude": [],
   "captioners": [
     {"name": "local", "url": "http://<host>:8080/v1/chat/completions", "model": "<model>",
      "api_key": "", "timeout": 120}
@@ -352,15 +390,28 @@ generates, with its defaults:
 }
 ```
 
-Extra keys the engine understands but the add-on does not expose: per-folder `credit` and `sets`
-(`{"<sub-folder>": {"id_prefix", "name", "title", "credit", "context", "abstract"}}`), per-id
-`overrides` (`{"<id>": {"place": "…"}}`), `captioners[].api_key_file`, `down_minutes` (10),
-`gap_seconds` (0, a pause after each caption) and `json_mode` (true; false never sends `response_format`), `caption.max_tokens` (300),
-`temperature` (0.4), `image_px` (1024, the size sent to the model), `retry_failed_hours` (6),
-`forbidden_titles`, `rotation.caption_priority`, `dedupe.avoid_prefixes` and `ladder_prefer`
-(`"4k"`), `lan_cidrs`, `ingress_peers`, `size_limits`, `bind` and `style` (label proportions,
-fonts, `jpeg_quality`). Environment: `WE_CONFIG`, `WE_PORT`, `WE_DATA_DIR`, `WE_FONT_DIR`,
-`WE_ACCESS_LOG`.
+The add-on writes a captioner's key to a file and passes `api_key_file` instead of `api_key`; either
+works here. Leave `location` out and Day & night changes at 07:00 and 19:00. Times are local to the
+container, so set `TZ` (for example `-e TZ=Europe/London`) or they are UTC.
+
+Keys the engine understands but the add-on does not expose:
+
+- per folder: `credit`, `meta_file` (default `meta.json`), and `title` in a `sets` entry;
+- per id: `overrides` (`{"<id>": {"place": "…"}}`);
+- per captioner: `api_key_file`, `down_minutes` (10, how long a failing endpoint is skipped),
+  `gap_seconds` (0, a pause after each caption) and `json_mode` (true; false never sends
+  `response_format`);
+- under `caption`: `max_tokens` (300), `temperature` (0.4), `image_px` (1024, the size sent to the
+  model), `retry_failed_hours` (6) and `forbidden_titles`;
+- `rotation.caption_priority`, `dedupe.avoid_prefixes` and `ladder_prefer` (`"4k"`), `lan_cidrs`,
+  `ingress_peers`, `size_limits`, `bind` and `style` (label proportions, fonts, `jpeg_quality`).
+
+Environment: `WE_CONFIG`, `WE_PORT`, `WE_DATA_DIR`, `WE_FONT_DIR`, `WE_ACCESS_LOG`.
+
+Without Home Assistant there is no sidebar panel, so the **Panel** tier (hide, unhide, edit caption,
+re-caption, how often, forget a screen) answers `403` and the gallery page draws those buttons
+disabled. To use them from a trusted machine, list its address in `ingress_peers`; that machine then
+counts as the panel, so give it only to one you would hand the controls to.
 
 ## Licensing and credits
 

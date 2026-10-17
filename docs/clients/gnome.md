@@ -24,8 +24,8 @@ Every 30 seconds, and 3 seconds after a monitor change:
    `/img/<id>/<rev>/span.jpg?layout=<spec>` to `~/.local/share/backgrounds/matchy/<version>-<layouthash>.jpg`
    (a new file name each time, because GNOME caches by URI) and sets `picture-uri`,
    `picture-uri-dark` and `picture-options=spanned` in `org.gnome.desktop.background`.
-4. Keeps the current and previous file, plus the newest image of up to four other layouts, and
-   deletes the rest.
+4. Keeps the current and previous file, plus the newest image of other recent layouts (six layouts
+   in all), and deletes the rest.
 
 Engine unreachable (asleep, or the laptop is away): nothing changes, one journal line per outage,
 quiet retries. If the monitors changed meanwhile (undocked, then woke up elsewhere) it reuses the
@@ -39,8 +39,9 @@ lines that restore what you had. It never touches the lock screen (`org.gnome.de
 ```bash
 install -Dm755 docs/clients/gnome/wallpaper-follow ~/.local/bin/wallpaper-follow
 install -Dm644 docs/clients/gnome/wallpaper-follow.service ~/.config/systemd/user/wallpaper-follow.service
-# put your engine address in the unit (the host port published for the add-on, or the Docker port)
-sed -i 's#http://<your-ha-host>:<port>#http://<your-ha-host>:8160#' ~/.config/systemd/user/wallpaper-follow.service
+# your Matchy address: Home Assistant's address and the host port you published for the add-on
+# (or the Docker port); change homeassistant.local:8160 if yours differs
+sed -i 's#http://<your-ha-host>:<port>#http://homeassistant.local:8160#' ~/.config/systemd/user/wallpaper-follow.service
 systemctl --user daemon-reload
 systemctl --user enable --now wallpaper-follow
 ```
@@ -71,7 +72,7 @@ bash ~/.local/share/backgrounds/matchy-undo.txt
 Every request names the machine with `?screen=<hostname>`, so it shows up in the panel's **Screens**
 box under its host name. **Turn off** there and within a tick the follower puts back the wallpaper
 saved in `~/.local/share/backgrounds/matchy-undo.txt` and stands by. **Turn on** and it saves the undo
-file again (from whatever wallpaper you picked meanwhile) and follows the next picture. With no undo
+file again (from whatever wallpaper you picked meanwhile) and puts the current picture back at once. With no undo
 file it leaves the wallpaper as it is while off.
 
 Turning the machine off in Matchy and the local pause file are separate: the pause file stops the

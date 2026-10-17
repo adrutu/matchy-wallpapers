@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.4.0 (2026-10-17)
+
+First public release.
+
+- Fix: a picture could answer `400` ("box offset can't be negative") at some sizes, about 4 % of
+  picture and size pairs, so a screen got no wallpaper for that rotation and the panel showed a
+  broken thumbnail. The crop box is now kept inside the picture; `tests/render_test.py` sweeps
+  picture shapes against client sizes.
+- Screens: names may use letters in any script (a Home Assistant user called Zoë was not listed).
+- `sets`: `id_prefix` is turned into a URL-safe slug like the rest of the id, so a prefix with a
+  space no longer breaks that set.
+- The configuration tab names and explains every option (`translations/en.yaml`, checked against
+  the Supervisor's schema in CI).
+- New icon and logo, drawn from code (`tools/make_artwork.py`).
+- Documentation checked line by line against the code: installation from zero (the local build,
+  the picture folder before the first start, the sidebar toggle, 64-bit only), a captioner example,
+  the HTTP API's edge cases, running without Home Assistant, and the per-tablet screensaver.
+- Running without Home Assistant: the daily picture's default id prefix is `daily`, as in the add-on.
+
 ## 0.3.2 (2026-10-17)
 
 - Renamed **Matchy Wallpapers** (repository `matchy-wallpapers`; "Matchy" stays the short name). The

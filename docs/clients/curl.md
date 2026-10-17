@@ -3,7 +3,7 @@
 `MATCHY` below is where you can reach the add-on's published port, e.g. `http://<your-ha-host>:<port>`.
 
 ```bash
-MATCHY=http://<your-ha-host>:<port>
+MATCHY='http://<your-ha-host>:<port>'   # replace with your address, e.g. http://homeassistant.local:8160
 ```
 
 ## What is on screen
@@ -23,7 +23,8 @@ curl -s $MATCHY/current.json
   "clean": "/img/art-great-wave/73bdfe/clean/{w}x{h}.jpg",
   "label": "/img/art-great-wave/73bdfe/label/{w}x{h}.jpg",
   "span": "/img/art-great-wave/73bdfe/span.jpg?layout={layout}"
- }
+ },
+ "screens_off": []
 }
 ```
 
@@ -92,7 +93,7 @@ curl -s -X POST -H 'Content-Type: application/json' -d '{"id": "art-great-wave"}
 
 Hide, unhide, edit caption, re-caption and the rotation window work only from the Home Assistant
 sidebar panel (`403 Home Assistant sidebar panel only` from anywhere else); see *Access tiers* in
-`DOCS.md`.
+[DOCS.md](../../matchy/DOCS.md#access-tiers).
 
 ## Screens (0.3.0)
 

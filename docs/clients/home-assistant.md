@@ -106,7 +106,7 @@ script:
 The `urls` attribute holds templates (`/img/<id>/<rev>/clean/{w}x{h}.jpg`), which is why the two
 URLs are built with `replace`. Pick sizes that match your tablets; the engine renders any size from
 320 to 7680 on a side and caches it. `POST /api/next` works from Home Assistant because it comes
-from a private address (the *Network* tier in DOCS.md). To pause or show a specific picture from an
+from a private address (the *Network* tier in [DOCS.md](../../matchy/DOCS.md#access-tiers)). To pause or show a specific picture from an
 automation, add `rest_command`s for `/api/pause`, `/api/resume` and `/api/show` with
 `content_type: "application/json"` and a JSON `payload`.
 
@@ -170,9 +170,13 @@ wallpanel:
     wallpanel-screensaver-overlay:
       background: '#00000000'
   profiles:
-    user.<the tablet user's id>:   # Settings → People → the user → the id in the URL
+    user.<the tablet user's id>:
       enabled: true
 ```
+
+The profile key is `user.` plus the tablet user's ID (Settings → People → **Users** tab, open the
+user; the tab appears with Advanced mode on in your profile). Wallpanel also accepts the user's name
+in lower case with spaces as underscores, e.g. `user.hall_tablet`.
 
 `media-entity-image://` follows the `image` entity: the screensaver switches pictures when
 `image.matchy_label` changes, i.e. on every rotation, with no reload. The label is baked into that
@@ -180,12 +184,14 @@ render, so it shows on the screensaver even though the dashboard tiles hide it.
 
 ## 4. Screens (0.3.0): one switch per tablet
 
-Matchy's **Screens** list (see DOCS.md) lets you turn one screen off without touching the others. On
+Matchy's **Screens** list (see [DOCS.md](../../matchy/DOCS.md#screens)) lets you turn one screen off without touching the others. On
 Home Assistant each wall tablet logs in as its own user, so the user name makes a good screen name.
 Three changes, all optional.
 
 **Package.** Add `screens_off` to the feed and to `sensor.matchy`, a `rest_command`, and one template
-switch per tablet (here a tablet whose Home Assistant user is called `Hall tablet`):
+switch per tablet (here a tablet whose Home Assistant user is called `Hall tablet`). These are
+additions to the package from section 1: merge each block into the matching top-level key there
+(`rest:`, `template:`, `rest_command:`) rather than repeating the key, which YAML does not allow.
 
 ```yaml
 rest:
@@ -251,7 +257,8 @@ accounts out of the list (`personal` below): a phone is not a screen.
 ```
 
 **Screensaver.** `image.matchy_label` is shared, so a tablet turned off would still show Matchy when
-it goes idle. Give each tablet its own `image` entity and point that tablet's Wallpanel at it:
+it goes idle. Give each tablet its own `image` entity (added to the `template:` block of the
+package) and point that tablet's Wallpanel at it:
 
 ```yaml
 template:
@@ -265,9 +272,14 @@ template:
         availability: "{{ has_value('sensor.matchy') }}"
 ```
 
+And in that tablet's Wallpanel profile (section 3), so other users of the dashboard keep theirs:
+
 ```yaml
 wallpanel:
-  image_url: media-entity-image://image.matchy_screensaver_hall_tablet
+  profiles:
+    user.<the tablet user's id>:
+      enabled: true
+      image_url: media-entity-image://image.matchy_screensaver_hall_tablet
 ```
 
 The `image` entity is fetched by Home Assistant itself, so the fallback needs an address Home
