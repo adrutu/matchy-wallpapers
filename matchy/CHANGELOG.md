@@ -3,7 +3,7 @@
 ## 0.3.0 (2026-10-17)
 
 - Screens: a client can name itself with `?screen=<name>` on any request, and the sidebar panel lists
-  those screens (following or off, last seen) with **Turn off**, **Turn on** and **Forget**. Off is
+  those screens (following or off) with **Turn off**, **Turn on** and **Forget**. Off is
   advisory: `/current.json` gains `screens_off` and, for a named screen, `follow`. New
   `GET /screens.json`, `POST /api/screen` (network tier) and `POST /api/screen/forget` (panel only).
   Only clients on the network tier are listed; `/screens.json` is network-tier and sends no CORS;

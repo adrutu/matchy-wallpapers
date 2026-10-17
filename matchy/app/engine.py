@@ -993,7 +993,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"screens": eng.screens_view()}, head=head, cors=False)
         if path in ("/", "/index.html"):
             page = gallery_html(eng, control=self.client_is_lan(), admin=self.client_is_ingress())
-            # No CORS: on this network the page lists the screens' addresses (see /screens.json).
+            # No CORS: the page names the house's screens; another website has no business reading it.
             return self.send(200, page, "text/html; charset=utf-8", {"Cache-Control": "no-store"}, head, cors=False)
 
         try:
@@ -1222,15 +1222,6 @@ def gallery_html(eng, control, admin):
         len(PACE_STOPS) - 1, pos, no_admin, esc(pace_label), source,
         rot["min_minutes"], no_admin, rot["max_minutes"], no_admin, no_admin)
 
-    def ago(s):
-        if s < 90:
-            return "just now"
-        if s < 90 * 60:
-            return "%d min ago" % round(s / 60)
-        if s < 36 * 3600:
-            return "%d h ago" % round(s / 3600)
-        return "%d days ago" % round(s / 86400)
-
     rows = []
     for sc in eng.screens_view():
         days = sc["age_s"] // 86400
@@ -1240,11 +1231,12 @@ def gallery_html(eng, control, admin):
             tag = '<span class="tag stale">Not seen for %d days</span>' % days
         else:
             tag = '<span class="tag on">Following</span>'
+        # Just the name and the state: last seen and the address are in /screens.json (network only).
         rows.append(
-            '<li><b>%s</b> %s<small class="mut">seen %s%s</small><div class="acts">'
+            '<li><b>%s</b> %s<div class="acts">'
             '<button data-act="screen" data-body="%s"%s>%s</button>'
             '<button data-act="screen/forget" data-body="%s"%s>Forget</button></div></li>' % (
-                esc(sc["id"]), tag, ago(sc["age_s"]), (" · " + esc(sc["ip"])) if sc["ip"] and control else "",
+                esc(sc["id"]), tag,
                 esc(json.dumps({"id": sc["id"], "follow": not sc["follow"]}), quote=True), no_ctl,
                 "Turn off" if sc["follow"] else "Turn on",
                 esc(json.dumps({"id": sc["id"]}), quote=True), no_admin))
@@ -1311,7 +1303,7 @@ button.link{border:0;padding:0;color:var(--acc);text-decoration:underline;font-s
 .pace input{width:100%;accent-color:var(--acc)}.pace output{grid-column:1/-1;font-weight:600}
 details.custom{margin-top:8px}details.custom summary{cursor:pointer;color:var(--mut);font-size:13px}
 .screens{list-style:none;margin:0;padding:0}.screens li{padding:8px 0;border-top:1px solid var(--line)}
-.screens li:first-child{border-top:0}.screens small{display:block}.screens .acts{margin-top:6px}
+.screens li:first-child{border-top:0}.screens .acts{margin-top:6px}
 .lib{margin:28px 0 0}.lib small{color:var(--mut);font-weight:400;margin-left:8px}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:14px;margin-top:12px}
 .card{margin:0;background:var(--card);border-radius:10px;overflow:hidden;display:flex;flex-direction:column}

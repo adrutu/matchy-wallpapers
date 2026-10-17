@@ -128,8 +128,9 @@ page reloads itself when the picture changes (it checks every 30 seconds). From 
   when you let go. The shortest/longest window is still there under **Custom window**. A choice made
   here lasts until you change the rotation options in the add-on configuration, so whichever was set
   last wins; **Use the options** goes back to them.
-- **Screens**: every screen that has named itself (see below), whether it follows Matchy, when it was
-  last seen and from which address. **Turn off** / **Turn on** one screen, or **Forget** it.
+- **Screens**: every screen that has named itself (see below) and whether it follows Matchy.
+  **Turn off** / **Turn on** one screen, or **Forget** it. When and from where each was last seen is in
+  `/screens.json`.
 - See whether each captioner is ready or being skipped, what it is writing now and how many pictures
   are waiting.
 
@@ -188,7 +189,7 @@ Read endpoints:
 Sizes: width and height 320–7680; a span canvas up to 12000x8000 with at most 8 monitors and one
 primary. A `<rev>` that is no longer current (the caption was edited) answers `302` to the current
 URL. `HEAD` works everywhere `GET` does. Every read response carries
-`Access-Control-Allow-Origin: *`, except the gallery page and `/screens.json`, which list the screens' addresses.
+`Access-Control-Allow-Origin: *`, except the gallery page and `/screens.json`, which name the screens (and the latter their addresses).
 
 Control endpoints are `POST`s with a JSON object body and **must** be sent with
 `Content-Type: application/json` (the one exception is `/api/next`, which also accepts an empty

@@ -228,6 +228,8 @@ try:
     check("A screen: turned off", st == 200 and j2["follow"] is False and j2["screens_off"] == ["lap-1"], (st, j2))
     page = req(A, "GET", "/")[2]
     check("A page: screens box", "Turn on" in page and "Turn off" in page and "tag off" in page, page[-3000:])
+    box = page.split("<h2>Screens</h2>")[1].split("</section>")[0]
+    check("A page: no last seen or address in the screens box", "127.0.0.1" not in box and "seen" not in box, box)
     hdrs = req(A, "GET", "/")[3]
     check("A page: no CORS (it lists addresses)", "Access-Control-Allow-Origin" not in hdrs
           and "Access-Control-Allow-Origin" in req(A, "GET", "/current.json")[3], hdrs)
