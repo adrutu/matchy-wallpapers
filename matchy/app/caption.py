@@ -44,19 +44,40 @@ def to_uk(text):
     return re.sub(r"[A-Za-z]+", fix, text)
 
 
+# Suffixes of derived words: place adjectives and plurals built from a word the metadata does contain
+# (Andes -> Andean, Iceland -> Icelandic). Stems shorter than 4 letters never count.
+ADJ_SUFFIXES = ("an", "ian", "ean", "ese", "ish", "ic", "s")
+
+
+def derived_from(p, allowed):
+    """`p` (lower-cased) is a place adjective or plural of some allowed word: its stem plus one of ADJ_SUFFIXES."""
+    for a in allowed:
+        stems = [a]
+        if a.endswith("es"):
+            stems.append(a[:-2])
+        if a.endswith(("s", "y")):  # Andes -> Ande-an, Italy -> Ital-ian
+            stems.append(a[:-1])
+        for stem in stems:
+            rest = p[len(stem):]
+            if len(stem) >= 4 and p.startswith(stem) and (
+                    rest in ADJ_SUFFIXES or (rest == "n" and stem.endswith("a"))):  # Cuba -> Cuban
+                return True
+    return False
+
+
 def proper_nouns(blurb, allowed_text):
     """Capitalised words that are not sentence-initial and do not appear in the known metadata."""
     allowed = {w.lower() for w in re.findall(r"[A-Za-zÀ-ɏ]+", allowed_text)}
     bad = []
     for m in re.finditer(r"[A-Za-zÀ-ɏ][\wÀ-ɏ'-]*", blurb):
-        w = m.group(0)
+        w = re.sub(r"'s$", "", m.group(0))  # a possessive of a known name is still that name
         if not w[:1].isupper() or w in ("I",):
             continue
         before = blurb[:m.start()]
         if SENT_START.search(before):
             continue
         parts = re.findall(r"[A-Za-zÀ-ɏ]+", w)
-        if all(p.lower() in allowed for p in parts):
+        if all(p.lower() in allowed or derived_from(p.lower(), allowed) for p in parts):
             continue
         bad.append(w)
     return bad
