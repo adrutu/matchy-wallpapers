@@ -1,13 +1,14 @@
-# Matchy
+# Matchy Wallpapers
 
 **One wallpaper, matched across every screen.**
 
-Matchy picks one picture for the whole house and gives every screen that same picture, rendered to its
-own shape and size: a spanned composite across a multi-monitor desktop, a portrait crop on a wall
-tablet, a dashboard background in a browser. It moves on every 15 to 20 minutes by default, or as
-slowly as twice a day at sunrise and sunset. Each picture carries an art-gallery label baked into the
-corner: title, credit, and a short blurb written by a vision model you point it at, grounded on the
-metadata you already have so it cannot invent a place it is not looking at.
+Matchy Wallpapers (Matchy for short) picks one picture for the whole house and gives every screen that
+same picture, rendered to its own shape and size: a spanned composite across a multi-monitor desktop,
+a portrait crop on a wall tablet, a dashboard background in a browser. It moves on every 15 to 20
+minutes by default, or as slowly as twice a day at sunrise and sunset. Each picture carries an
+art-gallery label baked into the corner: title, credit, and a short blurb written by a vision model
+you point it at, grounded on the metadata you already have so it cannot invent a place it is not
+looking at.
 
 It is one small Python service (standard library HTTP server plus Pillow). No account, no cloud, no
 telemetry: it reads your folders and serves your pictures on your own network.

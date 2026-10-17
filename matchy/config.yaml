@@ -4,12 +4,12 @@
 # SILENTLY DISCARDED — no error, the feature just does not exist. Only add keys that
 # are in supervisor/apps/validate.py.
 name: Matchy Wallpapers
-version: "0.3.1"
+version: "0.3.2"
 slug: matchy
 description: >-
   One wallpaper, matched across every screen. Rotates a captioned wallpaper and serves it
   to desktops, Home Assistant tablets and dashboards, rendered to each screen's own size.
-url: "https://github.com/adrutu/matchy"
+url: "https://github.com/adrutu/matchy-wallpapers"
 arch:
   - amd64
   - aarch64
@@ -21,7 +21,7 @@ init: false
 ingress: true
 ingress_port: 8160
 panel_icon: mdi:image-frame
-panel_title: Matchy
+panel_title: Matchy Wallpapers
 
 # run.sh reads Home Assistant's latitude/longitude (GET /core/api/config) once at start, so the
 # Day & night rotation can change at sunrise and sunset. Nothing else uses the API.
@@ -48,7 +48,7 @@ map:
 backup_exclude:
   - "cache"
 
-# image: "ghcr.io/adrutu/matchy"   # uncomment once CI publishes a multi-arch manifest;
+# image: "ghcr.io/adrutu/matchy-wallpapers"   # uncomment once CI publishes a multi-arch manifest;
                                    # commented out = the Supervisor builds locally.
 
 options:

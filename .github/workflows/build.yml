@@ -152,7 +152,7 @@ jobs:
           retention-days: 7
 
   # Opt-in: builds one multi-arch manifest and pushes it on a version tag, only when the repository
-  # variable MATCHY_IMAGE names the image (e.g. ghcr.io/<owner>/matchy). Unset = the job is skipped
+  # variable MATCHY_IMAGE names the image (e.g. ghcr.io/<owner>/matchy-wallpapers). Unset = the job is skipped
   # and nothing leaves the runner. The tag must equal `version` in matchy/config.yaml.
   publish:
     name: Publish multi-arch image (opt-in)

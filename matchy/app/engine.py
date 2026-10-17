@@ -1280,7 +1280,7 @@ def gallery_html(eng, control, admin):
 
 # string.Template, so the CSS and JS need no escaping; the script avoids "$" for the same reason.
 PAGE = string.Template("""<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1"><title>Matchy</title>
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Matchy Wallpapers</title>
 <style>
 :root{color-scheme:dark;--bg:#111413;--card:#1b201e;--line:#2c3430;--fg:#e8ece9;--mut:#9aa59f;--acc:#7fb38f;--bad:#e08a7f}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,sans-serif}
@@ -1321,7 +1321,7 @@ dialog menu{display:flex;justify-content:flex-end;gap:8px;padding:0;margin:16px 
 .foot{margin-top:24px;font-size:13px}.foot a{color:var(--acc)}
 @media(max-width:800px){.top{grid-template-columns:1fr}}
 </style></head><body><main>
-<header><span class="brand">Matchy</span><span id="msg" role="status"></span></header>
+<header><span class="brand">Matchy Wallpapers</span><span id="msg" role="status"></span></header>
 $top
 <section class="panels">
 <div class="box"><h2>Rotation</h2><p>$state</p><div class="acts">$toggle</div>$window</div>

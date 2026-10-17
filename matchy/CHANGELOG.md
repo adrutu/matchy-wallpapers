@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.2 (2026-10-17)
+
+- Renamed **Matchy Wallpapers** (repository `matchy-wallpapers`; "Matchy" stays the short name). The
+  sidebar panel and the gallery page carry the full name. The slug stays `matchy`, so an install
+  keeps its settings, captions and screens.
+- `tools/retro_themes.py`: no brand names. The four sets are now *Games console*, *Instant camera*,
+  *Videotape* and *Hi-fi* colours (folders `theme-console`, `theme-instant`, `theme-videotape`,
+  `theme-hifi`), and titles and descriptions name the era instead of a product.
+
 ## 0.3.1 (2026-10-17)
 
 - Captions: a blurb may use a place adjective or plural of a name in the known facts (Andes ->

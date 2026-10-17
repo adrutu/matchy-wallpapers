@@ -6,8 +6,12 @@ that were weighed. **All six were answered on 2026-10-16:**
 1. Licence: **MIT**.
 2. Name: **Matchy**, kept after a clash check (no Home Assistant add-on or integration uses the
    slug; the nearest is an unrelated US trademark for a mobile puzzle game). Placeholder artwork stays.
+   **Renamed 2026-10-17 to Matchy Wallpapers** (repository `matchy-wallpapers`) to keep clear of that
+   trademark; "Matchy" stays as the short name, and the add-on slug stays `matchy`, because a new slug
+   is a new add-on to Home Assistant and every install would start over.
 3. Container user: **A, stay root**, like official add-ons.
-4. Repository: **private on GitHub** (`adrutu/matchy`) for now; no images published.
+4. Repository: **private on GitHub** (`adrutu/matchy-wallpapers`, `adrutu/matchy` until 2026-10-17)
+   for now; no images published.
 5. `POST /api/next` without a body: **kept**.
 6. The existing install and the add-on run **side by side for a few days** first; each client moves
    only on the owner's say-so.

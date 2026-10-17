@@ -39,10 +39,10 @@ LABEL \
     io.hass.type="app" \
     io.hass.name="Matchy Wallpapers" \
     io.hass.description="One wallpaper, matched across every screen." \
-    io.hass.url="https://github.com/adrutu/matchy" \
+    io.hass.url="https://github.com/adrutu/matchy-wallpapers" \
     org.opencontainers.image.title="Home Assistant App: Matchy Wallpapers" \
     org.opencontainers.image.description="One wallpaper, matched across every screen." \
-    org.opencontainers.image.source="https://github.com/adrutu/matchy" \
+    org.opencontainers.image.source="https://github.com/adrutu/matchy-wallpapers" \
     org.opencontainers.image.licenses="MIT"
 
 # Health for the Supervisor (in place of config.yaml's obsolete `watchdog:` URL): with the app's
