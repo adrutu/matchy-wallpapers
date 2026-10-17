@@ -23,6 +23,10 @@ ingress_port: 8160
 panel_icon: mdi:image-frame
 panel_title: Matchy
 
+# run.sh reads Home Assistant's latitude/longitude (GET /core/api/config) once at start, so the
+# Day & night rotation can change at sunrise and sunset. Nothing else uses the API.
+homeassistant_api: true
+
 # The container always listens on 8160; the user picks the host port in the UI.
 # Published to nobody by default (null), but offered, because the display clients
 # (desktops, tablets, Homepage) do not go through ingress.

@@ -164,6 +164,26 @@ if [[ "${usable_folders}" -eq 0 ]] \
         "No image source. Add at least one existing folder to 'source_folders' (for example /media/wallpapers or /share/wallpapers), or set a remote manifest or daily image URL."
 fi
 
+# --------------------------------------------------------------------- location
+# Day & night rotation changes the picture at sunrise and sunset, so the engine needs to know
+# where the house is. Home Assistant knows (homeassistant_api: true). Without it, or with no
+# answer, the engine changes at 07:00 and 19:00 instead.
+location='null'
+if [[ -n "${SUPERVISOR_TOKEN:-}" ]]; then
+    for _ in 1 2 3; do
+        if core_config="$(curl -fsS --max-time 10 -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
+                http://supervisor/core/api/config 2>/dev/null)"; then
+            location="$(jq -c 'if (.latitude | type) == "number" and (.longitude | type) == "number"
+                               then {latitude, longitude} else null end' <<<"${core_config}" 2>/dev/null)" \
+                || location='null'
+            break
+        fi
+        sleep 5
+    done
+fi
+[[ "${location}" != 'null' ]] \
+    || bashio::log.info "Home Assistant's location is not known; Day & night changes at 07:00 and 19:00."
+
 # ----------------------------------------------------------------- write config
 jq -n \
     --argjson port "${PORT}" \
@@ -185,6 +205,7 @@ jq -n \
     --arg caption_spelling "$(opt 'caption_spelling' 'British')" \
     --argjson caption_min_words "$(int 'caption_min_words' 30)" \
     --argjson caption_max_words "$(int 'caption_max_words' 45)" \
+    --argjson location "${location}" \
     '{
         port: $port,
         data_dir: $data_dir,
@@ -193,6 +214,7 @@ jq -n \
         render_threads: $render_threads,
         folder_scan_minutes: $scan_minutes,
         rotation: {min_minutes: $rot_min, max_minutes: $rot_max},
+        location: $location,
         folders: ($folders | map(. + {sets: $sets})),
         exclude: $exclude,
         captioners: $captioners,

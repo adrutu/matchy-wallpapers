@@ -39,8 +39,9 @@ def check(name, cond, extra=""):
         fail += 1; print("FAIL", name, extra)
 
 
-def run(options):
-    """Run run.sh with these options; return (exit code, config dict or None, stderr, data dir)."""
+def run(options, env=None):
+    """Run run.sh with these options (and extra environment); return (exit code, config dict or None,
+    stderr, data dir)."""
     tmp = tempfile.mkdtemp(prefix="matchy-runsh-")
     data = os.path.join(tmp, "data")
     script = open(RUN_SH).read()
@@ -51,7 +52,7 @@ def run(options):
     open(os.path.join(tmp, "stub.sh"), "w").write(STUB)
     json.dump(options, open(os.path.join(tmp, "options.json"), "w"))
     p = subprocess.run(["bash", "-c", 'source "$1/stub.sh"; source "$1/run.sh"', "_", tmp],
-                       env=dict(os.environ, OPTIONS=os.path.join(tmp, "options.json")),
+                       env=dict(os.environ, OPTIONS=os.path.join(tmp, "options.json"), **(env or {})),
                        capture_output=True, text=True, timeout=60)
     cfg_path = os.path.join(data, "config.json")
     cfg = json.load(open(cfg_path)) if os.path.exists(cfg_path) else None
@@ -113,6 +114,24 @@ if cfg:
     check("unkeyed captioner has no key file", "api_key_file" not in caps[1] and caps[1]["timeout"] == 120, caps[1])
     check("full: no nulls", not has_null(cfg))
     check("key never logged", "s3cr3t-key" not in err)
+
+# Home Assistant's location (Day & night rotation), through a fake curl on PATH; sleep made instant
+fake = tempfile.mkdtemp(prefix="matchy-bin-"); temps.append(fake)
+def fake_bin(curl_body):
+    for name, body in (("curl", curl_body), ("sleep", "exit 0")):
+        f = os.path.join(fake, name)
+        open(f, "w").write("#!/bin/bash\n" + body + "\n")
+        os.chmod(f, 0o755)
+    return {"SUPERVISOR_TOKEN": "t", "PATH": fake + os.pathsep + os.environ["PATH"]}
+check("no token: no location key", "location" not in (run(dict(base))[1] or {"location": 1}))
+rc, cfg, err, data, tmp = run(dict(base), fake_bin(
+    'echo \'{"latitude": 51.8985, "longitude": -8.4756, "location_name": "Home", "time_zone": "Europe/Dublin"}\''))
+temps.append(tmp)
+check("location from Home Assistant", rc == 0 and cfg and cfg.get("location") == {"latitude": 51.8985, "longitude": -8.4756},
+      (rc, cfg and cfg.get("location"), err[-300:]))
+rc, cfg, err, data, tmp = run(dict(base), fake_bin("exit 7")); temps.append(tmp)
+check("Home Assistant not answering: no location, still starts", rc == 0 and cfg and "location" not in cfg
+      and "location is not known" in err, (rc, err[-300:]))
 
 # no usable source at all: refuses to start
 rc, cfg, err, data, tmp = run(dict(base, source_folders=["/nonexistent/matchy"])); temps.append(tmp)
