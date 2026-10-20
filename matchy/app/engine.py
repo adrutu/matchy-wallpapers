@@ -28,6 +28,7 @@ from PIL import Image
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import render  # noqa: E402
 from caption import Captioner  # noqa: E402
+from artsources import SOURCES  # noqa: E402
 from library import Library, log, open_image, read_json, rev_of, write_json  # noqa: E402
 
 DEFAULTS = {
@@ -46,6 +47,16 @@ DEFAULTS = {
     "dedupe": {"avoid_prefixes": [], "ladder_prefer": "4k"},
     "static_manifest": {"enabled": False, "refresh_hours": 24},
     "daily": {"enabled": False, "check_minutes": 60, "id_prefix": "daily"},
+    # Open-access art (artsources.py): each source off until enabled; `per_day` new works a day, each at
+    # least `min_px` on its long side. `contact` goes into the User-Agent next to the project URL.
+    "art_sources": {"check_minutes": 60, "pause_seconds": 1.0, "contact": "",
+                    "aic": {"enabled": False, "per_day": 3, "min_px": 2560, "batch": 20,
+                            "base_url": "https://api.artic.edu/api/v1"},
+                    "met": {"enabled": False, "per_day": 3, "min_px": 2560, "lookups": 15,
+                            "search": {"isHighlight": "true"},
+                            "base_url": "https://collectionapi.metmuseum.org/public/collection"},
+                    "potd": {"enabled": False, "per_day": 1, "min_px": 2560, "days_back": 7, "language": "en",
+                             "api_url": "https://commons.wikimedia.org/w/api.php"}},
     "captioners": [],
     "caption": {"enabled": True, "language": "English", "spelling": "", "min_words": 30, "max_words": 45,
                 "max_tokens": 300, "temperature": 0.4, "image_px": 1024, "retry_failed_hours": 6,
@@ -82,6 +93,11 @@ def load_config():
     if os.environ.get("WE_FONT_DIR"):
         cfg["style"]["font_dir"] = os.environ["WE_FONT_DIR"]
     return cfg
+
+
+def art_fields(it):
+    """What an open-access source knows about a work (artist, date, medium, place; its page), for the sidecar."""
+    return {k: it["meta"][k] for k in ("facts", "source_url") if it["meta"].get(k)}
 
 
 def iso(ts):
@@ -425,6 +441,7 @@ class Engine:
         for k in ("caption_error", "caption_failed_at", "caption_attempts", "caption_note"):
             sc.pop(k, None)
         sc.update(fields)
+        sc.update(art_fields(it))
         sc.update({"id": iid, "source": it["path"], "sha256": it["sha256"], "edited": True,
                    "edited_at": iso(time.time())})
         with self.lock:
@@ -613,7 +630,7 @@ class Engine:
 
     # ---------------- background workers ----------------
     def scanner(self):
-        last_folder = last_static = last_daily = 0
+        last_folder = last_static = last_daily = last_art = 0
         c = self.cfg
         while True:
             now = time.time()
@@ -645,6 +662,14 @@ class Engine:
                 except Exception as e:
                     log("daily sync failed:", e)
                     last_daily = now - 60 * c["daily"].get("check_minutes", 60) + 600
+            art = c["art_sources"]
+            if any((art.get(n) or {}).get("enabled") for n in SOURCES) and now - last_art >= 60 * art["check_minutes"]:
+                last_art = now  # a failing source is logged by sync_art and tried again at the next check
+                try:
+                    if self.lib.sync_art():
+                        self.lib.rescan()
+                except Exception as e:
+                    log("art sync failed:", e)
             # masters for everything (cheap after the first pass)
             for iid in list(self.lib.items):
                 if iid in self.lib.skipped:
@@ -716,6 +741,7 @@ class Engine:
                       "caption_at": iso(time.time()), "caption_seconds": res["seconds"], "edited": False}
                 if res.get("accepted_with"):
                     sc["caption_note"] = "; ".join(res["accepted_with"])
+                sc.update(art_fields(it))
                 saved = self.lib.save_sidecar(iid, sc, force=recap)
                 if recap:
                     self._recaption_done(iid)

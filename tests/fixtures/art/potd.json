@@ -1,0 +1,38 @@
+{
+ "batchcomplete": true,
+ "query": {
+  "pages": [
+   {"ns": 6, "title": "File:Misty valley at dawn (example).jpg", "missing": false, "known": true,
+    "imagerepository": "local",
+    "imageinfo": [{
+     "size": 9120000, "width": 6000, "height": 4000,
+     "thumburl": "{BASE}/upload/thumb/Misty_valley_at_dawn_(example).jpg/3840px-Misty_valley_at_dawn_(example).jpg",
+     "thumbwidth": 3840, "thumbheight": 2560,
+     "responsiveUrls": {},
+     "url": "{BASE}/upload/Misty_valley_at_dawn_(example).jpg",
+     "descriptionurl": "https://commons.wikimedia.org/wiki/File:Misty_valley_at_dawn_(example).jpg",
+     "descriptionshorturl": "https://commons.wikimedia.org/w/index.php?curid=1",
+     "mime": "image/jpeg",
+     "extmetadata": {
+      "DateTime": {"value": "2024-06-02 09:15:00", "source": "mediawiki-metadata", "hidden": ""},
+      "ObjectName": {"value": "Misty valley at dawn", "source": "mediawiki-metadata", "hidden": ""},
+      "CommonsMetadataExtension": {"value": 1.2, "source": "extension", "hidden": ""},
+      "Categories": {"value": "Fog|Valleys|Pictures of the day (2026)", "source": "commons-categories", "hidden": ""},
+      "Assessments": {"value": "poty|potd", "source": "commons-categories", "hidden": ""},
+      "ImageDescription": {"value": "<div class=\"description en\" lang=\"en\"><span class=\"language en\"><b>English: </b></span>Morning fog lying in a wooded <a href=\"https://en.wikipedia.org/wiki/Valley\">valley</a> at dawn, seen from a ridge in the Black Forest.</div>", "source": "commons-desc-page"},
+      "DateTimeOriginal": {"value": "2023-10-14 07:12:30", "source": "commons-desc-page"},
+      "Credit": {"value": "<span class=\"int-own-work\" lang=\"en\">Own work</span>", "source": "commons-desc-page", "hidden": ""},
+      "Artist": {"value": "<a href=\"//commons.wikimedia.org/wiki/User:Example_Photographer\" title=\"User:Example Photographer\">Example Photographer</a>", "source": "commons-desc-page"},
+      "LicenseShortName": {"value": "CC BY-SA 4.0", "source": "commons-desc-page", "hidden": ""},
+      "UsageTerms": {"value": "Creative Commons Attribution-Share Alike 4.0", "source": "commons-desc-page", "hidden": ""},
+      "AttributionRequired": {"value": "true", "source": "commons-desc-page", "hidden": ""},
+      "LicenseUrl": {"value": "https://creativecommons.org/licenses/by-sa/4.0", "source": "commons-desc-page", "hidden": ""},
+      "Copyrighted": {"value": "True", "source": "commons-desc-page", "hidden": ""},
+      "Restrictions": {"value": "", "source": "commons-desc-page", "hidden": ""},
+      "License": {"value": "cc-by-sa-4.0", "source": "commons-templates", "hidden": ""}
+     }
+    }]
+   }
+  ]
+ }
+}

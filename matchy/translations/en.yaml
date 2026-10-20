@@ -115,6 +115,53 @@ configuration:
       timeout:
         name: Timeout
         description: Seconds to wait for one caption (default 120).
+  art_institute_chicago:
+    name: Art Institute of Chicago
+    description: >-
+      Public-domain works from the Art Institute of Chicago's open API, credited on the label. Its
+      images are at most 1686 pixels wide, so mostly tall works pass the default smallest size.
+    fields:
+      enabled:
+        name: Turned on
+        description: Off by default.
+      per_day:
+        name: New pictures a day
+        description: How many works to add each day.
+      min_px:
+        name: Smallest picture
+        description: >-
+          Pixels on the long side. Works with a smaller image are skipped (default 2560).
+  the_met:
+    name: The Met
+    description: >-
+      Public-domain highlights from The Metropolitan Museum of Art's open API, credited on the
+      label.
+    fields:
+      enabled:
+        name: Turned on
+        description: Off by default.
+      per_day:
+        name: New pictures a day
+        description: How many works to add each day.
+      min_px:
+        name: Smallest picture
+        description: >-
+          Pixels on the long side. Works with a smaller image are skipped (default 2560).
+  wikimedia_picture_of_the_day:
+    name: Wikimedia Commons Picture of the Day
+    description: >-
+      The Picture of the Day from Wikimedia Commons, credited with its author and licence.
+    fields:
+      enabled:
+        name: Turned on
+        description: Off by default.
+      per_day:
+        name: New pictures a day
+        description: 1 takes today's picture; more also fills in the previous days.
+      min_px:
+        name: Smallest picture
+        description: >-
+          Pixels on the long side. Works with a smaller image are skipped (default 2560).
   remote_manifest_url:
     name: Remote folder
     description: >-

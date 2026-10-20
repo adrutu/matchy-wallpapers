@@ -152,6 +152,16 @@ rc, cfg, err, data, tmp = run(dict(base), fake_bin("exit 7")); temps.append(tmp)
 check("Home Assistant not answering: no location, still starts", rc == 0 and cfg and "location" not in cfg
       and "location is not known" in err, (rc, err[-300:]))
 
+# open-access art: off by default with the documented budgets; one source on is enough to start
+check("defaults: every art source off", (run(dict(base))[1] or {}).get("art_sources") == {
+      "aic": {"enabled": False, "per_day": 3, "min_px": 2560}, "met": {"enabled": False, "per_day": 3, "min_px": 2560},
+      "potd": {"enabled": False, "per_day": 1, "min_px": 2560}})
+rc, cfg, err, data, tmp = run(dict(base, source_folders=["/nonexistent/matchy"],
+                                   the_met={"enabled": True, "per_day": 2, "min_px": 3000})); temps.append(tmp)
+check("one art source and no folder starts", rc == 0 and cfg and cfg["art_sources"]["met"] == {
+      "enabled": True, "per_day": 2, "min_px": 3000} and cfg["art_sources"]["aic"]["enabled"] is False
+      and "1 art source(s)" in err, (rc, cfg and cfg.get("art_sources"), err[-300:]))
+
 # no usable source at all: refuses to start
 rc, cfg, err, data, tmp = run(dict(base, source_folders=["/nonexistent/matchy"])); temps.append(tmp)
 check("no source refuses to start", rc != 0 and "No image source" in err, (rc, err[-300:]))
