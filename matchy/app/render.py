@@ -91,16 +91,9 @@ class Renderer:
 
     # ---------- crops ----------
     @staticmethod
-    def cover(master, w, h):
-        """Scale + centre-crop the master to exactly w x h."""
-        mw, mh = master.size
-        scale = max(w / mw, h / mh)
-        # w / (w / mw) can come out a hair above mw, which makes the box start at -1e-13 and Pillow
-        # refuses it ("box offset can't be negative"): about 4 % of picture and size pairs.
-        cw, ch = min(mw, w / scale), min(mh, h / scale)
-        left = (mw - cw) / 2
-        top = (mh - ch) / 2
-        box = (left, top, left + cw, top + ch)
+    def cover(master, w, h, focus=None):
+        """Scale + crop the master to exactly w x h: centred, or around focus (see crop_box)."""
+        box = crop_box(master.size[0], master.size[1], w, h, focus)
         return master.resize((w, h), Image.LANCZOS, box=box, reducing_gap=3.0)
 
     # ---------- the label ----------
@@ -230,13 +223,13 @@ class Renderer:
         return out
 
     # ---------- public entry points ----------
-    def clean(self, master, w, h):
-        return self.cover(master, w, h)
+    def clean(self, master, w, h, focus=None):
+        return self.cover(master, w, h, focus)
 
-    def label(self, master, meta, w, h, s=1.0):
-        return self.draw_label(self.cover(master, w, h), meta, s)
+    def label(self, master, meta, w, h, s=1.0, focus=None):
+        return self.draw_label(self.cover(master, w, h, focus), meta, s)
 
-    def span(self, master, meta, monitors, s=1.0):
+    def span(self, master, meta, monitors, s=1.0, focus=None):
         cw = max(m[0] + m[2] for m in monitors)
         ch = max(m[1] + m[3] for m in monitors)
         canvas = Image.new("RGB", (cw, ch), (0, 0, 0))
@@ -244,7 +237,7 @@ class Renderer:
         if primary is None:  # no 'p': the biggest screen gets the label
             primary = max(range(len(monitors)), key=lambda i: monitors[i][2] * monitors[i][3])
         for i, (x, y, mw, mh, _p) in enumerate(monitors):
-            tile = self.label(master, meta, mw, mh, s) if i == primary else self.cover(master, mw, mh)
+            tile = self.label(master, meta, mw, mh, s, focus) if i == primary else self.cover(master, mw, mh, focus)
             canvas.paste(tile, (x, y))
         return canvas
 
@@ -261,6 +254,46 @@ class Renderer:
 
 
 # ---------- helpers ----------
+def crop_box(mw, mh, w, h, focus=None):
+    """The part of an mw x mh picture that cover() scales to w x h, as (left, top, right, bottom).
+
+    Without a focus the box is centred. With focus = (x, y), fractions of the picture's width and
+    height, the box is centred on that point and then slid back inside the picture, so the point is
+    always in the frame and as near the middle of it as the picture's edges allow."""
+    scale = max(w / mw, h / mh)
+    # w / (w / mw) can come out a hair above mw, which makes the box start at -1e-13 and Pillow
+    # refuses it ("box offset can't be negative"): about 4 % of picture and size pairs.
+    cw, ch = min(mw, w / scale), min(mh, h / scale)
+    if focus is None:
+        left, top = (mw - cw) / 2, (mh - ch) / 2
+    else:
+        left = min(max(0.0, focus[0] * mw - cw / 2), mw - cw)
+        top = min(max(0.0, focus[1] * mh - ch / 2), mh - ch)
+    # left + cw can round a hair past the edge once clamped to mw - cw: Pillow refuses that too.
+    return (left, top, min(mw, left + cw), min(mh, top + ch))
+
+
+def edge_focus(img, px=96):
+    """A cheap guess at where the subject is: the centre of mass of edge strength (squared, so
+    strong detail outweighs texture) on a small grey copy. A flat picture gives the centre.
+    Returns (x, y) as fractions of the width and height."""
+    small = img.convert("L")
+    small.thumbnail((px, px), Image.BILINEAR)
+    edges = small.filter(ImageFilter.FIND_EDGES)
+    w, h = edges.size
+    data = edges.load()
+    total = sx = sy = 0.0
+    for y in range(1, h - 1):  # FIND_EDGES rings the border: leave it out
+        for x in range(1, w - 1):
+            v = data[x, y] ** 2
+            total += v
+            sx += v * x
+            sy += v * y
+    if not total or w < 3 or h < 3:
+        return 0.5, 0.5
+    return (sx / total + 0.5) / w, (sy / total + 0.5) / h
+
+
 def rounded_masks(w, h, radius, border_w):
     k = 4
     big = Image.new("L", (w * k, h * k), 0)

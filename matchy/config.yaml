@@ -63,6 +63,7 @@ options:
   master_max_px: 3840
   cache_max_mb: 2048
   render_threads: 2
+  focus_auto: false
   caption_enabled: true
   caption_language: English
   caption_spelling: British
@@ -93,6 +94,7 @@ schema:
   master_max_px: int(1280,7680)
   cache_max_mb: int(128,65536)
   render_threads: int(1,8)
+  focus_auto: bool
   caption_enabled: bool
   caption_language: str
   caption_spelling: "list(British|American)"

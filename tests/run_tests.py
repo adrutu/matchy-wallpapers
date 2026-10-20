@@ -30,6 +30,19 @@ def make_images():
         shutil.copy(os.path.join(IMGS, "test-%d.jpg" % i), os.path.join(S, "imgs-big"))
     # 56 MP: over the engine's 50 MP cap, cheap to write as a flat PNG
     Image.new("RGB", (8000, 7000), (90, 30, 120)).save(os.path.join(S, "imgs-big", "huge.png"))
+    # Focal-point crops: a busy red-and-white subject far right on a quiet grey ground (a centred 9:16
+    # crop misses it entirely), and one ordinary picture.
+    os.makedirs(os.path.join(S, "imgs-focus"))
+    im = Image.new("RGB", (1600, 900), (128, 128, 128))
+    d = ImageDraw.Draw(im)
+    for _ in range(3000):  # faint grain, so the file is not tiny; too weak to pull the focus
+        x, y = random.randrange(1600), random.randrange(900)
+        d.point((x, y), fill=(131, 131, 131))
+    for i in range(16):
+        d.rectangle((1280 + i * 10, 300, 1285 + i * 10, 600), fill=(220, 20, 20))
+        d.rectangle((1285 + i * 10, 300 + i * 18, 1290 + i * 10, 318 + i * 18), fill=(255, 255, 255))
+    im.save(os.path.join(S, "imgs-focus", "subject-right.jpg"), quality=95)
+    shutil.copy(os.path.join(IMGS, "test-0.jpg"), os.path.join(S, "imgs-focus"))
 
 
 make_images()
@@ -73,6 +86,17 @@ def start(name, cfg):
 
 def cur(port): return req(port, "GET", "/current.json")[1]
 def lib(port): return req(port, "GET", "/library.json")[1]
+def item(port, iid): return {i["id"]: i for i in lib(port)["items"]}.get(iid)
+
+def red_share(port, path):
+    """Share of clearly red pixels in the JPEG at path (the focus test picture's subject)."""
+    from PIL import Image
+    import io
+    c = http.client.HTTPConnection("127.0.0.1", port, timeout=20)
+    c.request("GET", path); r = c.getresponse(); data = r.read(); c.close()
+    if r.status != 200: return -1
+    raw = Image.open(io.BytesIO(data)).convert("RGB").tobytes(); n = len(raw) // 3
+    return sum(1 for i in range(0, 3 * n, 3) if raw[i] > 150 and raw[i] - raw[i + 1] > 60) / n
 
 # ---------------- sun_events (pure): Cork at the solstices, Svalbard in midnight sun ----------------
 import datetime as _dt
@@ -360,6 +384,8 @@ try:
                        ("/api/recaption", {"id": first}), ("/api/rotation", {"reset": True}), ("/api/unhide", {"id": first})):
         st, *_ = req(B, "POST", path, body); check("B %s refused off-panel 403" % path, st == 403, st)
     st, *_ = req(B, "POST", "/api/rotation", {"mode": "daynight"}); check("B day & night refused off-panel 403", st == 403, st)
+    st, *_ = req(B, "POST", "/api/focus", {"id": first, "x": 0.5, "y": 0.5}); check("B focus refused off-panel 403", st == 403, st)
+    check("B page: thumbnails are not focus pickers", "thumb pick" not in req(B, "GET", "/")[2])
     req(B, "GET", "/current.json?screen=desk")
     st, *_ = req(B, "POST", "/api/screen", {"id": "desk", "follow": False}); check("B screen off from LAN ok", st == 200, st)
     st, *_ = req(B, "POST", "/api/screen/forget", {"id": "desk"}); check("B screen forget refused off-panel 403", st == 403, st)
@@ -384,6 +410,24 @@ try:
     check("C picked uncaptioned is held", cur(C)["id"] == ids[1], cur(C)["id"])
     req(C, "POST", "/api/next", {}); time.sleep(1)
     check("C rotation prefers captioned", cur(C)["id"] == ids[0], cur(C)["id"])
+
+    # Focus points with focus_auto off (the default): no machine focus, a hand one still counts
+    check("C focus_auto off: every crop centred", all(i["focus"] is None for i in lib(C)["items"]), lib(C)["items"])
+    fid = ids[2]; rev0 = item(C, fid)["rev"]
+    for bad in ({"id": fid, "x": 1.5, "y": 0.5}, {"id": fid, "x": True, "y": 0.5}, {"id": fid, "x": 0.5},
+                {"id": fid, "x": "0.5", "y": 0.5}, {"id": fid, "reset": "yes"}, {"x": 0.5, "y": 0.5}):
+        st, *_ = req(C, "POST", "/api/focus", bad); check("C focus bad %s 400" % bad, st == 400, st)
+    st, *_ = req(C, "POST", "/api/focus", {"id": "nope", "x": 0.5, "y": 0.5}); check("C focus unknown id 404", st == 404, st)
+    st, *_ = req(C, "POST", "/api/focus", {"id": fid, "x": 0.25, "y": 0.75}); it = item(C, fid)
+    check("C focus by hand", st == 200 and it["focus"] == {"x": 0.25, "y": 0.75, "source": "hand"} and it["rev"] != rev0, (st, it))
+    st, *_ = req(C, "GET", "/img/%s/%s/label/1080x1920.jpg" % (fid, it["rev"])); check("C focused label renders", st == 200, st)
+    st, *_ = req(C, "GET", "/img/%s/%s/clean/640x360.jpg" % (fid, rev0)); check("C old rev 302 after a focus change", st == 302, st)
+    page = req(C, "GET", "/")[2]
+    check("C page: dot, picker and Reset focus", 'class="dot hand"' in page and "thumb pick" in page
+          and "Reset focus" in page and 'data-crop="0.00000 ' in page, page[-3000:])
+    st, *_ = req(C, "POST", "/api/focus", {"id": fid, "reset": True}); it = item(C, fid)
+    check("C reset focus: centred, the old rev back", st == 200 and it["focus"] is None and it["rev"] == rev0, it)
+    check("C reset leaves no focus in the sidecar", "focus" not in json.load(open(os.path.join(S, "data-C", "library", fid + ".json"))))
 finally:
     pc.terminate(); pc.wait()
 
@@ -488,6 +532,68 @@ try:
     check("G missing font logged once per file", missing and len(missing) == len({l.split()[3] for l in missing}), missing)
 finally:
     pg.terminate(); pg.wait()
+
+# ---------------- I: focal-point crops from the captioner's subject box, and a hand focus over it ----------------
+I = BASE + 1
+FD = os.path.join(S, "imgs-focus")
+fi = subprocess.Popen([sys.executable, os.path.join(HERE, "fakecap.py"), str(BASE + 3), FAIL_FLAG, "subject=0.05,0.1,0.35,0.9"])
+pi = start("I", {"port": I, "ingress_peers": ["127.0.0.0/8"], "focus_auto": True, "_imgs": FD,
+                 "captioners": [{"name": "fake", "url": "http://127.0.0.1:%d/v1/chat/completions" % (BASE + 3), "model": "x", "timeout": 10}],
+                 "caption": {"enabled": True, "min_words": 30, "max_words": 45}})
+try:
+    for _ in range(60):
+        L = lib(I)
+        if all(i["status"] == "captioned" and (i["focus"] or {}).get("source") == "model" for i in L["items"]): break
+        time.sleep(1)
+    check("I the captioner's box becomes the focus", L["items"] and all(i["focus"] == {"x": 0.2, "y": 0.5, "source": "model"}
+                                                                      for i in L["items"]), [i["focus"] for i in L["items"]])
+    sc = json.load(open(os.path.join(S, "data-I", "library", "subject-right.json")))
+    check("I sidecar keeps the box", sc.get("subject") == [0.05, 0.1, 0.35, 0.9] and sc["focus"]["source"] == "model", sc)
+    check("I page: a hollow dot for the model focus", 'class="dot model"' in req(I, "GET", "/")[2])
+    req(I, "POST", "/api/focus", {"id": "subject-right", "x": 0.85, "y": 0.5})
+    rev = item(I, "subject-right")["rev"]
+    check("I hand focus: a 9:16 crop keeps the subject", red_share(I, "/img/subject-right/%s/clean/360x640.jpg" % rev) > 0.02)
+    req(I, "POST", "/api/recaption", {"id": "subject-right"})
+    for _ in range(40):
+        it = item(I, "subject-right")
+        if not it["recaption_queued"]: break
+        time.sleep(0.5)
+    check("I re-caption keeps the hand focus", not it["recaption_queued"] and it["focus"] == {"x": 0.85, "y": 0.5, "source": "hand"}, it)
+    req(I, "POST", "/api/focus", {"id": "subject-right", "reset": True})
+    check("I reset: back to the captioner's box", item(I, "subject-right")["focus"] == {"x": 0.2, "y": 0.5, "source": "model"},
+          item(I, "subject-right"))
+finally:
+    pi.terminate(); pi.wait(); fi.terminate()
+
+# ---------------- J: automatic focus with no captioner, then focus_auto turned off ----------------
+J = BASE + 7
+pj = start("J", {"port": J, "ingress_peers": ["127.0.0.0/8"], "focus_auto": True, "_imgs": FD, "captioners": [],
+                 "caption": {"enabled": False}})
+try:
+    for _ in range(60):
+        it = item(J, "subject-right")
+        if it and it["focus"]: break
+        time.sleep(1)
+    f = (it or {}).get("focus") or {}
+    check("J automatic focus finds the subject", f.get("source") == "auto" and 0.75 < f["x"] < 0.95 and 0.35 < f["y"] < 0.65, it)
+    rev = it["rev"]
+    check("J 9:16 crop keeps the off-centre subject", red_share(J, "/img/subject-right/%s/clean/360x640.jpg" % rev) > 0.02)
+    check("J 9:16 label keeps it too", red_share(J, "/img/subject-right/%s/label/1080x1920.jpg" % rev) > 0.02)
+    check("J span: the portrait tile keeps it", red_share(J, "/img/subject-right/%s/span.jpg?layout=360x640+0+0,640x360+360+0p" % rev) > 0.01)
+    req(J, "POST", "/api/focus", {"id": "subject-right", "x": 0.1, "y": 0.5})
+    check("J hand focus on the left: the crop moves off the subject",
+          red_share(J, "/img/subject-right/%s/clean/360x640.jpg" % item(J, "subject-right")["rev"]) == 0)
+    check("J other pictures get an automatic focus too", (item(J, "test-0")["focus"] or {}).get("source") == "auto", item(J, "test-0"))
+finally:
+    pj.terminate(); pj.wait()
+pj = start("J", {"port": J, "ingress_peers": ["127.0.0.0/8"], "focus_auto": False, "_imgs": FD, "captioners": [],
+                 "caption": {"enabled": False}, "_fresh": False})
+try:
+    check("J focus_auto off: the automatic focus is not used", item(J, "test-0")["focus"] is None, item(J, "test-0"))
+    check("J focus_auto off: the hand focus still is", (item(J, "subject-right")["focus"] or {}).get("source") == "hand",
+          item(J, "subject-right"))
+finally:
+    pj.terminate(); pj.wait()
 
 # ---------------- Q: quiet hours over HTTP: /current/ dimmed with its own ETag, /img/ not ----------------
 def get_bytes(port, path, headers=None):

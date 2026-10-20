@@ -77,6 +77,12 @@ configuration:
   render_threads:
     name: Render threads
     description: Pictures rendered at the same time.
+  focus_auto:
+    name: Crop around the subject
+    description: >-
+      Crop each screen's picture around its main subject instead of the centre: the subject the
+      captioner points out, or else where the picture has the most detail. Off: centred crops. A
+      focus point set by hand in the sidebar panel is used either way.
   caption_enabled:
     name: Gallery captions
     description: >-

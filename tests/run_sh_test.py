@@ -85,6 +85,9 @@ if cfg:
     check("defaults: no nulls", not has_null(cfg))
     check("defaults: rotation and caption", cfg["rotation"] == {"min_minutes": 15, "max_minutes": 20}
           and cfg["caption"]["spelling"] == "British", cfg)
+    check("defaults: focus_auto off (centred crops)", cfg["focus_auto"] is False, cfg.get("focus_auto"))
+rc, cfg, err, data, tmp = run(dict(base, focus_auto=True)); temps.append(tmp)
+check("focus_auto on reaches the engine", rc == 0 and cfg and cfg["focus_auto"] is True, (rc, cfg and cfg.get("focus_auto")))
 
 # sets, exclude, a keyed captioner, a missing folder
 opts = dict(base, source_folders=[src, "/nonexistent/matchy"], exclude=["aether-*", "test-3"],

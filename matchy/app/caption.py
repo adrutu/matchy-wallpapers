@@ -125,9 +125,26 @@ def image_data_url(path, px):
     return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
 
 
+def subject_box(obj):
+    """The model's box around the main subject, [left, top, right, bottom] as fractions 0-1, or None
+    when it is missing or nonsense: not four numbers in range, inside out, a sliver, or the whole frame
+    (which says nothing about where the subject is)."""
+    box = obj.get("subject") if isinstance(obj, dict) else None
+    if not isinstance(box, list) or len(box) != 4:
+        return None
+    if not all(isinstance(v, (int, float)) and not isinstance(v, bool) and 0 <= v <= 1 for v in box):
+        return None
+    l, t, r, b = box
+    area = (r - l) * (b - t)
+    if r - l < 0.02 or b - t < 0.02 or area > 0.9:
+        return None
+    return [round(float(v), 3) for v in box]
+
+
 class Captioner:
     def __init__(self, cfg):
         self.cfg = cfg["caption"]
+        self.want_subject = bool(cfg.get("focus_auto"))  # ask for the subject's box (focal-point crops)
         self.endpoints = cfg["captioners"]
         self.down_until = {}
         for ep in self.endpoints:
@@ -191,9 +208,13 @@ class Captioner:
             "Never guess a location.\n"
             "- Do not repeat the title or the credit, do not mention the photographer, and do not say 'image', "
             "'photo', 'picture' or 'wallpaper'.\n"
-            'Reply with JSON only: {"title": "...", "blurb": "..."}'
+            "%s"
+            'Reply with JSON only: {"title": "...", "blurb": "..."%s}'
         ) % (facts_txt, title_rule, min(c["max_words"] - 4, c["min_words"] + 6), c["max_words"],
-             (c["min_words"] + 2 * c["max_words"]) // 3, lang, sp)
+             (c["min_words"] + 2 * c["max_words"]) // 3, lang, sp,
+             ('- "subject": the box around the main subject as [left, top, right, bottom], each a fraction '
+              "of the width or height from 0 to 1, with 0, 0 the top left corner.\n") if self.want_subject else "",
+             ', "subject": [0.0, 0.0, 1.0, 1.0]' if self.want_subject else "")
         if feedback:
             text += "\n\nYour previous answer was rejected: %s. Fix that and answer again." % feedback
         return text
@@ -269,13 +290,20 @@ class Captioner:
         return reply_text(resp)
 
     @staticmethod
-    def parse(text):
+    def reply_obj(text):
         text = re.sub(r"<think>.*?</think>", "", text, flags=re.S)  # reasoning models that inline it
         text = re.sub(r"^```(?:json)?|```$", "", text.strip(), flags=re.M).strip()
         m = re.search(r"\{.*\}", text, re.S)
         if not m:
             raise ValueError("no JSON object")
         obj = json.loads(m.group(0))
+        if not isinstance(obj, dict):
+            raise ValueError("not a JSON object")
+        return obj
+
+    @staticmethod
+    def parse(text):
+        obj = Captioner.reply_obj(text)
         return str(obj.get("title", "")).strip().strip('"'), " ".join(str(obj.get("blurb", "")).split())
 
     def check(self, meta, title, blurb):
@@ -345,7 +373,8 @@ class Captioner:
             log("caption attempt %d via %s %.1fs: %d words%s" % (
                 attempt, ep["name"], dt, words, (" - " + "; ".join(problems)) if problems else ""))
             target = (c["min_words"] + 2 * c["max_words"]) // 3
-            cand = {"title": title, "blurb": blurb, "problems": problems, "words": words, "seconds": round(dt, 1)}
+            cand = {"title": title, "blurb": blurb, "problems": problems, "words": words, "seconds": round(dt, 1),
+                    "subject": subject_box(self.reply_obj(raw)) if self.want_subject else None}
             if not problems:
                 return cand
             if best is None or len(problems) < len(best["problems"]):

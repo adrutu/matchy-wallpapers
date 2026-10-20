@@ -52,6 +52,7 @@ port>`. Leave it empty and only the sidebar panel works.
 | `master_max_px` | int, 1280–7680 | 3840 | Longest edge of the cached master copy every render is cut from. |
 | `cache_max_mb` | int, 128–65536 | 2048 | Render cache size. Evicted least-recently-used down to 85 % when it overflows. |
 | `render_threads` | int, 1–8 | 2 | Renders running at the same time. |
+| `focus_auto` | bool | false | Crop around each picture's main subject instead of the centre (see Focus points). Off: centred crops, except for a focus point set by hand in the panel. |
 | `caption_enabled` | bool | true | Write gallery blurbs at all. Off: labels carry the title, place and credit only (from `meta.json` or `sets`). |
 | `caption_language` | string | English | Language the blurb is asked for. The grounding check rejects capitalised words that are not in the metadata, so a language that capitalises every noun (German) gets most blurbs rejected. |
 | `caption_spelling` | `British` or `American` | British | British also rewrites common American spellings in what comes back (colour, grey, centre…). |
@@ -69,7 +70,9 @@ Only options you set are written to the engine's config; everything else keeps t
 Any server that speaks the OpenAI chat-completions API with an `image_url` content part will do.
 Matchy sends one request per image, `stream: false`, with `response_format: {"type": "json_object"}`,
 and expects `{"title": "...", "blurb": "..."}` back (a JSON object inside a code fence, after an inline
-`<think>` block, or in content parts is accepted too).
+`<think>` block, or in content parts is accepted too). With `focus_auto` on it also asks for
+`"subject": [left, top, right, bottom]`, the main subject's box as fractions 0–1; a reply without a
+usable box still counts (see Focus points).
 
 - **llama.cpp** (`llama-server` with a vision model and its mmproj):
   `url: http://<llama-host>:8080/v1/chat/completions`, `model` as the server names it.
@@ -166,8 +169,37 @@ page reloads itself when the picture changes (it checks every 30 seconds). From 
   `/screens.json`.
 - See whether each captioner is ready or being skipped, what it is writing now and how many pictures
   are waiting.
+- **Focus point**: click a thumbnail to put the picture's focus point there (a filled dot); every crop
+  then keeps that point in frame. **Reset focus** drops it again. A hollow dot is a focus point found
+  by the captioner or automatically (see Focus points).
 
-Every thumbnail opens the labelled picture at 2560x1440.
+Every thumbnail opens the labelled picture at 2560x1440 (in the sidebar panel, where a click sets the
+focus point, Ctrl-click or a middle click does).
+
+### Focus points
+
+Every screen gets the picture cropped to its own shape, so a portrait tablet sees a narrow slice of
+a landscape picture. By default that slice is the middle. A picture can carry a **focus point**
+instead: the crop is centred on it, and slid back inside the picture where the point is near an edge,
+so the point is always in frame and as central as the picture allows. The thumbnails in the panel
+are 16:9 crops made the same way.
+
+A focus point comes from one of three places, best first:
+
+1. **By hand**: a click on the thumbnail in the panel (`POST /api/focus`). It is never replaced by the
+   captioner or the automatic guess, re-caption included, until **Reset focus**. It is used whether
+   `focus_auto` is on or not.
+2. **The captioner** (`focus_auto` on): the caption request also asks for a box around the main
+   subject, as fractions of the width and height. The focus is the box's centre. A missing box, or one
+   that is out of range, inside out, a sliver or the whole frame, is ignored.
+3. **Automatic** (`focus_auto` on): a quick look at the picture's master for where the detail is
+   (the centre of its edges), done for every picture as its master is built, so no picture waits on
+   the captioner. A captioner's box replaces it when the caption arrives.
+
+A machine-made focus point belongs to one version of the file: when the file changes it is found
+again. Moving a focus point changes the picture's `rev` (and so `version` in `/current.json`), so screens
+fetch the new crop the next time they check.
+
 
 ### Other screens
 
@@ -243,8 +275,8 @@ Read endpoints:
 
 | Endpoint | Description |
 | :--- | :--- |
-| `GET /current.json` | The current picture: `id`, `rev`, `version`, `title`, `place`, `credit`, `blurb`, `since`, `next_change` (null while paused or held by quiet hours), `paused`, `captioned`, `quiet` (true during quiet hours), `quiet_window` (`{"start", "end", "hold", "dim"}`: the quiet window now, or else the next one; `null` when quiet hours are off), and `urls` (`original`, `clean`, `label`, `span` templates with `{w}`, `{h}`, `{layout}` to fill in). `version` changes on every rotation and every caption edit; clients compare it. `screens_off` lists the screens turned off; with `?screen=<name>`, `follow` says whether that one should follow. `503` while the library is empty. |
-| `GET /library.json` | Every picture with its status, caption, `hidden` and `recaption_queued` flags, plus the rotation (`mode` = `minutes` or `daynight`, the window, and `next_sun` = `{"at", "event"}` in Day & night, `event` being `sunrise`/`sunset`, or `morning`/`evening` without a location) and captioner state. |
+| `GET /current.json` | The current picture: `id`, `rev`, `version`, `title`, `place`, `credit`, `blurb`, `since`, `next_change` (null while paused or held by quiet hours), `paused`, `captioned`, `quiet` (true during quiet hours), `quiet_window` (`{"start", "end", "hold", "dim"}`: the quiet window now, or else the next one; `null` when quiet hours are off), and `urls` (`original`, `clean`, `label`, `span` templates with `{w}`, `{h}`, `{layout}` to fill in). `version` changes on every rotation, every caption edit and every focus point change; clients compare it. `screens_off` lists the screens turned off; with `?screen=<name>`, `follow` says whether that one should follow. `503` while the library is empty. |
+| `GET /library.json` | Every picture with its status, caption, `hidden` and `recaption_queued` flags, the focus point crops use (`focus` = `{"x", "y", "source"}`, `source` being `hand`, `model` or `auto`; null for a centred crop), plus the rotation (`mode` = `minutes` or `daynight`, the window, and `next_sun` = `{"at", "event"}` in Day & night, `event` being `sunrise`/`sunset`, or `morning`/`evening` without a location) and captioner state. |
 | `GET /screens.json` | The Screens list (see Screens). Network tier only, and without CORS, because it carries addresses. |
 | `GET /` (also `/index.html`) | The gallery page. |
 | `GET /current/clean/WxH.jpg` | The current picture at any size, without the label. Sends an `ETag`; `If-None-Match` gets a `304` until the picture changes or quiet hours start or end. Dimmed during quiet hours. |
@@ -256,7 +288,7 @@ Read endpoints:
 | `GET /healthz` | Liveness; answers `ok` even before the first scan. |
 
 Sizes: width and height 320–7680 (outside that, `/img/...` answers `400` and `/current/...` `404`); a
-span canvas up to 12000x8000 with at most 8 monitors and one primary. A `<rev>` that is no longer current (the caption was edited) answers `302` to the current
+span canvas up to 12000x8000 with at most 8 monitors and one primary. A `<rev>` that is no longer current (the caption or the focus point changed) answers `302` to the current
 URL. `HEAD` works everywhere `GET` does. Every read response carries
 `Access-Control-Allow-Origin: *`, except the gallery page and `/screens.json`, which name the screens (and the latter their addresses).
 
@@ -277,6 +309,7 @@ undecodable one, re-captioning with no captioner) or `413` (body over 64 KB, or 
 | `POST /api/unhide` | `{"id": "<id>"}` | Panel | Put it back (an id that is not hidden changes nothing). |
 | `POST /api/caption` | `{"id", "title", "place", "credit", "blurb"}` | Panel | Write the caption by hand; `blurb` is required, the others may be empty. |
 | `POST /api/recaption` | `{"id": "<id>"}` | Panel | Ask the captioner for a fresh caption. |
+| `POST /api/focus` | `{"id": "<id>", "x": 0.7, "y": 0.4}` or `{"id": "<id>", "reset": true}` | Panel | Set the focus point by hand (`x`, `y` fractions of the width and height, 0–1, from the top left), or drop the hand-set one (back to the captioner's or the automatic one with `focus_auto` on, else the centre). |
 | `POST /api/rotation` | `{"min_minutes": 10, "max_minutes": 12}`, `{"mode": "daynight"}` or `{"reset": true}` | Panel | Set the rotation window (whole minutes, 1–1440), switch to Day & night, or go back to the options. |
 | `POST /api/screen` | `{"id": "<name>", "follow": false}` | Network | Turn one screen off (`true`: on again). `404` for a screen Matchy has not seen. |
 | `POST /api/screen/forget` | `{"id": "<name>"}` | Panel | Drop a screen from the list until it asks again. |
@@ -300,7 +333,7 @@ Who may call what depends only on where the request comes from:
 | :--- | :--- | :--- |
 | **Public** | anything that can reach the port | every `GET` except `/screens.json`: pictures, captions, the library, the gallery page |
 | **Network** | the sidebar panel, or a client whose address is private (`10/8`, `172.16/12`, `192.168/16`, `100.64/10`, loopback, IPv6 ULA and link-local); if the request carries `X-Forwarded-For`, every address in it must be private too | next, pause, resume, show now, turn a screen on or off |
-| **Panel** | the sidebar panel only: a request proxied by the Supervisor (its address `172.30.32.2`), which only forwards sessions Home Assistant has authenticated | hide, unhide, edit caption, re-caption, how often, forget a screen |
+| **Panel** | the sidebar panel only: a request proxied by the Supervisor (its address `172.30.32.2`), which only forwards sessions Home Assistant has authenticated | hide, unhide, edit caption, re-caption, focus point, how often, forget a screen |
 
 The gallery page draws the buttons a viewer may not use as disabled, with the reason as a tooltip.
 
@@ -337,7 +370,7 @@ add-on (`backup: hot`, the render cache excluded):
 | `secrets/captioner-<n>.key` | Captioner keys, mode 600. |
 | `state.json` | What is on screen, the shuffle bag, hidden ids, the panel's rotation choice, whether quiet hours hold the picture, history. |
 | `screens.json` | The Screens list: on or off, first and last seen (last seen is written at most every 5 minutes). |
-| `library/<id>.json` | One sidecar per picture: the caption and where it came from. A hand edit here (set `"edited": true`) is picked up within a minute. |
+| `library/<id>.json` | One sidecar per picture: the caption and where it came from, the captioner's `subject` box and the `focus` point (`{"x", "y", "source", "sha256"}`, `source` = `hand`, `model` or `auto`). A hand edit here (set `"edited": true`) is picked up within a minute. |
 | `masters/` | The downscaled master copy of each picture. |
 | `originals/`, `remote.json` | Pictures fetched from a remote manifest or the daily URL, and their index. |
 | `cache/` | Rendered JPEGs, evicted LRU. Safe to delete; not in backups. |
@@ -409,6 +442,7 @@ generates, with its defaults:
   "master_max_px": 3840,
   "cache_max_mb": 2048,
   "render_threads": 2,
+  "focus_auto": false,
   "folder_scan_minutes": 10,
   "rotation": {"min_minutes": 15, "max_minutes": 20},
   "quiet_hours": {"start": "23:00", "end": "07:00", "hold": true, "dim": 0.6},
@@ -446,7 +480,7 @@ Keys the engine understands but the add-on does not expose:
 Environment: `WE_CONFIG`, `WE_PORT`, `WE_DATA_DIR`, `WE_FONT_DIR`, `WE_ACCESS_LOG`.
 
 Without Home Assistant there is no sidebar panel, so the **Panel** tier (hide, unhide, edit caption,
-re-caption, how often, forget a screen) answers `403` and the gallery page draws those buttons
+re-caption, focus point, how often, forget a screen) answers `403` and the gallery page draws those buttons
 disabled. To use them from a trusted machine, list its address in `ingress_peers`; that machine then
 counts as the panel, so give it only to one you would hand the controls to.
 
