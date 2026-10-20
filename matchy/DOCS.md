@@ -52,13 +52,13 @@ port>`. Leave it empty and only the sidebar panel works.
 | `master_max_px` | int, 1280–7680 | 3840 | Longest edge of the cached master copy every render is cut from. |
 | `cache_max_mb` | int, 128–65536 | 2048 | Render cache size. Evicted least-recently-used down to 85 % when it overflows. |
 | `render_threads` | int, 1–8 | 2 | Renders running at the same time. |
-| `caption_enabled` | bool | true | Write gallery blurbs at all. Off: labels carry the title, place and credit only (from `meta.json` or `sets`). |
+| `caption_enabled` | bool | true | Write gallery blurbs at all. Off: the captioner never runs, so a picture without a blurb carries the title, place and credit only (from `meta.json` or `sets`); blurbs already written, and ones you write in the panel, still show. |
 | `caption_language` | string | English | Language the blurb is asked for. The grounding check rejects capitalised words that are not in the metadata, so a language that capitalises every noun (German) gets most blurbs rejected. |
 | `caption_spelling` | `British` or `American` | British | British also rewrites common American spellings in what comes back (colour, grey, centre…). |
 | `caption_min_words` | int, 5–200 | 30 | Shortest blurb asked for. Keep it at or below the longest. |
 | `caption_max_words` | int, 5–200 | 45 | Longest blurb asked for. After a second try, a blurb within three words of the range is kept. |
 | `captioners` | list of objects | `[]` | OpenAI-compatible vision endpoints, tried in order. Fields: `name` (required), `url` (required, the full `/v1/chat/completions` URL), `model` (required), `api_key` (optional), `timeout` (seconds, 5–600, default 120). |
-| `remote_manifest_url` | URL | unset | Optional. Base URL of a web folder holding a `manifest.json` (`[{"name": "…", "file": "…"}]`) with the image files next to it. Fetched once a day; new files are downloaded into the add-on's data and get ids `remote-<file name>` (lower-cased, without the extension). Only `.jpg`, `.jpeg`, `.png` and `.webp` entries without a `/` are taken. |
+| `remote_manifest_url` | URL | unset | Optional. Base URL of a web folder holding a `manifest.json` (`[{"name": "…", "file": "…"}]`) with the image files next to it. Fetched once a day; new files are downloaded into the add-on's data and get ids `remote-<file name>` (lower-cased, without the extension; a file whose name gives an id another file already has gets `-2`, `-3`…). Only `.jpg`, `.jpeg`, `.png` and `.webp` entries without a `/` are taken. |
 | `daily_json_url` | URL | unset | Optional. A JSON document `{date, title or caption, place, copyright}` describing a picture that changes daily. Checked hourly; each new date is stored as `daily-YYYYMMDD`. Needs `daily_image_url` too. |
 | `daily_image_url` | URL | unset | Optional. The image URL that goes with `daily_json_url`. |
 
@@ -131,7 +131,9 @@ So: usable almost immediately, fully captioned after a while.
   `art-great-wave`. The first sub-folder under a source folder becomes the collection name the
   captioner is told about. Inside a sub-folder, a file name that starts with a number becomes
   `<folder>-<number>` and the rest of the name is dropped, so give files real names.
-- Anything over 50 megapixels is refused (see Troubleshooting).
+- Anything over 50 megapixels is refused (see Troubleshooting), and so is a file that cannot be decoded
+  (not really a picture, or cut short); the panel card says why. Phone photos are turned upright
+  from their EXIF orientation.
 - A `meta.json` next to the pictures gives the captioner facts it may state, per file:
   `{"great-wave.jpg": {"title": "…", "place": "…", "credit": "…", "context": "…"}}`. A known `title`
   is used as is, `place` and `credit` go on the label, and `context` (one sentence on what the
@@ -364,6 +366,10 @@ reason, then that picture is retried six hours later; the panel card shows the l
 or the `library: N items` line in the log. One usable image means no rotation. Pictures that are
 hidden or over the size cap do not count. If the count is right, the rotation window may simply be
 long; `POST /api/next` moves it on immediately.
+
+**A picture never appears, and its card says "cannot be decoded".** The file is not a picture Pillow
+can read, or it is cut short (an interrupted copy). Replace it; it is picked up again on the next folder
+scan.
 
 **A picture never appears, and its card says "image too large".** Matchy refuses to decode any source
 over 50 megapixels (8K is 33), because the add-on has no memory limit and one huge file could exhaust
