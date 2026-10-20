@@ -47,6 +47,7 @@ DEFAULT_STYLE = {
     "body_alpha": 0.92,
     "shadow_alpha": 0.35,
     "jpeg_quality": 88,
+    "kids_scale": 1.3,  # the label scale s for ?label=kids when the URL gives none
     "fonts": {
         "title": "NotoSerifDisplay-Italic.ttf",
         "place": "NotoSerif-Regular.ttf",

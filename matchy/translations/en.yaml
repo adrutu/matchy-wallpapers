@@ -73,6 +73,11 @@ configuration:
   caption_max_words:
     name: Longest caption
     description: Words. A longer blurb is asked for again.
+  caption_kids:
+    name: Kids captions
+    description: >-
+      Also write a second, shorter blurb for children aged 5 to 9 (15 to 30 simple words and one fun
+      fact), after every normal caption is done. Screens ask for it with ?label=kids.
   captioners:
     name: Captioners
     description: >-

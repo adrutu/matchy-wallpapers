@@ -2,7 +2,8 @@
 
 Usage: fakecap.py <port> <flag-file> [key=<k>] [no-json-mode] [new-openai] [parts] [think]
 
-Answers a valid caption, or garbage while <flag-file> exists. The options make it behave like
+Answers a valid caption, or garbage while <flag-file> exists. A kids prompt (it mentions children) gets
+a kids blurb, or garbage while <flag-file>.kids exists. The options make it behave like
 servers that are pickier than llama.cpp:
   key=<k>       401 unless the request carries `Authorization: Bearer <k>`
   no-json-mode  400 when the request has `response_format` (an LM Studio-style refusal)
@@ -17,6 +18,8 @@ KEY = next((o[4:] for o in OPTS if o.startswith("key=")), None)
 BLURB = ("a field of colour scattered with small pale specks that catch the light like frost on a window, "
          "the tone deepening toward the edges where the specks thin out and the surface settles into a calm "
          "and even glow")
+KIDS = ("Look at all the tiny white dots! They sparkle like frost on a window. Fun fact: frost is made of "
+        "tiny ice crystals that grow on cold glass.")
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def send(self, code, obj):
@@ -35,7 +38,11 @@ class H(BaseHTTPRequestHandler):
         if "new-openai" in OPTS and req.get("temperature", 1) != 1:
             return self.send(400, {"error": {"message": "Unsupported value: 'temperature' does not support 0.4 with "
                                              "this model. Only the default (1) value is supported.", "param": "temperature"}})
-        content = "not json at all" if os.path.exists(FLAG) else json.dumps({"title": "Speckled Colour Field", "blurb": BLURB.capitalize() + "."})
+        prompt = json.dumps(req.get("messages", ""))
+        if "children" in prompt:
+            content = "not json at all" if os.path.exists(FLAG + ".kids") else json.dumps({"blurb": KIDS})
+        else:
+            content = "not json at all" if os.path.exists(FLAG) else json.dumps({"title": "Speckled Colour Field", "blurb": BLURB.capitalize() + "."})
         if "think" in OPTS:
             content = '<think>The user wants {"title", "blurb"}; keep it short.</think>\n' + content
         if "parts" in OPTS:

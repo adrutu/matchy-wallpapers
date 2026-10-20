@@ -56,6 +56,7 @@ port>`. Leave it empty and only the sidebar panel works.
 | `caption_spelling` | `British` or `American` | British | British also rewrites common American spellings in what comes back (colour, grey, centre…). |
 | `caption_min_words` | int, 5–200 | 30 | Shortest blurb asked for. Keep it at or below the longest. |
 | `caption_max_words` | int, 5–200 | 45 | Longest blurb asked for. After a second try, a blurb within three words of the range is kept. |
+| `caption_kids` | bool | false | Also write a **kids caption** for each picture: 15 to 30 simple words for ages 5 to 9, with one fun fact and nothing scary, checked by the same grounding rules. It waits until no normal caption is waiting, because the vision model may be busy with other work. Screens show it with `?label=kids` (see *Kids labels*). |
 | `captioners` | list of objects | `[]` | OpenAI-compatible vision endpoints, tried in order. Fields: `name` (required), `url` (required, the full `/v1/chat/completions` URL), `model` (required), `api_key` (optional), `timeout` (seconds, 5–600, default 120). |
 | `remote_manifest_url` | URL | unset | Optional. Base URL of a web folder holding a `manifest.json` (`[{"name": "…", "file": "…"}]`) with the image files next to it. Fetched once a day; new files are downloaded into the add-on's data and get ids `remote-<file name>` (lower-cased, without the extension). Only `.jpg`, `.jpeg`, `.png` and `.webp` entries without a `/` are taken. |
 | `daily_json_url` | URL | unset | Optional. A JSON document `{date, title or caption, place, copyright}` describing a picture that changes daily. Checked hourly; each new date is stored as `daily-YYYYMMDD`. Needs `daily_image_url` too. |
@@ -154,6 +155,10 @@ page reloads itself when the picture changes (it checks every 30 seconds). From 
   hand-written caption is never overwritten by the captioner.
 - **Re-caption** a picture: it jumps the captioning queue and replaces even a hand-written caption.
   If the captioner fails, the old caption stays.
+- **Kids caption** (with `caption_kids` on, or once any picture has one): the card shows the kids
+  blurb under the normal one. Write it by hand (up to 400 characters) and the captioner never
+  overwrites it; save it empty and the captioner writes a fresh one. Re-caption and editing the normal
+  caption leave the kids caption alone.
 - **How often**: a slider from every 15 minutes to every 12 hours, plus **Day & night**. It saves
   when you let go. The shortest/longest window is still there under **Custom window**. A choice made
   here lasts until you change the rotation options in the add-on configuration, so whichever was set
@@ -172,6 +177,28 @@ Clients fetch images directly from `http://<your-ha-host>:<published port>`. Eac
 the size it wants and gets a JPEG; nothing is pre-rendered. Recipes for a GNOME desktop, a Homepage
 dashboard, Home Assistant tablets and plain `curl` are in the repository:
 <https://github.com/adrutu/matchy-wallpapers/tree/main/docs/clients>.
+
+### Kids labels
+
+With `caption_kids` on, every label URL takes `?label=kids`: `/current/label/WxH.jpg?label=kids`,
+`/img/<id>/<rev>/label/WxH.jpg?label=kids` and `span.jpg?layout=…&label=kids`. That label has the same
+title, place and credit, with the kids blurb instead of the normal one, and bigger type: with no `s`
+in the URL it is drawn at `s=1.3` (an `s` you give wins). Until a picture has its kids caption, the
+URL serves the normal label at that same size, so a screen can ask for it from day one. When the kids
+caption arrives, that picture's `rev` and `version` change, like after an edit.
+
+### Guess where?
+
+`/current/label/WxH.jpg?reveal=<seconds>` serves the **clean** picture until `<seconds>` after it went up
+on screen (`since` in `current.json`), then the labelled one: look first, guess, then read. It combines
+with `label=kids` and `s`. `reveal` is whole seconds, 0–86400; `0` shows the label at once. The `ETag`
+changes at the reveal, so a client that sends `If-None-Match` gets the label as soon as it is due.
+
+`/current.json?reveal=<seconds>` (same number) adds `reveal_at` and `revealed`, and its `version` ends
+in `.veiled` until the reveal, so a client that refetches when `version` changes (a Home Assistant
+`image` entity, for example) picks the label up too. The Wallpanel screensaver recipe in
+[docs/clients/home-assistant.md](https://github.com/adrutu/matchy-wallpapers/blob/main/docs/clients/home-assistant.md#5-guess-where-on-a-wallpanel-screensaver)
+sets this up for one tablet.
 
 ### Day & night
 
@@ -207,18 +234,19 @@ Read endpoints:
 
 | Endpoint | Description |
 | :--- | :--- |
-| `GET /current.json` | The current picture: `id`, `rev`, `version`, `title`, `place`, `credit`, `blurb`, `since`, `next_change` (null while paused), `paused`, `captioned`, and `urls` (`original`, `clean`, `label`, `span` templates with `{w}`, `{h}`, `{layout}` to fill in). `version` changes on every rotation and every caption edit; clients compare it. `screens_off` lists the screens turned off; with `?screen=<name>`, `follow` says whether that one should follow. `503` while the library is empty. |
+| `GET /current.json` | The current picture: `id`, `rev`, `version`, `title`, `place`, `credit`, `blurb`, `since`, `next_change` (null while paused), `paused`, `captioned`, and `urls` (`original`, `clean`, `label`, `span` templates with `{w}`, `{h}`, `{layout}` to fill in). `version` changes on every rotation and every caption edit; clients compare it. `kids_blurb` is the kids caption (empty until there is one). With `?reveal=<seconds>`, also `reveal_at` and `revealed`, and `version` ends in `.veiled` until the reveal (see *Guess where?*). `screens_off` lists the screens turned off; with `?screen=<name>`, `follow` says whether that one should follow. `503` while the library is empty. |
 | `GET /library.json` | Every picture with its status, caption, `hidden` and `recaption_queued` flags, plus the rotation (`mode` = `minutes` or `daynight`, the window, and `next_sun` = `{"at", "event"}` in Day & night, `event` being `sunrise`/`sunset`, or `morning`/`evening` without a location) and captioner state. |
 | `GET /screens.json` | The Screens list (see Screens). Network tier only, and without CORS, because it carries addresses. |
 | `GET /` (also `/index.html`) | The gallery page. |
 | `GET /current/clean/WxH.jpg` | The current picture at any size, without the label. Sends an `ETag`; `If-None-Match` gets a `304` until the picture changes. |
-| `GET /current/label/WxH.jpg[?s=]` | The same with the label. `s` scales the label, 0.6–2.0 (wall tablets look right at about 1.35). |
+| `GET /current/label/WxH.jpg[?s=&label=kids&reveal=]` | The same with the label. `s` scales the label, 0.6–2.0 (wall tablets look right at about 1.35). `label=kids`: the kids label (see *Kids labels*). `reveal`: the clean picture until that many seconds after `since` (see *Guess where?*). |
 | `GET /img/<id>/<rev>/clean/WxH.jpg` | One specific picture; cacheable for a year. |
-| `GET /img/<id>/<rev>/label/WxH.jpg[?s=]` | The same with the label. |
-| `GET /img/<id>/<rev>/span.jpg?layout=WxH+X+Y[p],...[&s=]` | One picture composed across a multi-monitor layout: each monitor as `width x height + x + y`, `p` marks the primary, which gets the label (the largest screen if none is marked). Gaps are black. |
+| `GET /img/<id>/<rev>/label/WxH.jpg[?s=&label=kids]` | The same with the label. |
+| `GET /img/<id>/<rev>/span.jpg?layout=WxH+X+Y[p],...[&s=&label=kids]` | One picture composed across a multi-monitor layout: each monitor as `width x height + x + y`, `p` marks the primary, which gets the label (the largest screen if none is marked). Gaps are black. |
 | `GET /img/<id>/original.jpg` | The original: PNG and WebP pictures from your folders are re-encoded as JPEG; pictures downloaded from a remote manifest or the daily URL are served as downloaded. |
 | `GET /healthz` | Liveness; answers `ok` even before the first scan. |
 
+A `label` other than `kids`, or a `reveal` that is not whole seconds from 0 to 86400, answers `400`.
 Sizes: width and height 320–7680 (outside that, `/img/...` answers `400` and `/current/...` `404`); a
 span canvas up to 12000x8000 with at most 8 monitors and one primary. A `<rev>` that is no longer current (the caption was edited) answers `302` to the current
 URL. `HEAD` works everywhere `GET` does. Every read response carries
@@ -240,6 +268,7 @@ undecodable one, re-captioning with no captioner) or `413` (body over 64 KB, or 
 | `POST /api/hide` | `{"id": "<id>"}` | Panel | Keep this picture out of rotation. |
 | `POST /api/unhide` | `{"id": "<id>"}` | Panel | Put it back (an id that is not hidden changes nothing). |
 | `POST /api/caption` | `{"id", "title", "place", "credit", "blurb"}` | Panel | Write the caption by hand; `blurb` is required, the others may be empty. |
+| `POST /api/caption/kids` | `{"id": "<id>", "blurb": "…"}` | Panel | Write the kids caption by hand (up to 400 characters); an empty `blurb` clears it, so the captioner writes a fresh one. |
 | `POST /api/recaption` | `{"id": "<id>"}` | Panel | Ask the captioner for a fresh caption. |
 | `POST /api/rotation` | `{"min_minutes": 10, "max_minutes": 12}`, `{"mode": "daynight"}` or `{"reset": true}` | Panel | Set the rotation window (whole minutes, 1–1440), switch to Day & night, or go back to the options. |
 | `POST /api/screen` | `{"id": "<name>", "follow": false}` | Network | Turn one screen off (`true`: on again). `404` for a screen Matchy has not seen. |
@@ -264,7 +293,7 @@ Who may call what depends only on where the request comes from:
 | :--- | :--- | :--- |
 | **Public** | anything that can reach the port | every `GET` except `/screens.json`: pictures, captions, the library, the gallery page |
 | **Network** | the sidebar panel, or a client whose address is private (`10/8`, `172.16/12`, `192.168/16`, `100.64/10`, loopback, IPv6 ULA and link-local); if the request carries `X-Forwarded-For`, every address in it must be private too | next, pause, resume, show now, turn a screen on or off |
-| **Panel** | the sidebar panel only: a request proxied by the Supervisor (its address `172.30.32.2`), which only forwards sessions Home Assistant has authenticated | hide, unhide, edit caption, re-caption, how often, forget a screen |
+| **Panel** | the sidebar panel only: a request proxied by the Supervisor (its address `172.30.32.2`), which only forwards sessions Home Assistant has authenticated | hide, unhide, edit caption (and the kids caption), re-caption, how often, forget a screen |
 
 The gallery page draws the buttons a viewer may not use as disabled, with the reason as a tooltip.
 
@@ -301,7 +330,7 @@ add-on (`backup: hot`, the render cache excluded):
 | `secrets/captioner-<n>.key` | Captioner keys, mode 600. |
 | `state.json` | What is on screen, the shuffle bag, hidden ids, the panel's rotation choice, history. |
 | `screens.json` | The Screens list: on or off, first and last seen (last seen is written at most every 5 minutes). |
-| `library/<id>.json` | One sidecar per picture: the caption and where it came from. A hand edit here (set `"edited": true`) is picked up within a minute. |
+| `library/<id>.json` | One sidecar per picture: the caption and where it came from, and the kids caption in `kids_*` fields (`kids_blurb`; `"kids_edited": true` for one written by hand). A hand edit here (set `"edited": true`) is picked up within a minute. |
 | `masters/` | The downscaled master copy of each picture. |
 | `originals/`, `remote.json` | Pictures fetched from a remote manifest or the daily URL, and their index. |
 | `cache/` | Rendered JPEGs, evicted LRU. Safe to delete; not in backups. |
@@ -384,7 +413,7 @@ generates, with its defaults:
      "api_key": "", "timeout": 120}
   ],
   "caption": {"enabled": true, "language": "English", "spelling": "British",
-              "min_words": 30, "max_words": 45},
+              "min_words": 30, "max_words": 45, "kids": {"enabled": false}},
   "static_manifest": {"enabled": false},
   "daily": {"enabled": false}
 }
@@ -402,9 +431,11 @@ Keys the engine understands but the add-on does not expose:
   `gap_seconds` (0, a pause after each caption) and `json_mode` (true; false never sends
   `response_format`);
 - under `caption`: `max_tokens` (300), `temperature` (0.4), `image_px` (1024, the size sent to the
-  model), `retry_failed_hours` (6) and `forbidden_titles`;
+  model), `retry_failed_hours` (6, for kids captions too), `forbidden_titles`, and `kids.min_words` /
+  `kids.max_words` (15 and 30);
 - `rotation.caption_priority`, `dedupe.avoid_prefixes` and `ladder_prefer` (`"4k"`), `lan_cidrs`,
-  `ingress_peers`, `size_limits`, `bind` and `style` (label proportions, fonts, `jpeg_quality`).
+  `ingress_peers`, `size_limits`, `bind` and `style` (label proportions, fonts, `jpeg_quality`, and
+  `kids_scale`, 1.3, the label scale for `?label=kids` without `s`).
 
 Environment: `WE_CONFIG`, `WE_PORT`, `WE_DATA_DIR`, `WE_FONT_DIR`, `WE_ACCESS_LOG`.
 

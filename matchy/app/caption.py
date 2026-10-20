@@ -33,6 +33,13 @@ UK_SPELLING = {
 
 SENT_START = re.compile(r"(^|[.!?]\s+|[—:;]\s*|\"\s*)$")
 
+# Words a kids blurb (ages 5-9) is asked again without. The prompt already forbids scary content;
+# this catches what slips through, at the price of an occasional retry ("dead leaves").
+KIDS_AVOID = {"blood", "bloody", "dead", "death", "deadly", "die", "died", "dies", "dying", "kill", "killed",
+              "kills", "killing", "ghost", "ghosts", "monster", "monsters", "scary", "terrifying", "terror",
+              "horror", "nightmare", "war", "wars", "weapon", "weapons", "gun", "guns", "drown", "drowned",
+              "corpse", "skeleton", "skull", "murder", "hurt", "injured", "wounded", "disaster"}
+
 
 def to_uk(text):
     def fix(m):
@@ -198,6 +205,37 @@ class Captioner:
             text += "\n\nYour previous answer was rejected: %s. Fix that and answer again." % feedback
         return text
 
+    def kids_prompt(self, meta, feedback=None):
+        """The kids caption: a short blurb for ages 5-9 with one fun fact. The title is the main
+        caption's and is not asked for; the same grounding rules apply."""
+        k = self.cfg["kids"]
+        facts = []
+        for key, label in (("title", "Title"), ("place", "Place"), ("context", "Source description"),
+                           ("collection", "Collection")):
+            if meta.get(key):
+                facts.append(('%s: "%s"' if key == "title" else "%s: %s") % (label, meta[key]))
+        if meta.get("abstract"):
+            facts.append("This is digital/illustrated desktop art, not a photograph of a real place.")
+        facts_txt = "\n".join("- " + f for f in facts) or "- (no metadata: describe only what is visible)"
+        lang = self.cfg.get("language", "English")
+        sp = " Use British spelling." if self.cfg.get("spelling", "").lower().startswith("brit") else ""
+        text = (
+            "You write a picture label for children aged 5 to 9, hung next to a picture at home.\n"
+            "Known facts (the ONLY facts you may state besides what is plainly visible):\n%s\n\n"
+            "Rules:\n"
+            '- "blurb": at least %d and at most %d words in %s, two or three short sentences with simple words '
+            "a young child knows. Say what is in the frame, then give one fun fact about something plainly "
+            "visible (how it works, what it is made of, an animal or plant in general).%s\n"
+            "- Nothing scary or sad: no danger, death, injury, war, monsters or ghosts.\n"
+            "- Do NOT name any place, landmark, person, species, date or event unless it appears in the known facts. "
+            "Never guess a location.\n"
+            "- Do not repeat the title, and do not say 'image', 'photo', 'picture' or 'wallpaper'.\n"
+            'Reply with JSON only: {"blurb": "..."}'
+        ) % (facts_txt, k["min_words"], k["max_words"], lang, sp)
+        if feedback:
+            text += "\n\nYour previous answer was rejected: %s. Fix that and answer again." % feedback
+        return text
+
     # ---------- transport ----------
     def body(self, ep, prompt, data_url):
         c = self.cfg
@@ -278,13 +316,17 @@ class Captioner:
         obj = json.loads(m.group(0))
         return str(obj.get("title", "")).strip().strip('"'), " ".join(str(obj.get("blurb", "")).split())
 
-    def check(self, meta, title, blurb):
-        c = self.cfg
+    def check(self, meta, title, blurb, kids=False):
+        c = self.cfg["kids"] if kids else self.cfg
         problems = []
         words = len(blurb.split())
         if words < c["min_words"] or words > c["max_words"]:
             problems.append("blurb has %d words, it must have %d to %d" % (words, c["min_words"], c["max_words"]))
-        if not meta.get("title"):
+        if kids:
+            scary = sorted({w.lower() for w in re.findall(r"[A-Za-z]+", blurb)} & KIDS_AVOID)
+            if scary:
+                problems.append("it is for young children, so leave out %s" % ", ".join(scary))
+        if not kids and not meta.get("title"):  # a kids caption keeps the label's title, even an empty one
             tl = title.lower()
             bad_titles = [t.lower() for t in c.get("forbidden_titles", [])]
             if not title or len(title.split()) > 7 or tl in bad_titles or any(
@@ -299,8 +341,9 @@ class Captioner:
             problems.append("do not start with 'this image'")
         return problems, words
 
-    def caption(self, meta, master_path):
-        """Return (sidecar_fields, endpoint) or raise RuntimeError when every endpoint failed/declined."""
+    def caption(self, meta, master_path, kids=False):
+        """Return (sidecar_fields, endpoint) or raise RuntimeError when every endpoint failed/declined.
+        kids: the kids blurb, with meta["title"] set to the title the label already shows."""
         c = self.cfg
         data_url = image_data_url(master_path, c.get("image_px", 1024))
         eps = self.available()
@@ -309,7 +352,7 @@ class Captioner:
         last_err = None
         for ep in eps:
             try:
-                return self._caption_with(ep, meta, data_url), ep
+                return self._caption_with(ep, meta, data_url, kids), ep
             except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as e:
                 mins = ep.get("down_minutes", 10)
                 self.down_until[ep["name"]] = time.time() + 60 * mins
@@ -323,27 +366,28 @@ class Captioner:
                 break
         raise RuntimeError(str(last_err))
 
-    def _caption_with(self, ep, meta, data_url):
-        c = self.cfg
+    def _caption_with(self, ep, meta, data_url, kids=False):
+        c = self.cfg["kids"] if kids else self.cfg
+        what = "kids caption" if kids else "caption"
         best = None
         feedback = None
         for attempt in (1, 2):
             t = time.time()
-            raw = self.call(ep, self.prompt(meta, feedback), data_url)
+            raw = self.call(ep, (self.kids_prompt if kids else self.prompt)(meta, feedback), data_url)
             dt = time.time() - t
             try:
                 title, blurb = self.parse(raw)
             except ValueError as e:
                 feedback = "it was not valid JSON (%s)" % e
-                log("caption attempt", attempt, "bad JSON from", ep["name"])
+                log(what, "attempt", attempt, "bad JSON from", ep["name"])
                 continue
             if meta.get("title"):
                 title = meta["title"]
-            if c.get("spelling", "").lower().startswith("brit"):
+            if self.cfg.get("spelling", "").lower().startswith("brit"):
                 blurb, title = to_uk(blurb), (title if meta.get("title") else to_uk(title))
-            problems, words = self.check(meta, title, blurb)
-            log("caption attempt %d via %s %.1fs: %d words%s" % (
-                attempt, ep["name"], dt, words, (" - " + "; ".join(problems)) if problems else ""))
+            problems, words = self.check(meta, title, blurb, kids)
+            log("%s attempt %d via %s %.1fs: %d words%s" % (
+                what, attempt, ep["name"], dt, words, (" - " + "; ".join(problems)) if problems else ""))
             target = (c["min_words"] + 2 * c["max_words"]) // 3
             cand = {"title": title, "blurb": blurb, "problems": problems, "words": words, "seconds": round(dt, 1)}
             if not problems:

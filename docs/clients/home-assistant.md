@@ -1,6 +1,7 @@
 # Home Assistant dashboards and wall tablets
 
-Three pieces, each optional, and a fourth for the Screens list (section 4):
+Three pieces, each optional, a fourth for the Screens list (section 4) and a fifth for a
+"Guess where?" screensaver (section 5):
 
 1. A **package** that turns `current.json` into entities: a sensor with the picture's title, blurb
    and image URLs, an `image` entity with the labelled render, and a *Next wallpaper* script.
@@ -291,6 +292,59 @@ if the fallback file is replaced in place.
 One thing to know: the screensaver's picture is fetched by Home Assistant, not by the tablet, so a
 tablet that spends the day in its screensaver shows an old *last seen* in `/screens.json` while it
 still follows Matchy.
+
+## 5. "Guess where?" on a Wallpanel screensaver
+
+A screensaver that shows each picture **without** its label first, then reveals the label: here the
+kids label, ten minutes after the picture went up. Needs `caption_kids` on in the add-on options for
+the kids caption (without it, or until a picture has one, the normal label shows, in the same bigger
+type). See *Kids labels* and *Guess where?* in [DOCS.md](../../matchy/DOCS.md#guess-where).
+
+`current.json?reveal=600` gives a `version` that changes at the reveal as well as on every rotation;
+the `image` entity puts it in its URL, so Home Assistant fetches the picture again at the reveal. Add
+to the package from section 1, merging each block into the matching top-level key:
+
+```yaml
+rest:
+  - resource: <matchy-url>/current.json?reveal=600
+    scan_interval: 30          # the label shows at most this long after it is due
+    timeout: 10
+    sensor:
+      - name: Matchy guess where
+        unique_id: matchy_guess_where
+        icon: mdi:image-search
+        value_template: "{{ value_json.version }}"
+        json_attributes:
+          - revealed
+          - reveal_at
+
+template:
+  - image:
+      # The clean picture for 600 seconds after each rotation, then the kids label. The same 600 in
+      # both URLs. v= only changes the URL when the version does; Matchy ignores it.
+      - name: Matchy guess where
+        unique_id: matchy_guess_where_image
+        url: >-
+          {{ '<matchy-url>/current/label/1920x1200.jpg?label=kids&reveal=600&v='
+             ~ states('sensor.matchy_guess_where') }}
+        availability: "{{ has_value('sensor.matchy_guess_where') }}"
+```
+
+Then point that tablet's Wallpanel profile (section 3) at it:
+
+```yaml
+wallpanel:
+  profiles:
+    user.<the tablet user's id>:
+      enabled: true
+      image_url: media-entity-image://image.matchy_guess_where
+```
+
+The ten minutes count from when the picture went up on every screen (`since`), not from when the
+tablet went idle: a screensaver that starts late in a picture's turn shows less of the guessing time,
+or goes straight to the label. Keep the reveal shorter than the rotation's shortest time
+(`rotation_min_minutes`, 15 by default), or the label never shows. Drop `label=kids` for the normal
+label, and add `&s=1.35` to the image URL for another label size (the kids label's default is 1.3).
 
 ## Checking
 

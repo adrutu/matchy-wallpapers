@@ -85,6 +85,9 @@ if cfg:
     check("defaults: no nulls", not has_null(cfg))
     check("defaults: rotation and caption", cfg["rotation"] == {"min_minutes": 15, "max_minutes": 20}
           and cfg["caption"]["spelling"] == "British", cfg)
+    check("defaults: kids captions off", cfg["caption"]["kids"] == {"enabled": False}, cfg["caption"])
+rc, cfg, err, data, tmp = run(dict(base, caption_kids=True)); temps.append(tmp)
+check("caption_kids on", rc == 0 and cfg and cfg["caption"]["kids"] == {"enabled": True}, (rc, cfg and cfg["caption"]))
 
 # sets, exclude, a keyed captioner, a missing folder
 opts = dict(base, source_folders=[src, "/nonexistent/matchy"], exclude=["aether-*", "test-3"],
