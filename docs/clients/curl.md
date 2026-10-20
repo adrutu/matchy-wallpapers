@@ -41,6 +41,10 @@ curl -s -o wall.jpg "$MATCHY/current/label/2560x1440.jpg?s=1.35"
 # the same without the label
 curl -s -o wall.jpg "$MATCHY/current/clean/2560x1440.jpg"
 
+# padded for a client that pans and zooms over it (pad 1.0-1.3): 3072x1728, centred on the focus
+# point, the label kept where every screen-sized view shows it
+curl -s -o wall.jpg "$MATCHY/current/label/2560x1440.jpg?s=1.35&pad=1.2"
+
 # a specific picture by id and caption revision (cacheable for a year; 302 to the new rev if the
 # caption was edited since)
 curl -sL -o wall.jpg "$MATCHY/img/art-great-wave/73bdfe/label/1920x1080.jpg"

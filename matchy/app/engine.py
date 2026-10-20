@@ -838,13 +838,29 @@ class Engine:
             log("cache evicted down to %d MB" % (total // 1048576))
         self.cache_bytes = total
 
-    def render_kind(self, iid, rev, kind, w, h, s=1.0, layout=None, dim=0.0):
+    def focus(self, iid):
+        """Where the picture's subject is, (x, y) in 0-1: the sidecar's focus, else the centre."""
+        return tuple(round(v, 3) for v in render.focus_point(self.lib.sidecars.get(iid)))
+
+    def render_kind(self, iid, rev, kind, w, h, s=1.0, layout=None, pad=1.0, dim=0.0):
         """dim (quiet hours, clean and label only) darkens the render and gets its own cache file."""
         disp = self.lib.display(iid)
         meta = {k: disp[k] for k in ("title", "place", "credit", "blurb")}
         sk = ("%.2f" % s).rstrip("0").rstrip(".")
         dk = ("-d%s" % dim_key(dim)) if dim else ""
-        if kind == "clean":
+        if pad != 1.0 and kind in ("clean", "label"):
+            # The focus is not part of rev (it moves no text), so it names the file instead.
+            f = self.focus(iid)
+            tail = "-p%s-f%s,%s%s" % (("%.2f" % pad).rstrip("0"), f[0], f[1], dk)
+            if kind == "clean":
+                key = "%s/%s/clean-%dx%d%s.jpg" % (iid, rev, w, h, tail)
+                prod = lambda: self.renderer.encode(self.renderer.dim(
+                    self.renderer.padded(self.master_image(iid), w, h, pad, f), dim))
+            else:
+                key = "%s/%s/label-%dx%d-s%s%s.jpg" % (iid, rev, w, h, sk, tail)
+                prod = lambda: self.renderer.encode(self.renderer.dim(
+                    self.renderer.label_padded(self.master_image(iid), meta, w, h, s, pad, f), dim))
+        elif kind == "clean":
             key = "%s/%s/clean-%dx%d%s.jpg" % (iid, rev, w, h, dk)
             prod = lambda: self.renderer.encode(self.renderer.dim(self.renderer.clean(self.master_image(iid), w, h), dim))
         elif kind == "label":
@@ -1057,6 +1073,19 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("s must be 0.6-2.0")
         return round(s, 2)
 
+    def parse_pad(self, q, size):
+        """?pad= on a clean or label picture: 1.0 (none) to 1.3, and the padded size within the limits."""
+        try:
+            p = float(q.get("pad", ["1"])[0])
+        except ValueError:
+            raise ValueError("bad pad")
+        if not 1.0 <= p <= 1.3:
+            raise ValueError("pad must be 1.0-1.3")
+        p = round(p, 2)
+        if max(round(size[0] * p), round(size[1] * p)) > self.engine.cfg["size_limits"]["max"]:
+            raise ValueError("pad makes the picture larger than %d pixels" % self.engine.cfg["size_limits"]["max"])
+        return p
+
     def parse_size(self, name):
         m = SIZE_RE.match(name)
         if not m:
@@ -1107,14 +1136,17 @@ class Handler(BaseHTTPRequestHandler):
                 if not size or not cur:
                     return self.send(404, "not found\n", head=head)
                 s = self.parse_scale(q) if parts[1] == "label" else 1.0
+                pad = self.parse_pad(q, size)
                 # Quiet hours dim /current/ only: /img/ URLs are cacheable for a year and keep their meaning.
                 dim = cur["quiet_window"]["dim"] if cur["quiet"] else 0.0
                 etag = '"%s-%s-%dx%d-%s%s"' % (cur["version"], parts[1], size[0], size[1], s,
                                                ("-dim" + dim_key(dim)) if dim else "")
+                if pad != 1.0:  # the focus can move without a new version
+                    etag = etag[:-1] + '-p%s-f%s,%s"' % ((pad,) + eng.focus(cur["id"]))
                 hdr = {"Cache-Control": "no-cache", "ETag": etag}
                 if self.headers.get("If-None-Match") == etag:
                     return self.send(304, headers=hdr, head=True)
-                data = eng.render_kind(cur["id"], cur["rev"], parts[1], size[0], size[1], s, dim=dim)
+                data = eng.render_kind(cur["id"], cur["rev"], parts[1], size[0], size[1], s, pad=pad, dim=dim)
                 return self.send(200, data, "image/jpeg", hdr, head)
 
             if len(parts) >= 3 and parts[0] == "img" and parts[1] in eng.lib.items:
@@ -1141,8 +1173,15 @@ class Handler(BaseHTTPRequestHandler):
                     if not size:
                         return self.send(400, "size must be <W>x<H>.jpg within limits\n", head=head)
                     s = self.parse_scale(q) if kind == "label" else 1.0
-                    data = eng.render_kind(iid, rev, kind, size[0], size[1], s)
-                    return self.send(200, data, "image/jpeg", immut, head)
+                    pad = self.parse_pad(q, size)
+                    hdr = immut
+                    if pad != 1.0:  # the focus can move under the same rev: revalidate, never immutable
+                        etag = '"%s-%s-%s-%dx%d-%s-p%s-f%s,%s"' % ((iid, rev, kind) + size + (s, pad) + eng.focus(iid))
+                        hdr = {"Cache-Control": "no-cache", "ETag": etag}
+                        if self.headers.get("If-None-Match") == etag:
+                            return self.send(304, headers=hdr, head=True)
+                    data = eng.render_kind(iid, rev, kind, size[0], size[1], s, pad=pad)
+                    return self.send(200, data, "image/jpeg", hdr, head)
         except ValueError as e:
             return self.send(400, "%s\n" % e, head=head)
         return self.send(404, "not found\n", head=head)
