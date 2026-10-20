@@ -335,6 +335,9 @@ class Library:
 
     def rescan(self):
         items = self.scan_folders()
+        # Every folder there and holding pictures: only then can a missing picture be taken as deleted, not as
+        # an unmounted share or an empty mount point.
+        whole = {it["order"][1] for it in items.values()} == set(range(len(self.cfg["folders"])))
         items.update(self.remote_items())
         for iid, ov in (self.cfg.get("overrides") or {}).items():
             if iid in items:
@@ -349,10 +352,25 @@ class Library:
             self.skipped = {i: v for i, v in self.skipped.items() if i in items and items[i]["sha256"] == v[0]}
         self.load_sidecars()
         self.sync_sidecar_meta()
+        if whole:
+            self.drop_orphan_masters(items)
         if added or gone:
             log("library: %d items (+%d -%d)" % (len(items), len(added), len(gone)))
             self.changed.set()
         return added
+
+    def drop_orphan_masters(self, items):
+        """Masters of pictures no longer in the library (deleted, renamed or excluded): they are in backups."""
+        d = os.path.join(self.data, "masters")
+        want = {os.path.basename(self.master_path(i)) for i in items}
+        gone = [fn for fn in os.listdir(d) if fn.endswith(".jpg") and fn not in want]  # never a .tmp being written
+        for fn in gone:
+            try:
+                os.remove(os.path.join(d, fn))
+            except OSError:
+                pass
+        if gone:
+            log("masters: removed %d of pictures no longer in the library" % len(gone))
 
     # ---------- remote sources ----------
     def _store_remote(self, iid, kind, data, meta):

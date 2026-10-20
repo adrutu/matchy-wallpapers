@@ -241,6 +241,30 @@ with quiet():
     size = _Image.open(e.lib.ensure_master("phone")).size
 check("unit masters from before are rebuilt", size == (900, 1600) and not os.path.exists(old), (size, os.path.exists(old)))
 
+# Masters of pictures taken out of the folders stayed in masters/ (and in every backup) for good. They now go
+# after a scan, but never while a picture folder is missing or empty: an unmounted share must not cost them.
+e = lib_engine("orphans", [("a.jpg", noisy), ("b.jpg", noisy), ("sub/c.jpg", noisy)])
+src = e.cfg["folders"][0]["path"]
+mdir = os.path.join(e.cfg["data_dir"], "masters")
+masters = lambda: sorted(f.split("-")[0] for f in os.listdir(mdir))
+with quiet():
+    e.lib.rescan()
+    for i in list(e.lib.items):
+        e.lib.ensure_master(i)
+    os.remove(os.path.join(src, "b.jpg"))
+    e.lib.rescan()
+check("unit masters of a deleted picture are removed", masters() == ["a", "sub"], masters())
+with quiet():
+    os.rename(src, src + ".away")  # the share is unmounted
+    e.lib.rescan()
+    kept_missing = masters()
+    os.makedirs(src)  # an empty mount point
+    e.lib.rescan()
+    kept_empty = masters()
+    os.rmdir(src); os.rename(src + ".away", src)
+check("unit masters kept while the folder is missing or empty", kept_missing == kept_empty == ["a", "sub"],
+      (kept_missing, kept_empty))
+
 # A picture replaced by a new version under the same name, with the label text unchanged (captions off, or a
 # caption written by hand): the rev, and so the render cache key and the /img/ URL, stayed the same, so the
 # old picture was served on (and browsers keep /img/ URLs for a year).

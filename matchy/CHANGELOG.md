@@ -38,6 +38,9 @@ Bug fixes from a review of the add-on; each has a test in `tests/run_tests.py`.
 - Daily picture: a JSON document with `"copyright": null` stopped the daily source.
 - A keep-alive connection whose client disappeared held a server thread for good; idle
   connections now close after a minute.
+- Masters of pictures taken out of the folders (deleted, renamed or excluded) stayed in `masters/`,
+  and in every backup, for good. They are now removed after a folder scan, except while any picture
+  folder is missing or empty, so a share that is briefly unmounted does not cost them.
 - `tools/retro_themes.py` wrote `meta.json` in the system's encoding, which the engine (reading
   UTF-8) rejected on Windows, losing every title and credit.
 - Docs: `caption_enabled: false` stops the captioner; it does not hide blurbs already written or

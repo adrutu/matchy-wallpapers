@@ -340,7 +340,7 @@ add-on (`backup: hot`, the render cache excluded):
 | `state.json` | What is on screen, the shuffle bag, hidden ids, the panel's rotation choice, whether quiet hours hold the picture, history. |
 | `screens.json` | The Screens list: on or off, first and last seen (last seen is written at most every 5 minutes). |
 | `library/<id>.json` | One sidecar per picture: the caption and where it came from. A hand edit here (set `"edited": true`) is picked up within a minute. |
-| `masters/` | The downscaled master copy of each picture. |
+| `masters/` | The downscaled master copy of each picture. A picture's master goes after the first folder scan that no longer finds it, but not while any picture folder is missing or empty, so an unmounted share costs nothing. |
 | `originals/`, `remote.json` | Pictures fetched from a remote manifest or the daily URL, and their index. |
 | `cache/` | Rendered JPEGs, evicted LRU. Safe to delete; not in backups. |
 | `hash-cache.json` | File hashes, so a restart does not re-hash unchanged files. |
