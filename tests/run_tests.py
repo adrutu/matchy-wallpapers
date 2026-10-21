@@ -1,4 +1,4 @@
-"""Integration tests for the Matchy engine: rotation, the panel controls, access tiers, request
+"""Integration tests for the Matchy engine: rotation, quiet hours, the panel controls, access tiers, request
 bodies, and images too large to decode. Runs the real engine as a subprocess against generated
 images and a fake OpenAI-compatible captioner (tests/fakecap.py).
 
@@ -81,6 +81,85 @@ check("sun: Cork midsummer", "03:50" <= utc_hm(r[0]) <= "04:20" and "20:50" <= u
 r = engine_mod.sun_events(51.8985, -8.4756, _dt.date(2026, 12, 21))
 check("sun: Cork midwinter", "08:20" <= utc_hm(r[0]) <= "08:50" and "16:10" <= utc_hm(r[1]) <= "16:40", [utc_hm(t) for t in r])
 check("sun: midnight sun has none", engine_mod.sun_events(78.2, 15.6, _dt.date(2026, 6, 21)) is None)
+
+# ---------------- quiet hours (pure): windows across midnight, and the clocks changing in Europe/Dublin ----------------
+def at(y, mo, d, h, mi=0): return time.mktime((y, mo, d, h, mi, 0, 0, 0, -1))
+def hours(w): return (w[2] - w[1]) / 3600
+
+tz_before = os.environ.get("TZ")
+os.environ["TZ"] = "Europe/Dublin"; time.tzset()
+NIGHT = ((23, 0), (7, 0))
+qw = engine_mod.quiet_window
+w = qw(at(2026, 10, 20, 23, 30), *NIGHT)
+check("quiet: 23:30 is inside, the window ends the next morning", w == (True, at(2026, 10, 20, 23), at(2026, 10, 21, 7)), w)
+check("quiet: an ordinary night is 8 hours", hours(w) == 8, hours(w))
+w = qw(at(2026, 10, 21, 2), *NIGHT)
+check("quiet: 02:00 is in the window that started the evening before", w == (True, at(2026, 10, 20, 23), at(2026, 10, 21, 7)), w)
+w = qw(at(2026, 10, 21, 7), *NIGHT)
+check("quiet: over at 07:00, next window tonight", w == (False, at(2026, 10, 21, 23), at(2026, 10, 22, 7)), w)
+w = qw(at(2026, 10, 21, 22, 59), *NIGHT)
+check("quiet: not yet at 22:59", w == (False, at(2026, 10, 21, 23), at(2026, 10, 22, 7)), w)
+w = qw(at(2026, 10, 25, 3), *NIGHT)
+check("quiet: the night the clocks go back (2026-10-25) is 9 hours, ending 07:00", w[0] and hours(w) == 9
+      and time.localtime(w[2])[3:5] == (7, 0) and time.localtime(w[1])[2:5] == (24, 23, 0), (w, hours(w)))
+w = qw(at(2026, 3, 29, 3), *NIGHT)
+check("quiet: the night the clocks go forward (2026-03-29) is 7 hours", w[0] and hours(w) == 7, (w, hours(w)))
+w = qw(at(2026, 10, 21, 12), (13, 0), (14, 30))
+check("quiet: a window inside one day", w == (False, at(2026, 10, 21, 13), at(2026, 10, 21, 14, 30)), w)
+w = qw(at(2026, 10, 21, 14, 30), (13, 0), (14, 30))
+check("quiet: a window inside one day, next one tomorrow", w == (False, at(2026, 10, 22, 13), at(2026, 10, 22, 14, 30)), w)
+w = qw(at(2026, 3, 28, 20), (1, 30), (6, 0))  # 01:30 does not exist in Dublin on 2026-03-29
+check("quiet: a start the clocks skip still gives a window that ends at 06:00", not w[0] and 0 < hours(w) <= 4.5
+      and time.localtime(w[2])[2:5] == (29, 6, 0), (w, hours(w)))
+pq = engine_mod.parse_quiet
+check("quiet: off by default and with one time", pq({}) is None and pq(None) is None and pq({"start": "23:00"}) is None
+      and pq({"start": "23:00", "end": "23:00"}) is None and pq({"start": "25:00", "end": "07:00"}) is None)
+check("quiet: defaults hold and dim", pq({"start": "23:00", "end": "7:00"}) == {"start": (23, 0), "end": (7, 0),
+                                                                                "hold": True, "dim": 0.6})
+check("quiet: hold off, dim 0, a bad dim", pq({"start": "1:00", "end": "2:00", "hold": False, "dim": 0})["hold"] is False
+      and pq({"start": "1:00", "end": "2:00", "dim": 0})["dim"] == 0 and pq({"start": "1:00", "end": "2:00", "dim": 3})["dim"] == 0.6)
+if tz_before is None: del os.environ["TZ"]
+else: os.environ["TZ"] = tz_before
+time.tzset()
+
+# ---------------- quiet hours (one engine in this process): hold, Next, resume, paused, restart ----------------
+def quiet_engine(**quiet):
+    cfg = engine_mod.merge(engine_mod.DEFAULTS, {
+        "data_dir": os.path.join(S, "data-quiet"), "folders": [{"path": IMGS}], "captioners": [],
+        "caption": {"enabled": False}, "rotation": {"min_minutes": 15, "max_minutes": 20},
+        "quiet_hours": dict({"start": "23:00", "end": "07:00"}, **quiet)})
+    eng = engine_mod.Engine(cfg); eng.lib.rescan()
+    return eng
+eng = quiet_engine()
+night, morning = at(2026, 10, 21, 1), at(2026, 10, 21, 7)
+eng.rotator_step(night)
+first = eng.state.get("current")
+check("quiet: an empty screen still gets a picture", first and eng.state.get("quiet_hold") is True, eng.state)
+eng.state["next_change"] = night - 60
+eng.rotator_step(night + 60)
+check("quiet: an overdue picture is held", eng.state["current"] == first, eng.state["current"])
+eng.next_now("test")
+second = eng.state["current"]
+eng.rotator_step(night + 120)
+check("quiet: Next still works, and the new picture is held too", second != first and eng.state["current"] == second
+      and eng.state.get("quiet_hold") is True, eng.state)
+eng = quiet_engine()  # a restart in the night: the hold is in state.json
+eng.rotator_step(morning + 5)
+check("quiet: hold resumes with a full interval at the end, across a restart", eng.state["current"] == second
+      and "quiet_hold" not in eng.state and morning + 5 + 15 * 60 <= eng.state["next_change"] <= morning + 5 + 20 * 60,
+      (eng.state.get("quiet_hold"), eng.state["next_change"] - morning))
+eng.set_paused(True)
+eng.state["next_change"] = 1234.0
+eng.rotator_step(at(2026, 10, 21, 23, 30))
+check("quiet: a window that starts while paused", eng.state.get("quiet_hold") is True and eng.state["paused"])
+eng.rotator_step(at(2026, 10, 22, 7, 1))
+check("quiet: ends still paused, the interval left to Resume", "quiet_hold" not in eng.state and eng.state["paused"]
+      and eng.state["next_change"] == 1234.0 and eng.state["current"] == second, eng.state)
+eng = quiet_engine(hold=False)
+eng.set_paused(False)
+eng.state["next_change"] = night - 60
+eng.rotator_step(night)
+check("quiet: hold off keeps rotating", eng.state["current"] != second and "quiet_hold" not in eng.state, eng.state)
 
 # ---------------- A: the sidebar panel (localhost treated as the Supervisor) ----------------
 fake = subprocess.Popen([sys.executable, os.path.join(HERE, "fakecap.py"), str(BASE + 10), FAIL_FLAG])
@@ -409,6 +488,65 @@ try:
     check("G missing font logged once per file", missing and len(missing) == len({l.split()[3] for l in missing}), missing)
 finally:
     pg.terminate(); pg.wait()
+
+# ---------------- Q: quiet hours over HTTP: /current/ dimmed with its own ETag, /img/ not ----------------
+def get_bytes(port, path, headers=None):
+    c = http.client.HTTPConnection("127.0.0.1", port, timeout=20)
+    c.request("GET", path, headers=headers or {})
+    r = c.getresponse(); data = r.read(); hdrs = dict(r.getheaders()); c.close()
+    return r.status, data, hdrs
+
+def brightness(data):
+    import io
+    from PIL import Image, ImageStat
+    return sum(ImageStat.Stat(Image.open(io.BytesIO(data)).convert("L")).mean)
+
+Q = BASE + 9
+now = time.time()
+q_start, q_end = time.strftime("%H:%M", time.localtime(now - 7200)), time.strftime("%H:%M", time.localtime(now + 7200))
+cfgQ = {"port": Q, "ingress_peers": ["127.0.0.0/8"], "captioners": [], "caption": {"enabled": False},
+        "quiet_hours": {"start": q_start, "end": q_end}}
+pq = start("Q", dict(cfgQ))
+try:
+    c = cur(Q)
+    check("Q current.json: quiet, its window, no next change while held", c["quiet"] is True and c["next_change"] is None
+          and c["paused"] is False and c["quiet_window"]["end"][11:16] == q_end and c["quiet_window"]["hold"] is True
+          and c["quiet_window"]["dim"] == 0.6, c)
+    page = req(Q, "GET", "/")[2]
+    check("Q page: Quiet until", "Quiet until %s" % q_end in page and "Rotation: <b>quiet</b>" in page
+          and 'data-act="next">' in page, page[page.find("<h2>Rotation"):][:600])
+    img = "/img/%s/%s" % (c["id"], c["rev"])
+    dimmed = {}
+    for kind in ("clean", "label"):
+        st, data, h = get_bytes(Q, "/current/%s/640x360.jpg" % kind)
+        st2, plain, _ = get_bytes(Q, "%s/%s/640x360.jpg" % (img, kind))
+        ratio = brightness(data) / brightness(plain)
+        check("Q /current/%s dimmed, /img/ not" % kind, st == 200 and st2 == 200 and "-dim0.6" in h["ETag"]
+              and 0.3 < ratio < 0.5, (st, st2, h.get("ETag"), ratio))
+        dimmed[kind] = h["ETag"]
+    st, _, h = get_bytes(Q, "/current/clean/640x360.jpg", {"If-None-Match": dimmed["clean"]})
+    check("Q dimmed ETag answers 304", st == 304, st)
+    st, j, *_ = req(Q, "POST", "/api/next", {}); c2 = cur(Q)
+    check("Q Next works in quiet hours, still held", st == 200 and c2["id"] != c["id"] and c2["quiet"]
+          and c2["next_change"] is None, c2)
+    req(Q, "POST", "/api/show", {"id": c["id"]}); c = cur(Q)
+    st, _, h = get_bytes(Q, "/current/clean/640x360.jpg"); dimmed["clean"] = h["ETag"]
+finally:
+    pq.terminate(); pq.wait()
+# the same picture with quiet hours off: a different ETag for the same version
+cfgQ.pop("quiet_hours")
+pq = start("Q", dict(cfgQ, _fresh=False))
+try:
+    c3 = cur(Q)
+    check("Q off: quiet false, no window, a next change again", c3["quiet"] is False and c3["quiet_window"] is None
+          and c3["next_change"] and c3["version"] == c["version"], (c3, c["version"]))
+    st, data, h = get_bytes(Q, "/current/clean/640x360.jpg", {"If-None-Match": dimmed["clean"]})
+    st2, plain, _ = get_bytes(Q, "/img/%s/%s/clean/640x360.jpg" % (c3["id"], c3["rev"]))
+    check("Q undimmed ETag differs from the dimmed one", st == 200 and h["ETag"] != dimmed["clean"]
+          and "dim" not in h["ETag"] and abs(brightness(data) / brightness(plain) - 1) < 0.02, (st, h.get("ETag")))
+    check("Q page: no quiet line when off", "Quiet" not in req(Q, "GET", "/")[2])
+finally:
+    pq.terminate(); pq.wait()
 
 # ---------------- H: a client off this network cannot add screens or read the list ----------------
 H = BASE + 5
