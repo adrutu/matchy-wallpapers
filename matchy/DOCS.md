@@ -48,6 +48,7 @@ port>`. Leave it empty and only the sidebar panel works.
 | `rotation_min_minutes` | int, 1–1440 | 15 | Shortest time on one image. Keep it at or below the longest. |
 | `rotation_max_minutes` | int, 1–1440 | 20 | Longest time on one image. The actual interval is drawn at random between the two. |
 | `love_weight` | int, 1–10 | 3 | How many times as often a **loved** picture (one given a heart in the panel or with `POST /api/love`) comes up. 1: a heart changes nothing. See *Loved pictures*. |
+| `quiet_hours` | object | `{}` (off) | Hold and dim the picture overnight: `start` and `end` (local times, `HH:MM`; both needed, an end earlier than the start is the next morning), `hold` (bool, default true) and `dim` (0–1, default 0.6). See *Quiet hours*. |
 | `folder_scan_minutes` | int, 1–1440 | 10 | How often it looks for new, changed or removed files. |
 | `master_max_px` | int, 1280–7680 | 3840 | Longest edge of the cached master copy every render is cut from. |
 | `cache_max_mb` | int, 128–65536 | 2048 | Render cache size. Evicted least-recently-used down to 85 % when it overflows. |
@@ -162,6 +163,8 @@ page reloads itself when the picture changes (it checks every 30 seconds). From 
   when you let go. The shortest/longest window is still there under **Custom window**. A choice made
   here lasts until you change the rotation options in the add-on configuration, so whichever was set
   last wins; **Use the options** goes back to them (in Day & night, pick a stop on the slider instead).
+- **Quiet until 07:00** under Rotation while quiet hours are on (see below); outside them, when they
+  start and end.
 - **Screens**: every screen that has named itself (see below) and whether it follows Matchy.
   **Turn off** / **Turn on** one screen, or **Forget** it. When and from where each was last seen is in
   `/screens.json`.
@@ -198,6 +201,39 @@ Hearts are kept in `state.json`, show as `loved` in `/current.json` and `/librar
 given from any client on your network with `POST /api/love` (a dashboard tile, say), because they
 only change how often a picture comes up.
 
+### Quiet hours
+
+`quiet_hours` sets a nightly window, for example:
+
+```yaml
+quiet_hours:
+  start: "23:00"
+  end: "07:00"
+  hold: true
+  dim: 0.6
+```
+
+During the window:
+
+- **`hold`** (default true): the rotation stands still on the picture on screen, like a pause that
+  ends by itself. **Next picture** and **Show now** still work, and the picture they put up is held
+  too. When the window ends, the rotation resumes with a full interval from then, so the night's
+  picture stays up for one more interval before the next one. With `hold: false` the rotation carries
+  on as usual. A rotation paused before or during the window stays paused afterwards; **Resume**
+  starts the full interval.
+- **`dim`** (default 0.6): `/current/clean/...` and `/current/label/...` are darkened by that much (0
+  is not at all, 0.6 is 60 % darker, 1 is black), label included, and their `ETag` changes, so a client
+  polling with `If-None-Match` gets the dimmed picture when the window starts and the bright one when
+  it ends. `/img/...` addresses are never dimmed: they are cacheable for a year and keep their meaning.
+  A client that builds its addresses from `urls` in `current.json` (the Home Assistant, Homepage and
+  GNOME recipes do) therefore keeps the undimmed picture; point it at `/current/...` instead, or let it
+  read `quiet` from `current.json`.
+- `current.json` says `"quiet": true`; `next_change` is `null` while the picture is held.
+
+Times are the add-on's local time, so the window follows daylight saving time: the night the clocks
+go back is an hour longer, the night they go forward an hour shorter. Leave `start` and `end` empty
+(the default) to turn quiet hours off.
+
 ### Screens
 
 Any client may add `?screen=<name>` to any `GET` (`/current.json`, `/current/...`, `/img/...`). The name
@@ -224,13 +260,13 @@ Read endpoints:
 
 | Endpoint | Description |
 | :--- | :--- |
-| `GET /current.json` | The current picture: `id`, `rev`, `version`, `title`, `place`, `credit`, `blurb`, `since`, `next_change` (null while paused), `paused`, `captioned`, `loved`, and `urls` (`original`, `clean`, `label`, `span` templates with `{w}`, `{h}`, `{layout}` to fill in). `version` changes on every rotation and every caption edit; clients compare it. `screens_off` lists the screens turned off; with `?screen=<name>`, `follow` says whether that one should follow. `503` while the library is empty. |
+| `GET /current.json` | The current picture: `id`, `rev`, `version`, `title`, `place`, `credit`, `blurb`, `since`, `next_change` (null while paused or held by quiet hours), `paused`, `captioned`, `quiet` (true during quiet hours), `quiet_window` (`{"start", "end", "hold", "dim"}`: the quiet window now, or else the next one; `null` when quiet hours are off), `loved`, and `urls` (`original`, `clean`, `label`, `span` templates with `{w}`, `{h}`, `{layout}` to fill in). `version` changes on every rotation and every caption edit; clients compare it. `screens_off` lists the screens turned off; with `?screen=<name>`, `follow` says whether that one should follow. `503` while the library is empty. |
 | `GET /library.json` | Every picture with its status, caption, `hidden`, `loved` and `recaption_queued` flags, plus the rotation (`mode` = `minutes` or `daynight`, the window, `love_weight`, and `next_sun` = `{"at", "event"}` in Day & night, `event` being `sunrise`/`sunset`, or `morning`/`evening` without a location) and captioner state. |
 | `GET /screens.json` | The Screens list (see Screens). Network tier only, and without CORS, because it carries addresses. |
 | `GET /` (also `/index.html`) | The gallery page. |
-| `GET /current/clean/WxH.jpg` | The current picture at any size, without the label. Sends an `ETag`; `If-None-Match` gets a `304` until the picture changes. |
-| `GET /current/label/WxH.jpg[?s=]` | The same with the label. `s` scales the label, 0.6–2.0 (wall tablets look right at about 1.35). |
-| `GET /img/<id>/<rev>/clean/WxH.jpg` | One specific picture; cacheable for a year. |
+| `GET /current/clean/WxH.jpg` | The current picture at any size, without the label. Sends an `ETag`; `If-None-Match` gets a `304` until the picture changes or quiet hours start or end. Dimmed during quiet hours. |
+| `GET /current/label/WxH.jpg[?s=]` | The same with the label. `s` scales the label, 0.6–2.0 (wall tablets look right at about 1.35). Dimmed during quiet hours. |
+| `GET /img/<id>/<rev>/clean/WxH.jpg` | One specific picture; cacheable for a year, so never dimmed. |
 | `GET /img/<id>/<rev>/label/WxH.jpg[?s=]` | The same with the label. |
 | `GET /img/<id>/<rev>/span.jpg?layout=WxH+X+Y[p],...[&s=]` | One picture composed across a multi-monitor layout: each monitor as `width x height + x + y`, `p` marks the primary, which gets the label (the largest screen if none is marked). Gaps are black. |
 | `GET /img/<id>/original.jpg` | The original: PNG and WebP pictures from your folders are re-encoded as JPEG; pictures downloaded from a remote manifest or the daily URL are served as downloaded. |
@@ -325,7 +361,7 @@ add-on (`backup: hot`, the render cache excluded):
 | :--- | :--- |
 | `config.json` | Generated from the options on every start. |
 | `secrets/captioner-<n>.key` | Captioner keys, mode 600. |
-| `state.json` | What is on screen, the shuffle bag, hidden and loved ids, the panel's rotation choice, history. |
+| `state.json` | What is on screen, the shuffle bag, hidden and loved ids, the panel's rotation choice, whether quiet hours hold the picture, history. |
 | `screens.json` | The Screens list: on or off, first and last seen (last seen is written at most every 5 minutes). |
 | `library/<id>.json` | One sidecar per picture: the caption and where it came from. A hand edit here (set `"edited": true`) is picked up within a minute. |
 | `masters/` | The downscaled master copy of each picture. |
@@ -401,6 +437,7 @@ generates, with its defaults:
   "render_threads": 2,
   "folder_scan_minutes": 10,
   "rotation": {"min_minutes": 15, "max_minutes": 20, "love_weight": 3},
+  "quiet_hours": {"start": "23:00", "end": "07:00", "hold": true, "dim": 0.6},
   "location": {"latitude": 53.35, "longitude": -6.26},
   "folders": [{"path": "/sources/wallpapers",
                "sets": {"art": {"id_prefix": "art", "name": "Classic Art", "abstract": false}}}],
@@ -417,8 +454,8 @@ generates, with its defaults:
 ```
 
 The add-on writes a captioner's key to a file and passes `api_key_file` instead of `api_key`; either
-works here. Leave `location` out and Day & night changes at 07:00 and 19:00. Times are local to the
-container, so set `TZ` (for example `-e TZ=Europe/London`) or they are UTC.
+works here. Leave `location` out and Day & night changes at 07:00 and 19:00. Leave `quiet_hours` out
+(or `{}`) for no quiet hours. Times are local to the container, so set `TZ` (for example `-e TZ=Europe/London`) or they are UTC.
 
 Keys the engine understands but the add-on does not expose:
 

@@ -47,6 +47,27 @@ configuration:
     description: >-
       How many times as often a picture with a heart comes up (hearts are given in the sidebar
       panel or with the love API). 1 means a heart changes nothing.
+  quiet_hours:
+    name: Quiet hours
+    description: >-
+      Off unless both times are set. During quiet hours the picture is held, and screens that use
+      the /current/ addresses get it dimmed.
+    fields:
+      start:
+        name: Start
+        description: Local time, e.g. 23:00.
+      end:
+        name: End
+        description: Local time, e.g. 07:00. Earlier than the start means the next morning.
+      hold:
+        name: Hold the picture
+        description: >-
+          Keep one picture all night (default on). The rotation resumes with a full interval when
+          quiet hours end.
+      dim:
+        name: Dim
+        description: >-
+          How much darker the picture is, from 0 (not at all) to 1 (black). Default 0.6.
   folder_scan_minutes:
     name: Folder check
     description: Minutes between looks for new, changed or removed pictures.
