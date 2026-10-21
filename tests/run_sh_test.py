@@ -84,7 +84,7 @@ if cfg:
     check("defaults: folder with empty sets", cfg["folders"] == [{"path": src, "sets": {}}], cfg["folders"])
     check("defaults: empty exclude", cfg["exclude"] == [], cfg.get("exclude"))
     check("defaults: no nulls", not has_null(cfg))
-    check("defaults: rotation and caption", cfg["rotation"] == {"min_minutes": 15, "max_minutes": 20}
+    check("defaults: rotation and caption", cfg["rotation"] == {"min_minutes": 15, "max_minutes": 20, "love_weight": 3}
           and cfg["caption"]["spelling"] == "British", cfg)
     check("defaults: focus_auto off (centred crops)", cfg["focus_auto"] is False, cfg.get("focus_auto"))
     check("defaults: kids captions off", cfg["caption"]["kids"] == {"enabled": False}, cfg["caption"])
@@ -94,7 +94,7 @@ rc, cfg, err, data, tmp = run(dict(base, caption_kids=True)); temps.append(tmp)
 check("caption_kids on", rc == 0 and cfg and cfg["caption"]["kids"] == {"enabled": True}, (rc, cfg and cfg["caption"]))
 
 # sets, exclude, a keyed captioner, a missing folder
-opts = dict(base, source_folders=[src, "/nonexistent/matchy"], exclude=["aether-*", "test-3"],
+opts = dict(base, source_folders=[src, "/nonexistent/matchy"], exclude=["aether-*", "test-3"], love_weight=5,
             sets=[{"folder": "theme-forest-green", "id_prefix": "fg", "name": "Forest Green",
                    "credit": "Omarchy · Forest Green theme", "abstract": True},
                   {"folder": "geology", "id_prefix": "geo", "name": "Geology", "abstract": False},
@@ -111,6 +111,7 @@ if cfg:
     check("sets reach every usable folder", cfg["folders"] == [{"path": src, "sets": want_sets}], cfg["folders"])
     check("missing folder skipped with a warning", "Source folder not found" in err, err[-300:])
     check("exclude list", cfg["exclude"] == ["aether-*", "test-3"], cfg["exclude"])
+    check("love_weight reaches rotation", cfg["rotation"]["love_weight"] == 5, cfg["rotation"])
     caps = cfg["captioners"]
     check("two captioners in order", [c["name"] for c in caps] == ["box", "vm"], caps)
     check("key goes to a file, not the config", "api_key" not in caps[0] and caps[0].get("api_key_file", "").endswith(

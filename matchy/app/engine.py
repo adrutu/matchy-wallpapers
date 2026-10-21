@@ -38,7 +38,8 @@ DEFAULTS = {
     "master_max_px": 3840,
     "cache_max_mb": 2048,
     "render_threads": 2,
-    "rotation": {"min_minutes": 15, "max_minutes": 20, "caption_priority": []},
+    # love_weight: how many turns a loved picture gets per shuffle, so about how many times as often it comes up.
+    "rotation": {"min_minutes": 15, "max_minutes": 20, "love_weight": 3, "caption_priority": []},
     "location": None,  # {"latitude", "longitude"}: Day & night changes at sunrise and sunset there
     "quiet_hours": {},  # {"start": "23:00", "end": "07:00", "hold": true, "dim": 0.6}; off without start and end
     "folders": [],
@@ -159,6 +160,17 @@ def sun_events(lat, lon, day):
             midnight + (720 - 4 * (lon - ha) - eqtime) * 60)
 
 
+def spread(bag, iid, copies):
+    """The bag with `copies` more turns of iid, one in each equal stretch of it, so a picture loved
+    mid-shuffle starts coming up more often now, spread out rather than all at once."""
+    out = list(bag)
+    slots = len(bag) + 1  # insertion points 0..len(bag)
+    for k in range(copies):
+        lo, hi = k * slots // copies, max(k * slots // copies, (k + 1) * slots // copies - 1)
+        out.insert(random.randint(lo, hi) + k, iid)  # + k: the earlier insertions shifted everything after them
+    return out
+
+
 HHMM_RE = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
 QUIET_DIM = 0.6  # how much quiet hours darken /current/... when the option leaves `dim` out
 
@@ -227,6 +239,7 @@ class Engine:
         self.state.setdefault("priority", [])
         self.state.setdefault("history", [])
         self.state.setdefault("hidden", [])     # ids kept out of rotation from the panel
+        self.state.setdefault("loved", [])      # ids given a heart: more turns in every shuffle
         self.state.setdefault("recaption", [])  # ids queued for a fresh machine caption
         # A window set in the panel lasts until the add-on options change: whichever was set last wins.
         ov, r = self.state.get("rotation_override"), cfg["rotation"]
@@ -307,6 +320,35 @@ class Engine:
         lo, hi, _src = self.rotation_window()
         return random.uniform(float(lo), float(hi)) * 60
 
+    def love_weight(self):
+        """Turns a loved picture gets per shuffle (1: the same as every other picture)."""
+        try:
+            return max(1, int(self.cfg["rotation"].get("love_weight", 3)))
+        except (TypeError, ValueError):
+            return 3
+
+    def new_bag(self, el):
+        """One shuffle: every eligible picture once, a loved one love_weight times. The bag is cut
+        into love_weight stretches, each holding every loved picture once and a share of the
+        others, so the extra turns are spread out instead of bunching up. Hidden pictures are not
+        in `el`, so hidden beats loved."""
+        w = self.love_weight()
+        loved = sorted(set(self.state["loved"]) & el)
+        if not loved or w <= 1:
+            bag = sorted(el)
+            random.shuffle(bag)
+            return bag
+        others = sorted(el - set(loved))
+        random.shuffle(others)
+        bag = []
+        for k in range(w):
+            stretch = others[k::w] + loved
+            random.shuffle(stretch)
+            if bag and len(stretch) > 1 and stretch[0] == bag[-1]:  # no back-to-back across the cut
+                stretch[0], stretch[-1] = stretch[-1], stretch[0]
+            bag += stretch
+        return bag
+
     def pick_next(self, exclude=None):
         el = set(self.eligible())
         if not el:  # cold start before the first scan, or everything hidden
@@ -316,14 +358,17 @@ class Engine:
         if st["priority"]:
             return st["priority"].pop(0)
         st["bag"] = [i for i in st["bag"] if i in el]
-        if not st["bag"]:
-            bag = sorted(el)
-            random.shuffle(bag)
-            if len(bag) > 1 and bag[0] == exclude:
-                bag.append(bag.pop(0))
-            st["bag"] = bag
-            log("rotation: new shuffle of %d" % len(bag))
-        return st["bag"].pop(0) if st["bag"] else None
+        for _ in range(2):
+            # Never the picture on screen twice in a row (a loved one is in the bag more than once);
+            # only when it is the last picture left in rotation does it stay.
+            for k, iid in enumerate(st["bag"]):
+                if iid != exclude or len(el) == 1:
+                    return st["bag"].pop(k)
+            # The bag is empty, or holds nothing but more turns of the picture on screen.
+            st["bag"] = self.new_bag(el)
+            n_loved = len(set(self.state["loved"]) & el)
+            log("rotation: new shuffle of %d pictures%s" % (len(el), (", %d loved" % n_loved) if n_loved else ""))
+        return None
 
     def _show(self, iid, now, reason, picked=False):
         """Put iid on screen. Caller holds self.lock. `picked` marks a choice made by hand,
@@ -448,6 +493,37 @@ class Engine:
                 self.state["hidden"].remove(iid)
                 self.save_state()
                 log("back in rotation:", iid)
+
+    def love(self, iid):
+        """A heart: love_weight turns per shuffle instead of one. It only changes the weighting, so
+        it is open to the network like Next, and a hidden picture stays hidden however loved."""
+        self._need_item(iid)
+        with self.lock:
+            if iid in self.state["loved"]:
+                return
+            self.state["loved"].append(iid)
+            # From now, not from the next shuffle: the extra turns go into what is left of this one.
+            extra = self.love_weight() - 1
+            if extra and iid not in self.state["hidden"]:
+                self.state["bag"] = spread(self.state["bag"], iid, extra)
+            self.save_state()
+        log("loved:", iid)
+
+    def unlove(self, iid):
+        with self.lock:
+            if iid not in self.state["loved"]:
+                return
+            self.state["loved"].remove(iid)
+            bag, kept = [], False  # back to one turn in this shuffle
+            for i in self.state["bag"]:
+                if i == iid:
+                    if kept:
+                        continue
+                    kept = True
+                bag.append(i)
+            self.state["bag"] = bag
+            self.save_state()
+        log("no longer loved:", iid)
 
     def set_caption(self, iid, fields):
         """A caption written by hand. edited: true keeps the captioner off it until a re-caption."""
@@ -662,6 +738,7 @@ class Engine:
             since = self.state.get("since") or time.time()
             nxt = self.state.get("next_change") or since
             paused = bool(self.state.get("paused"))
+            loved = cur in self.state["loved"]
         q = self.quiet(time.time())
         quiet = bool(q and q["active"])
         rev = d["rev"]
@@ -671,7 +748,7 @@ class Engine:
             "kids_blurb": d["kids_blurb"],
             # Held by quiet hours, the next change is a full interval after they end: not known yet.
             "since": iso(since), "next_change": None if paused or (quiet and q["hold"]) else iso(nxt),
-            "paused": paused, "captioned": self.lib.status(cur) == "captioned",
+            "paused": paused, "captioned": self.lib.status(cur) == "captioned", "loved": loved,
             # The window now is in, or else the next one; null when quiet hours are off.
             "quiet": quiet,
             "quiet_window": q and {"start": iso(q["start"]), "end": iso(q["end"]), "hold": q["hold"], "dim": q["dim"]},
@@ -705,7 +782,7 @@ class Engine:
 
     def library_view(self):
         lib = self.lib
-        hidden, recap = set(self.state["hidden"]), set(self.state["recaption"])
+        hidden, loved, recap = set(self.state["hidden"]), set(self.state["loved"]), set(self.state["recaption"])
         out = []
         for iid in sorted(lib.items, key=lambda i: lib.items[i]["order"]):
             d = lib.display(iid)
@@ -715,7 +792,8 @@ class Engine:
                         "focus": {k: f[k] for k in ("x", "y", "source")} if f else None,
                         "place": d["place"], "credit": d["credit"], "blurb": d["blurb"],
                         "caption_model": sc.get("caption_model", ""), "caption_at": sc.get("caption_at", ""),
-                        "edited": bool(sc.get("edited")), "hidden": iid in hidden, "recaption_queued": iid in recap,
+                        "edited": bool(sc.get("edited")), "hidden": iid in hidden, "loved": iid in loved,
+                        "recaption_queued": iid in recap,
                         "kids_blurb": d["kids_blurb"], "kids_status": lib.kids_status(iid),
                         "kids_edited": bool(sc.get("kids_edited")),
                         "error": (lib.skipped[iid][1] if iid in lib.skipped
@@ -723,6 +801,7 @@ class Engine:
         lo, hi, src = self.rotation_window()
         r = self.cfg["rotation"]
         rot = {"min_minutes": lo, "max_minutes": hi, "source": src, "mode": self.rotation_mode(),
+               "love_weight": self.love_weight(),
                "options": {"min_minutes": r["min_minutes"], "max_minutes": r["max_minutes"]}}
         if rot["mode"] == "daynight":
             at, name = self.next_sun_change(time.time())
@@ -1541,6 +1620,9 @@ ACTIONS = {
     "/api/show": ("lan", lambda eng, a: eng.show_now(arg_id(a))),
     "/api/hide": ("panel", lambda eng, a: eng.hide(arg_id(a))),
     "/api/unhide": ("panel", lambda eng, a: eng.unhide(arg_id(a))),
+    # "lan", not "panel": a heart only changes the weighting, and a one-tap dashboard tile wants it.
+    "/api/love": ("lan", lambda eng, a: eng.love(arg_id(a))),
+    "/api/unlove": ("lan", lambda eng, a: eng.unlove(arg_id(a))),
     "/api/caption": ("panel", lambda eng, a: eng.set_caption(arg_id(a), arg_caption(a))),
     "/api/caption/kids": ("panel", lambda eng, a: eng.set_kids_caption(arg_id(a), arg_kids(a))),
     "/api/recaption": ("panel", lambda eng, a: eng.recaption(arg_id(a))),
@@ -1582,8 +1664,18 @@ def gallery_html(eng, control, admin):
         out.append('<span class="tag %s">%s</span>' % (esc(it["status"]), esc(st)))
         return "".join(out)
 
+    def heart(it):
+        # no_ctl first: with two title attributes a browser keeps the first, and the reason it is disabled matters more.
+        if it["loved"]:
+            return ('<button class="heart on" data-act="unlove" data-name="Unlove" aria-pressed="true"%s '
+                    'title="Loved: it comes up more often. Tap to take the heart back">&#9829; Loved</button>' % no_ctl)
+        return ('<button class="heart" data-act="love" data-name="Love it" aria-pressed="false"%s '
+                'title="Love it: it comes up more often">&#9825; Love it</button>' % no_ctl)
+
     def buttons(it, top=False):
-        out = [] if top else ['<button data-act="show"%s>Show now</button>' % no_ctl]
+        out = [heart(it)]
+        if not top:
+            out.append('<button data-act="show"%s>Show now</button>' % no_ctl)
         out.append('<button data-act="edit"%s>Edit caption</button>' % no_admin)
         out.append('<button data-act="recaption"%s>Re-caption</button>' % no_recap)
         if (it.get("focus") or {}).get("source") == "hand":
@@ -1628,6 +1720,7 @@ def gallery_html(eng, control, admin):
     for it in items:
         cls = " is-current" if it["id"] == cur.get("id") else ""
         cls += " is-hidden" if it["hidden"] else ""
+        cls += " is-loved" if it["loved"] else ""
         src = "img/%s/%s" % (it["id"], it["rev"])
         crop, dot = focus_bits(it)
         cards.append(
@@ -1651,7 +1744,7 @@ def gallery_html(eng, control, admin):
             esc(cur["id"]), esc(src), esc(src), esc(cur["title"] or cur["id"]),
             esc(" · ".join(x for x in (cur["place"], cur["credit"]) if x)), esc(cur["blurb"]),
             kids_line(by_id[cur["id"]]) if cur["id"] in by_id else "",
-            no_ctl, buttons(by_id.get(cur["id"], {"hidden": False}), top=True))
+            no_ctl, buttons(by_id.get(cur["id"], {"hidden": False, "loved": False}), top=True))
     else:
         top = ('<section class="top empty"><div class="meta"><p class="kicker">On screen now</p><h1>Nothing yet</h1>'
                '<p class="mut">No pictures found so far. Check <code>source_folders</code> in the add-on options; '
@@ -1760,8 +1853,13 @@ def gallery_html(eng, control, admin):
             capline += "<br>%d waiting for a kids caption, after the others." % cap["kids_waiting"]
     n_cap = sum(1 for i in items if i["status"] == "captioned")
     n_hidden = sum(1 for i in items if i["hidden"])
-    summary = "%d picture%s · %d captioned%s" % (len(items), "" if len(items) == 1 else "s", n_cap,
-                                                 (" · %d hidden" % n_hidden) if n_hidden else "")
+    n_loved = sum(1 for i in items if i["loved"])
+    summary = "%d picture%s · %d captioned%s%s" % (len(items), "" if len(items) == 1 else "s", n_cap,
+                                                   (" · %d loved" % n_loved) if n_loved else "",
+                                                   (" · %d hidden" % n_hidden) if n_hidden else "")
+    w = rot["love_weight"]
+    loved_help = ("A loved picture comes up about %d times as often as the others." % w if w > 1
+                  else "Hearts are kept but change nothing: love_weight is 1 in the add-on options.")
 
     data = {"version": cur.get("version"),
             "items": [{k: i[k] for k in ("id", "title", "place", "credit", "blurb", "kids_blurb")} for i in items],
@@ -1769,6 +1867,7 @@ def gallery_html(eng, control, admin):
                      for label, m in PACE_STOPS]}
     return PAGE.substitute(
         top=top, state=state, toggle=toggle, window=window, screens=screens, capline=capline, summary=esc(summary),
+        loved_help=esc(loved_help),
         cards="\n".join(cards), data=json.dumps(data, ensure_ascii=False).replace("<", "\\u003c"),
         lim_title=CAPTION_LIMITS["title"], lim_place=CAPTION_LIMITS["place"],
         lim_credit=CAPTION_LIMITS["credit"], lim_blurb=CAPTION_LIMITS["blurb"], lim_kids=KIDS_LIMIT)
@@ -1778,7 +1877,7 @@ def gallery_html(eng, control, admin):
 PAGE = string.Template("""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>Matchy Wallpapers</title>
 <style>
-:root{color-scheme:dark;--bg:#111413;--card:#1b201e;--line:#2c3430;--fg:#e8ece9;--mut:#9aa59f;--acc:#7fb38f;--bad:#e08a7f}
+:root{color-scheme:dark;--bg:#111413;--card:#1b201e;--line:#2c3430;--fg:#e8ece9;--mut:#9aa59f;--acc:#7fb38f;--bad:#e08a7f;--love:#e38aa6}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,sans-serif}
 main{max-width:1500px;margin:auto;padding:20px 16px 40px}
 header{display:flex;gap:16px;align-items:baseline;margin-bottom:14px}.brand{font:italic 600 20px Georgia,serif;color:var(--acc)}
@@ -1813,6 +1912,9 @@ figcaption p{margin:.4em 0 0;font-size:13px;color:#c9d0cc;flex:1}
 .tag.captioned{background:#24402d}.tag.failed{background:#5a2a2a}.tag.pending{background:#40391f}
 .tag.kid{background:#2d3550}figcaption p.kids,.meta p.kids{font-size:13px;color:#c9d0cc;flex:0}
 .tag.on{background:var(--acc);color:#0b120e}.tag.hid{background:#3a3f55}.tag.off{background:#5a2a2a}.tag.stale{background:#40391f}
+button.heart.on{border-color:var(--love);color:var(--love)}button.heart:hover:not(:disabled){border-color:var(--love)}
+.filter{font-size:13px;font-weight:400;color:var(--mut);margin-left:12px;cursor:pointer;white-space:nowrap}.filter input{accent-color:var(--love);vertical-align:-2px}
+.grid.only-loved .card:not(.is-loved){display:none}#no-loved{margin:12px 0 0}
 dialog{background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:12px;width:min(640px,calc(100vw - 32px));padding:18px}
 dialog::backdrop{background:#000a}dialog label{display:block;margin:10px 0 0;font-size:13px;color:var(--mut)}
 dialog input,dialog textarea{display:block;width:100%;margin-top:4px;font:15px/1.4 system-ui,sans-serif;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:6px 8px}
@@ -1827,8 +1929,10 @@ $top
 <div class="box"><h2>Captions</h2><p>$capline</p></div>
 <div class="box"><h2>Screens</h2>$screens</div>
 </section>
-<h2 class="lib">Library <small>$summary</small></h2>
-<div class="grid">$cards</div>
+<h2 class="lib">Library <small>$summary</small><label class="filter"><input type="checkbox" id="loved-only"> Loved only</label></h2>
+<p class="mut small">$loved_help</p>
+<div class="grid" id="grid">$cards</div>
+<p id="no-loved" class="mut" hidden>No loved pictures yet. Tap &#9825; Love it on a picture and it comes up more often.</p>
 <p class="foot mut"><a href="current.json">current.json</a> · <a href="library.json">library.json</a></p>
 </main>
 <dialog id="editor"><form method="dialog" id="edit-form">
@@ -1934,6 +2038,16 @@ win.addEventListener('submit', e => {
   run(e.submitter || win.querySelector('button'), 'rotation',
       {min_minutes: Number(win.elements.min.value), max_minutes: Number(win.elements.max.value)});
 });
+// Loved only: a view of the grid, kept in the address (#loved) so it survives the reloads above.
+const grid = document.getElementById('grid'), lovedOnly = document.getElementById('loved-only');
+function filterLoved() {
+  grid.classList.toggle('only-loved', lovedOnly.checked);
+  document.getElementById('no-loved').hidden = !(lovedOnly.checked && !grid.querySelector('.is-loved'));
+  history.replaceState(null, '', lovedOnly.checked ? '#loved' : location.pathname + location.search);
+}
+lovedOnly.checked = location.hash === '#loved';
+filterLoved();
+lovedOnly.addEventListener('change', filterLoved);
 // Follow the rotation: reload when the picture on screen changes, but never under an open editor.
 setInterval(async () => {
   if (dlg.open || kdlg.open || document.hidden) return;

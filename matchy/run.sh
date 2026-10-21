@@ -240,6 +240,7 @@ jq -n \
     --argjson scan_minutes "$(int 'folder_scan_minutes' 10)" \
     --argjson rot_min "$(int 'rotation_min_minutes' 15)" \
     --argjson rot_max "$(int 'rotation_max_minutes' 20)" \
+    --argjson love_weight "$(int 'love_weight' 3)" \
     --argjson quiet_hours "${quiet}" \
     --argjson folders "${folders}" \
     --argjson sets "${sets}" \
@@ -263,7 +264,7 @@ jq -n \
         render_threads: $render_threads,
         focus_auto: $focus_auto,
         folder_scan_minutes: $scan_minutes,
-        rotation: {min_minutes: $rot_min, max_minutes: $rot_max},
+        rotation: {min_minutes: $rot_min, max_minutes: $rot_max, love_weight: $love_weight},
         quiet_hours: $quiet_hours,
         location: $location,
         folders: ($folders | map(. + {sets: $sets})),

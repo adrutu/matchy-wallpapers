@@ -93,6 +93,11 @@ curl -s -X POST -H 'Content-Type: application/json' -d '{}' $MATCHY/api/resume
 
 # put one picture on screen (ids from library.json)
 curl -s -X POST -H 'Content-Type: application/json' -d '{"id": "art-great-wave"}' $MATCHY/api/show
+
+# a heart: this picture comes up love_weight (3) times as often; unlove takes it back.
+# current.json and library.json say "loved": true/false
+curl -s -X POST -H 'Content-Type: application/json' -d '{"id": "art-great-wave"}' $MATCHY/api/love
+curl -s -X POST -H 'Content-Type: application/json' -d '{"id": "art-great-wave"}' $MATCHY/api/unlove
 ```
 
 Hide, unhide, edit caption, re-caption and the rotation window work only from the Home Assistant

@@ -42,6 +42,11 @@ configuration:
   rotation_max_minutes:
     name: Longest time on one picture
     description: Minutes. Each interval is picked at random between the two.
+  love_weight:
+    name: Loved pictures
+    description: >-
+      How many times as often a picture with a heart comes up (hearts are given in the sidebar
+      panel or with the love API). 1 means a heart changes nothing.
   quiet_hours:
     name: Quiet hours
     description: >-

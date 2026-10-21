@@ -47,6 +47,7 @@ port>`. Leave it empty and only the sidebar panel works.
 | `sets` | list | `[]` | Settings for a sub-folder, matched by name in every source folder: `folder` (required), `id_prefix` (ids become `<prefix>-<file name>`; lower-case letters, digits and hyphens, anything else becomes a hyphen), `name` (the collection name the captioner is told), `credit` (shown on the label), `context` (one sentence of facts), `abstract` (true for digital or illustrated art, so the captioner describes it as art, never as a real place). |
 | `rotation_min_minutes` | int, 1–1440 | 15 | Shortest time on one image. Keep it at or below the longest. |
 | `rotation_max_minutes` | int, 1–1440 | 20 | Longest time on one image. The actual interval is drawn at random between the two. |
+| `love_weight` | int, 1–10 | 3 | How many times as often a **loved** picture (one given a heart in the panel or with `POST /api/love`) comes up. 1: a heart changes nothing. See *Loved pictures*. |
 | `quiet_hours` | object | `{}` (off) | Hold and dim the picture overnight: `start` and `end` (local times, `HH:MM`; both needed, an end earlier than the start is the next morning), `hold` (bool, default true) and `dim` (0–1, default 0.6). See *Quiet hours*. |
 | `folder_scan_minutes` | int, 1–1440 | 10 | How often it looks for new, changed or removed files. |
 | `master_max_px` | int, 1280–7680 | 3840 | Longest edge of the cached master copy every render is cut from. |
@@ -210,6 +211,9 @@ page reloads itself when the picture changes (it checks every 30 seconds). From 
 - **Show now** on any picture in the library.
 - **Hide** a picture so it never comes up in rotation, and **Unhide** it later. Hiding the picture on
   screen moves on at once. The last visible picture cannot be hidden.
+- **Love it** (the heart on the picture on screen and on every thumbnail): a loved picture comes up
+  about `love_weight` times as often. Tap the heart again to take it back. **Loved only** above the
+  library shows just the loved pictures.
 - **Edit caption** by hand (title, place, credit, blurb; limits 100/120/200/600 characters). A
   hand-written caption is never overwritten by the captioner.
 - **Re-caption** a picture: it jumps the captioning queue and replaces even a hand-written caption.
@@ -298,6 +302,19 @@ Assistant's latitude and longitude once at start (that is what its Home Assistan
 rise or does not set there, it changes at 07:00 and 19:00 local time instead. Restart the add-on after
 moving the home location.
 
+### Loved pictures
+
+A heart is a vote: a loved picture gets `love_weight` turns in every shuffle instead of one (3 by
+default), so over time it is on screen about that many times as often as the others. The extra turns
+are spread through the shuffle rather than bunched together, and no picture is ever shown twice in a
+row, so a small library with one loved picture alternates rather than repeating it. Loving a picture
+takes effect at once: its extra turns are added to the shuffle in progress. Hidden beats loved: a
+hidden picture stays off the screen however many hearts it has, and comes back loved when unhidden.
+
+Hearts are kept in `state.json`, show as `loved` in `/current.json` and `/library.json`, and can be
+given from any client on your network with `POST /api/love` (a dashboard tile, say), because they
+only change how often a picture comes up.
+
 ### Quiet hours
 
 `quiet_hours` sets a nightly window, for example:
@@ -377,8 +394,8 @@ Read endpoints:
 
 | Endpoint | Description |
 | :--- | :--- |
-| `GET /current.json` | The current picture: `id`, `rev`, `version`, `title`, `place`, `credit`, `blurb`, `since`, `next_change` (null while paused or held by quiet hours), `paused`, `captioned`, `quiet` (true during quiet hours), `quiet_window` (`{"start", "end", "hold", "dim"}`: the quiet window now, or else the next one; `null` when quiet hours are off), and `urls` (`original`, `clean`, `label`, `span` templates with `{w}`, `{h}`, `{layout}` to fill in). `version` changes on every rotation, every caption edit and every focus point change; clients compare it. `kids_blurb` is the kids caption (empty until there is one). With `?reveal=<seconds>`, also `reveal_at` and `revealed`, and `version` ends in `.veiled` until the reveal (see *Guess where?*). `screens_off` lists the screens turned off; with `?screen=<name>`, `follow` says whether that one should follow. `503` while the library is empty. |
-| `GET /library.json` | Every picture with its status, caption, `hidden` and `recaption_queued` flags, the focus point crops use (`focus` = `{"x", "y", "source"}`, `source` being `hand`, `model` or `auto`; null for a centred crop), plus the rotation (`mode` = `minutes` or `daynight`, the window, and `next_sun` = `{"at", "event"}` in Day & night, `event` being `sunrise`/`sunset`, or `morning`/`evening` without a location) and captioner state. |
+| `GET /current.json` | The current picture: `id`, `rev`, `version`, `title`, `place`, `credit`, `blurb`, `since`, `next_change` (null while paused or held by quiet hours), `paused`, `captioned`, `quiet` (true during quiet hours), `quiet_window` (`{"start", "end", "hold", "dim"}`: the quiet window now, or else the next one; `null` when quiet hours are off), `loved`, and `urls` (`original`, `clean`, `label`, `span` templates with `{w}`, `{h}`, `{layout}` to fill in). `version` changes on every rotation, every caption edit and every focus point change; clients compare it. `kids_blurb` is the kids caption (empty until there is one). With `?reveal=<seconds>`, also `reveal_at` and `revealed`, and `version` ends in `.veiled` until the reveal (see *Guess where?*). `screens_off` lists the screens turned off; with `?screen=<name>`, `follow` says whether that one should follow. `503` while the library is empty. |
+| `GET /library.json` | Every picture with its status, caption, `hidden`, `loved` and `recaption_queued` flags, the focus point crops use (`focus` = `{"x", "y", "source"}`, `source` being `hand`, `model` or `auto`; null for a centred crop), plus the rotation (`mode` = `minutes` or `daynight`, the window, `love_weight`, and `next_sun` = `{"at", "event"}` in Day & night, `event` being `sunrise`/`sunset`, or `morning`/`evening` without a location) and captioner state. |
 | `GET /screens.json` | The Screens list (see Screens). Network tier only, and without CORS, because it carries addresses. |
 | `GET /` (also `/index.html`) | The gallery page. |
 | `GET /current/clean/WxH.jpg[?pad=]` | The current picture at any size, without the label. Sends an `ETag`; `If-None-Match` gets a `304` until the picture changes or quiet hours start or end. Dimmed during quiet hours. `pad` (1.0–1.3) makes it that many times larger for a client that pans over it (see Gentle motion). |
@@ -411,6 +428,8 @@ undecodable one, re-captioning with no captioner) or `413` (body over 64 KB, or 
 | `POST /api/show` | `{"id": "<id>"}` | Network | Put this picture on screen now. |
 | `POST /api/hide` | `{"id": "<id>"}` | Panel | Keep this picture out of rotation. |
 | `POST /api/unhide` | `{"id": "<id>"}` | Panel | Put it back (an id that is not hidden changes nothing). |
+| `POST /api/love` | `{"id": "<id>"}` | Network | Give this picture a heart: it comes up `love_weight` times as often (see Loved pictures). |
+| `POST /api/unlove` | `{"id": "<id>"}` | Network | Take the heart back (an id that is not loved changes nothing). |
 | `POST /api/caption` | `{"id", "title", "place", "credit", "blurb"}` | Panel | Write the caption by hand; `blurb` is required, the others may be empty. |
 | `POST /api/caption/kids` | `{"id": "<id>", "blurb": "…"}` | Panel | Write the kids caption by hand (up to 400 characters); an empty `blurb` clears it, so the captioner writes a fresh one. |
 | `POST /api/recaption` | `{"id": "<id>"}` | Panel | Ask the captioner for a fresh caption. |
@@ -419,7 +438,9 @@ undecodable one, re-captioning with no captioner) or `413` (body over 64 KB, or 
 | `POST /api/screen` | `{"id": "<name>", "follow": false}` | Network | Turn one screen off (`true`: on again). `404` for a screen Matchy has not seen. |
 | `POST /api/screen/forget` | `{"id": "<name>"}` | Panel | Drop a screen from the list until it asks again. |
 
-For example, a Home Assistant `rest_command` that pauses the rotation:
+For example, a Home Assistant `rest_command` that pauses the rotation, and one that gives the
+picture on screen a heart (the id comes from `current.json`; a one-tap toggle for a wall tablet is in
+the Home Assistant client recipe in the repository):
 
 ```yaml
 rest_command:
@@ -428,6 +449,11 @@ rest_command:
     method: post
     content_type: "application/json"
     payload: "{}"
+  matchy_love:
+    url: "http://<your-ha-host>:<published port>/api/love"
+    method: post
+    content_type: "application/json"
+    payload: '{"id": {{ id | to_json }}}'
 ```
 
 ## Access tiers
@@ -437,7 +463,7 @@ Who may call what depends only on where the request comes from:
 | Tier | Who gets it | What it covers |
 | :--- | :--- | :--- |
 | **Public** | anything that can reach the port | every `GET` except `/screens.json`: pictures, captions, the library, the gallery page |
-| **Network** | the sidebar panel, or a client whose address is private (`10/8`, `172.16/12`, `192.168/16`, `100.64/10`, loopback, IPv6 ULA and link-local); if the request carries `X-Forwarded-For`, every address in it must be private too | next, pause, resume, show now, turn a screen on or off |
+| **Network** | the sidebar panel, or a client whose address is private (`10/8`, `172.16/12`, `192.168/16`, `100.64/10`, loopback, IPv6 ULA and link-local); if the request carries `X-Forwarded-For`, every address in it must be private too | next, pause, resume, show now, love and unlove, turn a screen on or off |
 | **Panel** | the sidebar panel only: a request proxied by the Supervisor (its address `172.30.32.2`), which only forwards sessions Home Assistant has authenticated | hide, unhide, edit caption (and the kids caption), re-caption, focus point, how often, forget a screen |
 
 The gallery page draws the buttons a viewer may not use as disabled, with the reason as a tooltip.
@@ -474,7 +500,7 @@ add-on (`backup: hot`, the render cache excluded):
 | :--- | :--- |
 | `config.json` | Generated from the options on every start. |
 | `secrets/captioner-<n>.key` | Captioner keys, mode 600. |
-| `state.json` | What is on screen, the shuffle bag, hidden ids, the panel's rotation choice, whether quiet hours hold the picture, history. |
+| `state.json` | What is on screen, the shuffle bag, hidden and loved ids, the panel's rotation choice, whether quiet hours hold the picture, history. |
 | `screens.json` | The Screens list: on or off, first and last seen (last seen is written at most every 5 minutes). |
 | `library/<id>.json` | One sidecar per picture: the caption and where it came from, the captioner's `subject` box and the `focus` point (`{"x", "y", "source", "sha256"}`, `source` = `hand`, `model` or `auto`), and the kids caption in `kids_*` fields (`kids_blurb`; `"kids_edited": true` for one written by hand). A hand edit here (set `"edited": true`) is picked up within a minute. |
 | `masters/` | The downscaled master copy of each picture. A picture's master goes after the first folder scan that no longer finds it, but not while any picture folder is missing or empty, so an unmounted share costs nothing. |
@@ -555,7 +581,7 @@ generates, with its defaults:
   "render_threads": 2,
   "focus_auto": false,
   "folder_scan_minutes": 10,
-  "rotation": {"min_minutes": 15, "max_minutes": 20},
+  "rotation": {"min_minutes": 15, "max_minutes": 20, "love_weight": 3},
   "quiet_hours": {"start": "23:00", "end": "07:00", "hold": true, "dim": 0.6},
   "location": {"latitude": 53.35, "longitude": -6.26},
   "folders": [{"path": "/sources/wallpapers",

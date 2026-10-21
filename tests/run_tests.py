@@ -425,6 +425,55 @@ for tool in ("retro_themes.py", "make_artwork.py"):
            and not any(k.arg == "encoding" for k in n.keywords)
            and not any(isinstance(a, ast.Constant) and "b" in str(a.value) for a in n.args[1:2])]
     check("tools/%s opens text files as UTF-8" % tool, not bad, bad)
+# ---------------- loved pictures (pure): pick_next on a stand-in engine, thousands of picks ----------------
+class _Stub:
+    """Just what Engine.pick_next, new_bag and love_weight touch."""
+    def __init__(self, ids, loved=(), weight=3, hidden=()):
+        self.ids = list(ids)
+        self.cfg = {"rotation": {"love_weight": weight}}
+        self.state = {"bag": [], "priority": [], "hidden": list(hidden), "loved": list(loved)}
+    def eligible(self): return sorted(i for i in self.ids if i not in self.state["hidden"])
+    love_weight = engine_mod.Engine.love_weight
+    new_bag = engine_mod.Engine.new_bag
+    pick_next = engine_mod.Engine.pick_next
+
+def picks(stub, n):
+    out, cur, quiet = [], None, engine_mod.log
+    engine_mod.log = lambda *a: None  # a new shuffle is logged; thousands of them are noise here
+    try:
+        for _ in range(n):
+            cur = stub.pick_next(exclude=cur); out.append(cur)
+    finally:
+        engine_mod.log = quiet
+    return out
+
+ids = ["p%02d" % i for i in range(20)]
+seq = picks(_Stub(ids, loved=["p03", "p17"], weight=3), 6000)
+counts = {i: seq.count(i) for i in ids}
+plain = sum(counts[i] for i in ids if i not in ("p03", "p17")) / 18
+check("love: loved come up about love_weight times as often", all(2.8 <= counts[i] / plain <= 3.2 for i in ("p03", "p17")),
+      (counts["p03"] / plain, counts["p17"] / plain))
+check("love: the others come up evenly", max(counts[i] for i in ids if i not in ("p03", "p17")) <= 1.2 * plain, counts)
+check("love: never the same picture twice in a row", all(a != b for a, b in zip(seq, seq[1:])))
+gaps = [b - a for a, b in zip([k for k, i in enumerate(seq) if i == "p03"], [k for k, i in enumerate(seq) if i == "p03"][1:])]
+check("love: a loved picture's turns are spread, not bunched", min(gaps) >= 2 and sum(gaps) / len(gaps) < 9, (min(gaps), sum(gaps) / len(gaps)))
+seq = picks(_Stub(ids, loved=["p03", "p17"], weight=1), 2000)
+counts = {i: seq.count(i) for i in ids}
+check("love: love_weight 1 means no weighting", max(counts.values()) <= 1.2 * min(counts.values()), counts)
+seq = picks(_Stub(ids, loved=["p03", "p17"], weight=3, hidden=["p03"]), 1500)
+check("love: hidden beats loved", "p03" not in seq and seq.count("p17") > 150, seq.count("p17"))
+seq = picks(_Stub(ids[:2], loved=["p00"], weight=3), 300)
+check("love: two pictures, one loved: alternate, never repeat", all(a != b for a, b in zip(seq, seq[1:])) and 140 <= seq.count("p00") <= 160, seq.count("p00"))
+seq = picks(_Stub(ids[:1], loved=["p00"], weight=3), 5)
+check("love: one picture left stays on", seq == ["p00"] * 5, seq)
+seq = picks(_Stub(ids, loved=ids, weight=4), 4000)
+counts = {i: seq.count(i) for i in ids}
+check("love: everything loved is nobody loved", max(counts.values()) <= 1.2 * min(counts.values()) and all(a != b for a, b in zip(seq, seq[1:])), counts)
+bag = engine_mod.spread(["a", "b", "c", "d", "e", "f", "g", "h"], "x", 2)
+check("love: extra turns go one per stretch of the shuffle", len(bag) == 10 and bag.count("x") == 2 and bag.index("x") <= 4 <= len(bag) - 1 - bag[::-1].index("x")
+      and [i for i in bag if i != "x"] == list("abcdefgh"), bag)
+check("love: spread into an empty bag", engine_mod.spread([], "x", 2) == ["x", "x"])
+
 # ---------------- quiet hours (pure): windows across midnight, and the clocks changing in Europe/Dublin ----------------
 def at(y, mo, d, h, mi=0): return time.mktime((y, mo, d, h, mi, 0, 0, 0, -1))
 def hours(w): return (w[2] - w[1]) / 3600
@@ -576,6 +625,26 @@ try:
     check("A unhide all", not any(i["hidden"] for i in lib(A)["items"]))
     st, *_ = req(A, "POST", "/api/unhide", {"id": "ghost"}); check("A unhide unknown is fine", st == 200)
 
+    # love: a heart, the flags in both JSON views and on the page, and hidden beats loved
+    loved_id = cur(A)["id"]
+    st, j, *_ = req(A, "POST", "/api/love", {"id": loved_id}); L = lib(A)
+    check("A love current", st == 200 and j["current"]["loved"] is True and [i for i in L["items"] if i["id"] == loved_id][0]["loved"], (st, j))
+    check("A library has loved flags and love_weight", all("loved" in i for i in L["items"]) and L["rotation"]["love_weight"] == 3, L["rotation"])
+    page = req(A, "GET", "/")[2]
+    check("A page: heart on the picture on screen and on every card", page.count('data-act="unlove"') == 2 and page.count('data-act="love"') == 3
+          and 'class="card is-current is-loved"' in page and "Loved only" in page and "1 loved" in page, page.count('data-act="love"'))
+    st, _, txt, _ = req(A, "POST", "/api/hide", {"id": loved_id}); it = [i for i in lib(A)["items"] if i["id"] == loved_id][0]
+    check("A hide a loved picture: off screen, still loved", st == 200 and cur(A)["id"] != loved_id and it["hidden"] and it["loved"], (st, it))
+    seen = set()
+    for _ in range(10): req(A, "POST", "/api/next", {}); seen.add(cur(A)["id"])
+    check("A hidden beats loved in rotation", loved_id not in seen and len(seen) == 3, seen)
+    req(A, "POST", "/api/unhide", {"id": loved_id})
+    st, *_ = req(A, "POST", "/api/love", {"id": "nope"}); check("A love unknown 404", st == 404, st)
+    st, *_ = req(A, "POST", "/api/love", {}); check("A love no id 400", st == 400, st)
+    st, *_ = req(A, "POST", "/api/unlove", {"id": "ghost"}); check("A unlove unknown is fine", st == 200, st)
+    saved = json.load(open(os.path.join(S, "data-A", "state.json")))
+    check("A loved saved to state.json", saved.get("loved") == [loved_id], saved.get("loved"))
+
     # rotation window
     st, j, *_ = req(A, "POST", "/api/rotation", {"min_minutes": 2, "max_minutes": 3}); L = lib(A)
     check("A rotation set", st == 200 and L["rotation"]["source"] == "panel" and L["rotation"]["min_minutes"] == 2, L["rotation"])
@@ -607,6 +676,10 @@ finally:
 pa = start("A", dict(cfgA, _fresh=False))
 try:
     L = lib(A); check("A restart keeps panel window", L["rotation"]["source"] == "panel" and L["rotation"]["max_minutes"] == 3, L["rotation"])
+    check("A restart keeps the heart", [i["id"] for i in L["items"] if i["loved"]] == [loved_id], [i["id"] for i in L["items"] if i["loved"]])
+    st, *_ = req(A, "POST", "/api/unlove", {"id": loved_id})
+    check("A unlove", st == 200 and not any(i["loved"] for i in lib(A)["items"]) and cur(A)["loved"] is False
+          and 'data-act="unlove"' not in req(A, "GET", "/")[2], st)
 finally:
     pa.terminate(); pa.wait()
 # restart A with changed options: options win
@@ -699,6 +772,10 @@ try:
     check("B page: captioner off line", "Captioner: <b>off</b>" in txt)
     st, *_ = req(B, "POST", "/api/pause", {}); check("B pause from LAN ok", st == 200)
     st, *_ = req(B, "POST", "/api/resume", {}); check("B resume from LAN ok", st == 200)
+    st, j, *_ = req(B, "POST", "/api/love", {"id": first})
+    check("B love from LAN ok", st == 200 and [i for i in lib(B)["items"] if i["id"] == first][0]["loved"], (st, j))
+    check("B page: heart usable off-panel", 'aria-pressed="true" title="Loved:' in req(B, "GET", "/")[2])
+    st, *_ = req(B, "POST", "/api/unlove", {"id": first}); check("B unlove from LAN ok", st == 200 and not any(i["loved"] for i in lib(B)["items"]), st)
     for path, body in (("/api/hide", {"id": first}), ("/api/caption", {"id": first, "blurb": "x"}),
                        ("/api/recaption", {"id": first}), ("/api/rotation", {"reset": True}), ("/api/unhide", {"id": first})):
         st, *_ = req(B, "POST", path, body); check("B %s refused off-panel 403" % path, st == 403, st)
@@ -990,6 +1067,8 @@ try:
     st, _, txt, hdrs = req(H, "GET", "/screens.json")
     check("H screens.json refused off-network, no CORS", st == 403 and "Access-Control-Allow-Origin" not in hdrs, (st, hdrs))
     check("H off-network screen not listed", "outsider" not in req(H, "GET", "/")[2])
+    st, *_ = req(H, "POST", "/api/love", {"id": "test-0"}); check("H love refused off-network 403", st == 403, st)
+    check("H page: heart disabled off-network, with the reason first", 'aria-pressed="false" disabled title="Only from your own network" title="Love it' in req(H, "GET", "/")[2])
 finally:
     ph.terminate(); ph.wait()
 
