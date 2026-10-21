@@ -116,7 +116,7 @@ class Bridge:
         eng = self.eng
         cur = eng.current() or {}
         attrs = {k: cur.get(k) for k in ("id", "rev", "place", "credit", "blurb", "since", "next_change", "captioned")}
-        for k in ("loved", "palette", "accent", "gnome_accent"):  # from sibling features, when present
+        for k in ("quiet", "loved", "palette", "accent", "gnome_accent"):  # from other features, when present
             if k in cur:
                 attrs[k] = cur[k]
         cap = eng.captioner_view()

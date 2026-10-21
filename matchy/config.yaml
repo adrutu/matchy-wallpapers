@@ -64,6 +64,7 @@ options:
   sets: []
   rotation_min_minutes: 15
   rotation_max_minutes: 20
+  quiet_hours: {}
   folder_scan_minutes: 10
   master_max_px: 3840
   cache_max_mb: 2048
@@ -90,6 +91,11 @@ schema:
       abstract: "bool?"
   rotation_min_minutes: int(1,1440)
   rotation_max_minutes: int(1,1440)
+  quiet_hours:
+    start: "match(^([01]?[0-9]|2[0-3]):[0-5][0-9]$)?"
+    end: "match(^([01]?[0-9]|2[0-3]):[0-5][0-9]$)?"
+    hold: "bool?"
+    dim: "float(0,1)?"
   folder_scan_minutes: int(1,1440)
   master_max_px: int(1280,7680)
   cache_max_mb: int(128,65536)
