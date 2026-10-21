@@ -17,9 +17,12 @@ STUB = r'''
 bashio::config() {
     jq -r "(.${1}) as \$v | if \$v == null then \"null\" elif (\$v|type) == \"array\" then \$v[] else \$v end" "$OPTIONS"
 }
-bashio::config.exists() { [[ "$(jq -c "(.${1}) // null" "$OPTIONS")" != "null" ]]; }
+# A missing key and a JSON null both print `null`; a boolean false prints `false` (jq's `//` would turn
+# it into null, which bashio does not do).
+_opt_raw() { jq -c "(.${1}) as \$v | if \$v == null then null else \$v end" "$OPTIONS"; }
+bashio::config.exists() { [[ "$(_opt_raw "${1}")" != "null" ]]; }
 bashio::config.has_value() {
-    local v; v="$(jq -c "(.${1}) // null" "$OPTIONS")"
+    local v; v="$(_opt_raw "${1}")"
     [[ "$v" != "null" && "$v" != '""' && "$v" != "[]" ]]
 }
 bashio::log.info() { echo "INFO: $*" >&2; }
@@ -85,6 +88,12 @@ if cfg:
     check("defaults: no nulls", not has_null(cfg))
     check("defaults: rotation and caption", cfg["rotation"] == {"min_minutes": 15, "max_minutes": 20}
           and cfg["caption"]["spelling"] == "British", cfg)
+    check("defaults: colour match on (option absent)", cfg.get("palette") == {"enabled": True}, cfg.get("palette"))
+
+# colour match switched off
+rc, cfg, err, data, tmp = run(dict(base, palette_enabled=False)); temps.append(tmp)
+check("palette_enabled false reaches the engine", rc == 0 and cfg and cfg.get("palette") == {"enabled": False},
+      (rc, cfg and cfg.get("palette")))
 
 # sets, exclude, a keyed captioner, a missing folder
 opts = dict(base, source_folders=[src, "/nonexistent/matchy"], exclude=["aether-*", "test-3"],

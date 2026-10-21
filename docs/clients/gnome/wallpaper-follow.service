@@ -7,6 +7,8 @@ After=graphical-session.target
 [Service]
 # The host port you published for the add-on (or the Docker port).
 Environment=MATCHY_URL=http://<your-ha-host>:<port>
+# Optional (GNOME 47+): the desktop's accent colour follows the picture too. Uncomment to turn it on.
+#Environment=MATCHY_ACCENT=1
 ExecStart=%h/.local/bin/wallpaper-follow
 Restart=always
 RestartSec=15

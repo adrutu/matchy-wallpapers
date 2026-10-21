@@ -11,6 +11,8 @@ import urllib.request
 
 from PIL import Image
 
+import palette
+
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp"}
 HASH_SAVE_SECS = 10  # a long cold scan checkpoints hash-cache.json this often
 SMALL_WORDS = {"a", "an", "and", "as", "at", "but", "by", "for", "in", "of", "on", "or", "the", "to", "with", "over", "under", "from", "into"}
@@ -83,6 +85,21 @@ def display_fields(sc):
     return {k: sc.get(k, "") or "" for k in ("title", "place", "credit", "blurb")}
 
 
+NO_COLOURS = {"palette": [], "accent": None, "gnome_accent": None}
+
+
+def colour_fields(sc, sha256):
+    """The picture's colours from its sidecar, or NO_COLOURS until they are computed for this version of
+    the source (`sc["colours"]`: palette, accent, gnome_accent, sha256, version)."""
+    c = sc.get("colours")
+    if not isinstance(c, dict) or c.get("sha256") != sha256 or c.get("version") != palette.VERSION:
+        return dict(NO_COLOURS)
+    pal = [x for x in c.get("palette") or [] if isinstance(x, str)]
+    acc = c.get("accent") if isinstance(c.get("accent"), str) else None
+    name = c.get("gnome_accent") if c.get("gnome_accent") in palette.GNOME_NAMES else None
+    return {"palette": pal, "accent": acc, "gnome_accent": name}
+
+
 def rev_of(sc):
     blob = json.dumps(display_fields(sc), sort_keys=True, ensure_ascii=False).encode()
     return hashlib.sha256(blob).hexdigest()[:6]
@@ -90,7 +107,9 @@ def rev_of(sc):
 
 class Library:
     """Holds items {id: item}. item = {id, kind, path, sha256, meta{title,place,credit,context,collection}, order}.
-    Sidecars (captions) live in <data>/library/<id>.json and are the source of truth for display text."""
+    Sidecars (captions) live in <data>/library/<id>.json and are the source of truth for display text.
+    They also carry the picture's colours (`colours`, see palette.py), which are not a caption: a
+    hand-edited caption keeps them, and a re-caption does not touch them."""
 
     def __init__(self, cfg):
         self.cfg = cfg
@@ -144,12 +163,50 @@ class Library:
             if cur and cur.get("edited") and cur.get("blurb") and not force:
                 log("sidecar", iid, "is edited:true - not overwritten")
                 return False
+            # The colours are not part of the caption: a caption written from scratch keeps them.
+            if cur and "colours" in cur and "colours" not in sc:
+                sc = dict(sc, colours=cur["colours"])
             p = self.sidecar_path(iid)
             write_json(p, sc)
             self.sidecars[iid] = sc
             self._sc_mtime[iid] = os.stat(p).st_mtime
         self.changed.set()
         return True
+
+    def colours(self, iid):
+        """palette / accent / gnome_accent for the picture, or NO_COLOURS until computed."""
+        it = self.items.get(iid)
+        if not it:
+            return dict(NO_COLOURS)
+        return colour_fields(self.sidecars.get(iid) or {}, it["sha256"])
+
+    def ensure_colours(self, iid):
+        """Compute the picture's colours from its master once per version of the source, into the sidecar.
+        Returns the sidecar's colours, or None when the feature is off. Raises what ensure_master raises."""
+        if not (self.cfg.get("palette") or {}).get("enabled", True):
+            return None
+        it = self.items.get(iid)
+        if not it:
+            return None
+        c = (self.sidecars.get(iid) or {}).get("colours")
+        if isinstance(c, dict) and c.get("sha256") == it["sha256"] and c.get("version") == palette.VERSION:
+            return c
+        master = self.ensure_master(iid)
+        t = time.time()
+        with Image.open(master) as im:
+            im.draft("RGB", (palette.THUMB * 4, palette.THUMB * 4))  # a JPEG decodes at 1/8 scale: fast
+            c = palette.analyse(im)
+        c.update(sha256=it["sha256"], version=palette.VERSION)
+        with self.lock:
+            sc = dict(self.sidecars.get(iid) or {})
+            sc["colours"] = c
+            p = self.sidecar_path(iid)
+            write_json(p, sc)
+            self.sidecars[iid] = sc
+            self._sc_mtime[iid] = os.stat(p).st_mtime
+        log("colours %s: %s, accent %s (%s) %.0f ms" % (iid, " ".join(c["palette"]), c["accent"] or "none",
+                                                        c["gnome_accent"], (time.time() - t) * 1000))
+        return c
 
     def sync_sidecar_meta(self):
         """Unedited sidecars follow the live metadata for place/credit (and a known title), so a config fix shows up."""

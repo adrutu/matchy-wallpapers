@@ -57,6 +57,7 @@ port>`. Leave it empty and only the sidebar panel works.
 | `caption_min_words` | int, 5–200 | 30 | Shortest blurb asked for. Keep it at or below the longest. |
 | `caption_max_words` | int, 5–200 | 45 | Longest blurb asked for. After a second try, a blurb within three words of the range is kept. |
 | `captioners` | list of objects | `[]` | OpenAI-compatible vision endpoints, tried in order. Fields: `name` (required), `url` (required, the full `/v1/chat/completions` URL), `model` (required), `api_key` (optional), `timeout` (seconds, 5–600, default 120). |
+| `palette_enabled` | bool | true | Colour match: work out each picture's main colours, an accent and the nearest GNOME accent name (see [Colour match](#colour-match)). Off: `palette` is `[]` and `accent` and `gnome_accent` are `null` everywhere, and nothing is computed. |
 | `remote_manifest_url` | URL | unset | Optional. Base URL of a web folder holding a `manifest.json` (`[{"name": "…", "file": "…"}]`) with the image files next to it. Fetched once a day; new files are downloaded into the add-on's data and get ids `remote-<file name>` (lower-cased, without the extension). Only `.jpg`, `.jpeg`, `.png` and `.webp` entries without a `/` are taken. |
 | `daily_json_url` | URL | unset | Optional. A JSON document `{date, title or caption, place, copyright}` describing a picture that changes daily. Checked hourly; each new date is stored as `daily-YYYYMMDD`. Needs `daily_image_url` too. |
 | `daily_image_url` | URL | unset | Optional. The image URL that goes with `daily_json_url`. |
@@ -163,6 +164,8 @@ page reloads itself when the picture changes (it checks every 30 seconds). From 
   `/screens.json`.
 - See whether each captioner is ready or being skipped, what it is writing now and how many pictures
   are waiting.
+- Under the picture on screen, its colours: a swatch per palette colour and the accent, with the
+  GNOME accent name (see Colour match).
 
 Every thumbnail opens the labelled picture at 2560x1440.
 
@@ -180,6 +183,28 @@ Assistant's latitude and longitude once at start (that is what its Home Assistan
 `homeassistant_api`, is for; nothing else uses it). Without a location, or on a day the sun does not
 rise or does not set there, it changes at 07:00 and 19:00 local time instead. Restart the add-on after
 moving the home location.
+
+### Colour match
+
+Matchy works out each picture's colours once, from its master copy, and serves them with the picture
+so the room can follow it: a desktop's accent colour, a dashboard theme, the lights. Three fields, in
+`/current.json` and per picture in `/library.json`:
+
+| Field | What |
+| :--- | :--- |
+| `palette` | Up to five hex colours, most prominent first. Near-black, near-white and grey are left out unless the picture is mostly that (a black-and-white or a night picture keeps its greys); otherwise they only fill up a palette with fewer than five colours of its own. |
+| `accent` | The one colour to use for a UI: the most vivid colour with real presence in the picture, then nudged to where GNOME's own accents sit, at least 3:1 contrast against both white and black (so it reads on a light and a dark theme) and saturated enough to look like a colour. It is a usable tint of a palette colour, not always a colour in the palette. `null` for a picture with no colour in it. |
+| `gnome_accent` | The nearest of GNOME's accent colours by hue: `blue`, `teal`, `green`, `yellow`, `orange`, `red`, `pink` or `purple`, and `slate` for grey or for a picture with no accent. Always a name once the colours are known. |
+
+Until a picture's colours are computed, `palette` is `[]` and the other two `null` (a cold start: the
+picture on screen gets its colours first, within seconds; the rest follow the master copies). A
+changed source file gets fresh colours on the next folder scan. The colours live in the picture's
+sidecar (`colours`), next to the caption; a hand-written caption keeps them, and a re-caption does not
+touch them. They take a few milliseconds per picture.
+
+Clients: the GNOME follower can set the desktop's accent colour from `gnome_accent` (off by default),
+and the Home Assistant recipe has a theme accent and a lights automation that only tints lights
+already on. See the client recipes in the repository.
 
 ### Screens
 
@@ -207,8 +232,8 @@ Read endpoints:
 
 | Endpoint | Description |
 | :--- | :--- |
-| `GET /current.json` | The current picture: `id`, `rev`, `version`, `title`, `place`, `credit`, `blurb`, `since`, `next_change` (null while paused), `paused`, `captioned`, and `urls` (`original`, `clean`, `label`, `span` templates with `{w}`, `{h}`, `{layout}` to fill in). `version` changes on every rotation and every caption edit; clients compare it. `screens_off` lists the screens turned off; with `?screen=<name>`, `follow` says whether that one should follow. `503` while the library is empty. |
-| `GET /library.json` | Every picture with its status, caption, `hidden` and `recaption_queued` flags, plus the rotation (`mode` = `minutes` or `daynight`, the window, and `next_sun` = `{"at", "event"}` in Day & night, `event` being `sunrise`/`sunset`, or `morning`/`evening` without a location) and captioner state. |
+| `GET /current.json` | The current picture: `id`, `rev`, `version`, `title`, `place`, `credit`, `blurb`, `since`, `next_change` (null while paused), `paused`, `captioned`, `palette`, `accent`, `gnome_accent` (see Colour match), and `urls` (`original`, `clean`, `label`, `span` templates with `{w}`, `{h}`, `{layout}` to fill in). `version` changes on every rotation and every caption edit; clients compare it (the colours do not change it: they arrive for a new picture within seconds of a cold start, so a client that uses them reads them on every poll). `screens_off` lists the screens turned off; with `?screen=<name>`, `follow` says whether that one should follow. `503` while the library is empty. |
+| `GET /library.json` | Every picture with its status, caption, `hidden` and `recaption_queued` flags and its `palette`, `accent` and `gnome_accent`, plus the rotation (`mode` = `minutes` or `daynight`, the window, and `next_sun` = `{"at", "event"}` in Day & night, `event` being `sunrise`/`sunset`, or `morning`/`evening` without a location) and captioner state. |
 | `GET /screens.json` | The Screens list (see Screens). Network tier only, and without CORS, because it carries addresses. |
 | `GET /` (also `/index.html`) | The gallery page. |
 | `GET /current/clean/WxH.jpg` | The current picture at any size, without the label. Sends an `ETag`; `If-None-Match` gets a `304` until the picture changes. |
@@ -301,7 +326,7 @@ add-on (`backup: hot`, the render cache excluded):
 | `secrets/captioner-<n>.key` | Captioner keys, mode 600. |
 | `state.json` | What is on screen, the shuffle bag, hidden ids, the panel's rotation choice, history. |
 | `screens.json` | The Screens list: on or off, first and last seen (last seen is written at most every 5 minutes). |
-| `library/<id>.json` | One sidecar per picture: the caption and where it came from. A hand edit here (set `"edited": true`) is picked up within a minute. |
+| `library/<id>.json` | One sidecar per picture: the caption and where it came from, and the picture's colours (`colours`: `palette`, `accent`, `gnome_accent`, the source hash and the method version they were computed with). A hand edit here (set `"edited": true`) is picked up within a minute; the colours are recomputed if you delete them. |
 | `masters/` | The downscaled master copy of each picture. |
 | `originals/`, `remote.json` | Pictures fetched from a remote manifest or the daily URL, and their index. |
 | `cache/` | Rendered JPEGs, evicted LRU. Safe to delete; not in backups. |
@@ -385,6 +410,7 @@ generates, with its defaults:
   ],
   "caption": {"enabled": true, "language": "English", "spelling": "British",
               "min_words": 30, "max_words": 45},
+  "palette": {"enabled": true},
   "static_manifest": {"enabled": false},
   "daily": {"enabled": false}
 }

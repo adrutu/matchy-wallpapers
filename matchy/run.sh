@@ -54,6 +54,11 @@ captions_on="$(opt 'caption_enabled' true)"
 [[ "${captions_on}" == "true" ]] || captions_on=false
 readonly captions_on
 
+# Colour match (the palette, accent and GNOME accent name per picture): same shape, same reason.
+palette_on="$(opt 'palette_enabled' true)"
+[[ "${palette_on}" == "true" ]] || palette_on=false
+readonly palette_on
+
 # ---------------------------------------------------------------- source folders
 folders='[]'
 usable_folders=0
@@ -205,6 +210,7 @@ jq -n \
     --arg caption_spelling "$(opt 'caption_spelling' 'British')" \
     --argjson caption_min_words "$(int 'caption_min_words' 30)" \
     --argjson caption_max_words "$(int 'caption_max_words' 45)" \
+    --argjson palette_enabled "${palette_on}" \
     --argjson location "${location}" \
     '{
         port: $port,
@@ -226,7 +232,8 @@ jq -n \
             spelling: $caption_spelling,
             min_words: $caption_min_words,
             max_words: $caption_max_words
-        }
+        },
+        palette: {enabled: $palette_enabled}
      } | del(..|nulls)' > "${CONFIG_FILE}.tmp"
 mv "${CONFIG_FILE}.tmp" "${CONFIG_FILE}"
 

@@ -29,6 +29,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import render  # noqa: E402
 from caption import Captioner  # noqa: E402
 from library import Library, log, open_image, read_json, rev_of, write_json  # noqa: E402
+from palette import HEX_RE  # noqa: E402
 
 DEFAULTS = {
     "port": 8160,
@@ -50,6 +51,9 @@ DEFAULTS = {
                 "max_tokens": 300, "temperature": 0.4, "image_px": 1024, "retry_failed_hours": 6,
                 "forbidden_titles": []},
     "overrides": {},
+    # Colour match: a five-colour palette, an accent and the nearest GNOME accent name per picture,
+    # computed from the master and stored in the sidecar (palette.py). Off: the fields are empty.
+    "palette": {"enabled": True},
     # Home Assistant's Supervisor proxies authenticated ingress sessions from this address
     # (the official add-on guidance is "allow 172.30.32.2; deny all"). A request from here has
     # already been authenticated by Home Assistant, so it is trusted without the LAN check.
@@ -267,10 +271,23 @@ class Engine:
                                    and any(self.lib.status(i) == "captioned" for i in self.eligible()))
                 if not cur or due or missing or placeholder:
                     self.rotate("due" if due else "placeholder" if placeholder else "start")
+                self.colours_for_current()
             except Exception:
                 traceback.print_exc()
             self.wake.wait(5)
             self.wake.clear()
+
+    def colours_for_current(self):
+        """The picture on screen gets its colours first, ahead of the scanner's pass over the library
+        (a cold start builds masters for minutes). Nothing to do once they are in the sidecar."""
+        cur = self.state.get("current")
+        if cur and cur in self.lib.items and cur not in self.lib.skipped:
+            try:
+                self.lib.ensure_colours(cur)
+            except ValueError:  # too large: reported by ensure_master
+                pass
+            except Exception as e:
+                log("colours", cur, "failed:", e)
 
     # ---------------- controls (the panel and the HTTP API) ----------------
     def _need_item(self, iid):
@@ -456,6 +473,7 @@ class Engine:
             if not cur or cur not in self.lib.items:
                 return None
             d = self.lib.display(cur)
+            colours = self.lib.colours(cur)
             # .get: a state.json from an older version or a crash mid-write must not 500 this.
             since = self.state.get("since") or time.time()
             nxt = self.state.get("next_change") or since
@@ -466,6 +484,9 @@ class Engine:
             "title": d["title"], "place": d["place"], "credit": d["credit"], "blurb": d["blurb"],
             "since": iso(since), "next_change": None if paused else iso(nxt), "paused": paused,
             "captioned": self.lib.status(cur) == "captioned",
+            # Colour match: most prominent first; accent is a usable tint, null for a picture with no
+            # colour (or not computed yet, when palette is also []); gnome_accent is one of GNOME's names.
+            "palette": colours["palette"], "accent": colours["accent"], "gnome_accent": colours["gnome_accent"],
             # Root-absolute by default, so a direct-port client can use them as-is. Behind Home
             # Assistant ingress the handler passes the ingress prefix, because the page lives
             # under /api/hassio_ingress/<token>/ there.
@@ -494,10 +515,12 @@ class Engine:
         for iid in sorted(lib.items, key=lambda i: lib.items[i]["order"]):
             d = lib.display(iid)
             sc = lib.sidecars.get(iid) or {}
+            colours = lib.colours(iid)
             out.append({"id": iid, "rev": d["rev"], "status": lib.status(iid), "title": d["title"],
                         "place": d["place"], "credit": d["credit"], "blurb": d["blurb"],
                         "caption_model": sc.get("caption_model", ""), "caption_at": sc.get("caption_at", ""),
                         "edited": bool(sc.get("edited")), "hidden": iid in hidden, "recaption_queued": iid in recap,
+                        "palette": colours["palette"], "accent": colours["accent"], "gnome_accent": colours["gnome_accent"],
                         "error": (lib.skipped[iid][1] if iid in lib.skipped
                                   else sc.get("caption_error", "") if not d["blurb"] else "")})
         lo, hi, src = self.rotation_window()
@@ -545,12 +568,13 @@ class Engine:
                 except Exception as e:
                     log("daily sync failed:", e)
                     last_daily = now - 60 * c["daily"].get("check_minutes", 60) + 600
-            # masters for everything (cheap after the first pass)
+            # masters and colours for everything (cheap after the first pass)
             for iid in list(self.lib.items):
                 if iid in self.lib.skipped:
                     continue
                 try:
                     self.lib.ensure_master(iid)
+                    self.lib.ensure_colours(iid)
                 except ValueError:  # too large: logged once by ensure_master, now in lib.skipped
                     pass
                 except Exception as e:
@@ -1118,6 +1142,23 @@ def hhmm(stamp):
     return stamp[11:16] if stamp else ""
 
 
+def swatches_html(cur):
+    """The picture's colours under it in the panel: one swatch per palette colour, the accent ringed.
+    Nothing until they are computed. Only well-formed hex reaches a style attribute."""
+    pal = [c for c in cur.get("palette") or [] if isinstance(c, str) and HEX_RE.match(c)]
+    if not pal:
+        return ""
+    acc = cur.get("accent") if isinstance(cur.get("accent"), str) and HEX_RE.match(cur["accent"]) else None
+    sw = "".join('<span class="sw" style="background:%s" title="%s"></span>' % (c, c) for c in pal)
+    if acc:
+        line = ('<span class="sw acc" style="background:%s" title="Accent %s"></span>'
+                '<span class="mut small">Accent %s%s</span>') % (
+            acc, acc, acc, (" · GNOME %s" % html.escape(cur["gnome_accent"])) if cur.get("gnome_accent") else "")
+    else:
+        line = '<span class="mut small">No accent: a picture without colour</span>'
+    return '<div class="swatches" aria-label="Palette">%s</div><div class="swatches">%s</div>' % (sw, line)
+
+
 def gallery_html(eng, control, admin):
     """The sidebar panel. control/admin: whether this viewer may use the "lan"/"panel" actions;
     the buttons they may not use are drawn disabled, with the reason as a tooltip."""
@@ -1172,11 +1213,11 @@ def gallery_html(eng, control, admin):
         src = "img/%s/%s/label" % (cur["id"], cur["rev"])
         top = ('<section class="top" data-id="%s"><a class="shot" href="%s/2560x1440.jpg" target="_blank" '
                'rel="noopener"><img src="%s/1920x1080.jpg" alt="The wallpaper on screen now"></a><div class="meta">'
-               '<p class="kicker">On screen now</p><h1>%s</h1><p class="mut">%s</p><p>%s</p>'
+               '<p class="kicker">On screen now</p><h1>%s</h1><p class="mut">%s</p><p>%s</p>%s'
                '<div class="acts"><button class="primary" data-act="next"%s>Next picture</button>%s</div></div></section>') % (
             esc(cur["id"]), esc(src), esc(src), esc(cur["title"] or cur["id"]),
             esc(" · ".join(x for x in (cur["place"], cur["credit"]) if x)), esc(cur["blurb"]),
-            no_ctl, buttons(by_id.get(cur["id"], {"hidden": False}), top=True))
+            swatches_html(cur), no_ctl, buttons(by_id.get(cur["id"], {"hidden": False}), top=True))
     else:
         top = ('<section class="top empty"><div class="meta"><p class="kicker">On screen now</p><h1>Nothing yet</h1>'
                '<p class="mut">No pictures found so far. Check <code>source_folders</code> in the add-on options; '
@@ -1267,7 +1308,7 @@ def gallery_html(eng, control, admin):
     summary = "%d picture%s · %d captioned%s" % (len(items), "" if len(items) == 1 else "s", n_cap,
                                                  (" · %d hidden" % n_hidden) if n_hidden else "")
 
-    data = {"version": cur.get("version"),
+    data = {"version": cur.get("version"), "palette": cur.get("palette") or [],
             "items": [{k: i[k] for k in ("id", "title", "place", "credit", "blurb")} for i in items],
             "pace": [{"label": label, "body": {"min_minutes": m, "max_minutes": m} if m else {"mode": "daynight"}}
                      for label, m in PACE_STOPS]}
@@ -1291,6 +1332,8 @@ h1{font:italic 600 28px/1.2 Georgia,serif;margin:0 0 4px}h2{font-size:15px;margi
 .mut{color:var(--mut)}.small{font-size:13px}.kicker{margin:0 0 6px;color:var(--acc);font-size:12px;text-transform:uppercase;letter-spacing:.08em}
 .top{display:grid;grid-template-columns:minmax(0,3fr) minmax(260px,1fr);gap:20px;align-items:start}
 .top img{width:100%;border-radius:10px;display:block}.meta p{margin:.4em 0}
+.swatches{display:flex;align-items:center;gap:8px;margin:8px 0}.sw{width:26px;height:26px;border-radius:7px;border:1px solid #fff3;flex:none}
+.sw.acc{width:18px;height:18px;border-radius:50%;outline:2px solid var(--fg);outline-offset:2px;margin-right:4px}
 .panels{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px;margin-top:20px}
 .box{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px}.box p{margin:.3em 0 .6em}
 button{font:inherit;font-size:13px;background:transparent;color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:6px 12px;cursor:pointer}
@@ -1396,12 +1439,13 @@ win.addEventListener('submit', e => {
   run(e.submitter || win.querySelector('button'), 'rotation',
       {min_minutes: Number(win.elements.min.value), max_minutes: Number(win.elements.max.value)});
 });
-// Follow the rotation: reload when the picture on screen changes, but never under an open editor.
+// Follow the rotation: reload when the picture on screen changes (or its colours arrive, a little
+// after a cold start), but never under an open editor.
 setInterval(async () => {
   if (dlg.open || document.hidden) return;
   try {
     const c = await (await fetch('current.json', {cache: 'no-store'})).json();
-    if (c.version && c.version !== data.version) location.reload();
+    if (c.version && (c.version !== data.version || JSON.stringify(c.palette || []) !== JSON.stringify(data.palette))) location.reload();
   } catch (e) { /* offline for a moment: try again next time */ }
 }, 30000);
 </script></body></html>""")

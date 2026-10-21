@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Colour match: each picture gets a five-colour `palette`, a usable `accent` (3:1 contrast on both
+  light and dark) and the nearest `gnome_accent` name, computed once from the master into the sidecar
+  and served in `current.json` and `library.json`; swatches under the picture in the panel. New option
+  `palette_enabled` (default on). The GNOME follower can set the desktop's accent colour from it
+  (`MATCHY_ACCENT=1`, off by default) and hands your own back when the screen is turned off or the
+  service stops; the Home Assistant recipe gets a theme accent and a lights automation that only tints
+  lights already on. `tests/palette_test.py`.
+
 ## 0.4.0 (2026-10-17)
 
 First public release.

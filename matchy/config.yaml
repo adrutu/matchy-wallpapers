@@ -68,6 +68,7 @@ options:
   caption_min_words: 30
   caption_max_words: 45
   captioners: []
+  palette_enabled: true
 
 schema:
   source_folders:
@@ -98,6 +99,7 @@ schema:
       model: str
       api_key: "password?"
       timeout: "int(5,600)?"
+  palette_enabled: bool
   remote_manifest_url: "url?"
   daily_json_url: "url?"
   daily_image_url: "url?"

@@ -26,6 +26,9 @@ and serves your pictures on your own network.
   minutes to every 12 hours, or one picture at sunrise and the next at sunset where you live.
 - **A screens list.** Every screen that names itself shows up in the panel, where you can turn it off
   (it goes back to its own wallpaper) or on again.
+- **Colour match.** Each picture's main colours, a usable accent and the nearest GNOME accent name,
+  shown as swatches in the panel and served with the picture, so a desktop's accent colour, a
+  dashboard theme or the lights can follow it.
 - **A sidebar panel** in Home Assistant: next, pause, show any picture now, hide one, edit or redo a
   caption.
 
@@ -59,10 +62,12 @@ Build it from this repository (`docker build -t matchy ./matchy`).
 Short recipes, not separate programs, under [docs/clients/](docs/clients/):
 
 - **GNOME desktop**: a user service that follows the picture and sets a spanned wallpaper matched to
-  your live monitor layout, label on the primary screen. [gnome.md](docs/clients/gnome.md)
+  your live monitor layout, label on the primary screen; optionally the desktop's accent colour too.
+  [gnome.md](docs/clients/gnome.md)
 - **Home Assistant dashboards and wall tablets**: entities for the picture, a card-mod view
-  background that follows the rotation, a Wallpanel screensaver with the label, and one on/off switch
-  per tablet. [home-assistant.md](docs/clients/home-assistant.md)
+  background that follows the rotation, a Wallpanel screensaver with the label, one on/off switch
+  per tablet, and the picture's accent for the theme and the lights.
+  [home-assistant.md](docs/clients/home-assistant.md)
 - **Homepage dashboard**: a background that follows the rotation, plus a tile.
   [homepage.md](docs/clients/homepage.md)
 - **Anything else**: `curl` examples for the API. [curl.md](docs/clients/curl.md)

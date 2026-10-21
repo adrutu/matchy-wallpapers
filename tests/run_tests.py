@@ -99,6 +99,28 @@ try:
     c0 = cur(A); check("A current has paused=false + next_change", c0["paused"] is False and c0["next_change"])
     st, _, txt, _ = req(A, "GET", "/"); check("A page renders", st == 200 and "Pause rotation" in txt and "disabled title" not in txt, txt[:200])
 
+    # colour match: every (flat red/green/blue/yellow) picture has its colours, in both JSON views, the
+    # sidecar and the panel, and a caption written from scratch did not wipe them
+    for _ in range(30):
+        if all(i["palette"] for i in lib(A)["items"]): break
+        time.sleep(1)
+    L = lib(A); by_id = {i["id"]: i for i in L["items"]}
+    check("A colours: every picture has a palette, accent and gnome_accent after captioning",
+          all(i["palette"] and i["accent"] and i["gnome_accent"] for i in L["items"]),
+          [(i["id"], i["palette"], i["accent"], i["gnome_accent"]) for i in L["items"]])
+    check("A colours: the flat colours map to GNOME red/green/blue/yellow",
+          [by_id["test-%d" % n]["gnome_accent"] for n in range(4)] == ["red", "green", "blue", "yellow"],
+          [by_id["test-%d" % n]["gnome_accent"] for n in range(4)])
+    c0 = cur(A)
+    check("A colours: current.json carries them", c0["palette"] == by_id[c0["id"]]["palette"]
+          and c0["accent"] == by_id[c0["id"]]["accent"] and c0["gnome_accent"] == by_id[c0["id"]]["gnome_accent"], c0)
+    sc0 = json.load(open(os.path.join(S, "data-A", "library", c0["id"] + ".json")))
+    check("A colours: sidecar holds them with the source hash, next to the caption", sc0.get("blurb")
+          and sc0.get("colours", {}).get("palette") == c0["palette"] and sc0["colours"].get("sha256") == sc0.get("sha256"), sc0)
+    page = req(A, "GET", "/")[2]
+    check("A page: swatches under the picture", 'class="swatches"' in page and 'style="background:%s"' % c0["accent"] in page
+          and "GNOME %s" % c0["gnome_accent"] in page, page[page.find("swatches") - 50:page.find("swatches") + 400])
+
     # pause / resume
     st, j, *_ = req(A, "POST", "/api/pause", {}); check("A pause 200", st == 200 and j["current"]["paused"] is True and j["current"]["next_change"] is None, j)
     check("A page shows paused", "Resume rotation" in req(A, "GET", "/")[2])
@@ -118,6 +140,7 @@ try:
                                                      "blurb": "Line one\n  line two <b>bold</b>"})
     c = cur(A); it = [i for i in lib(A)["items"] if i["id"] == target][0]
     check("A caption edit", st == 200 and c["rev"] != old_rev and c["blurb"] == "Line one line two <b>bold</b>" and it["edited"], (st, txt, c))
+    check("A caption edit keeps the colours", it["palette"] and it["accent"] == c["accent"], it)
     check("A edited caption escaped in page", "&lt;b&gt;bold" in req(A, "GET", "/")[2] and "<b>bold" not in req(A, "GET", "/")[2].split('id="lib"')[0])
     st, *_ = req(A, "POST", "/api/caption", {"id": target, "blurb": ""}); check("A caption empty blurb 400", st == 400)
     st, *_ = req(A, "POST", "/api/caption", {"id": target, "blurb": "x" * 601}); check("A caption too long 400", st == 400)
@@ -140,6 +163,7 @@ try:
         if not it["recaption_queued"]: break
         time.sleep(0.5)
     check("A recaption replaces hand caption", not it["edited"] and it["blurb"].startswith("A field"), it)
+    check("A recaption keeps the colours", it["palette"] and it["gnome_accent"], it)
 
     # hide
     c = cur(A)["id"]
@@ -266,12 +290,16 @@ try:
 finally:
     pa.terminate(); pa.wait()
 
-# ---------------- B: direct port, no captioner, captions off ----------------
+# ---------------- B: direct port, no captioner, captions off, colour match off ----------------
 B = BASE + 2
-pb = start("B", {"port": B, "rotation": {"min_minutes": 15, "max_minutes": 20}, "captioners": [], "caption": {"enabled": False}})
+pb = start("B", {"port": B, "rotation": {"min_minutes": 15, "max_minutes": 20}, "captioners": [], "caption": {"enabled": False},
+                 "palette": {"enabled": False}})
 try:
     first = cur(B)["id"]; time.sleep(12); c = cur(B)
     check("B no 5-second placeholder churn", c["id"] == first, (first, c["id"]))
+    check("B colour match off: empty fields, no sidecar written", c["palette"] == [] and c["accent"] is None
+          and c["gnome_accent"] is None and not os.listdir(os.path.join(S, "data-B", "library")), c)
+    check("B page: no swatches", 'class="swatches"' not in req(B, "GET", "/")[2])
     st, _, txt, _ = req(B, "GET", "/")
     check("B page: admin buttons disabled", 'data-act="hide" disabled' in txt and 'data-act="pause">' in txt, "")
     check("B page: captioner off line", "Captioner: <b>off</b>" in txt)
