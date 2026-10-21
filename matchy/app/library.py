@@ -102,11 +102,28 @@ def display_fields(sc):
     return out
 
 
-def rev_of(sc, picture=""):
-    """picture: what the master is cut from, so a replaced file (or a new master format) gets new URLs
-    and cache keys even when the label text stays the same."""
-    blob = json.dumps(display_fields(sc), sort_keys=True, ensure_ascii=False).encode() + picture.encode()
+def rev_of(sc, picture="", focus=None):
+    """Six hex digits that change with the label text, with `picture` (what the master is cut from, so a
+    replaced file or a new master format gets new URLs and cache keys even when the label text stays the
+    same) and with the focus point in use (a picture without one keeps the rev it would have had)."""
+    fields = display_fields(sc)
+    if focus:
+        fields["focus"] = [round(focus["x"], 3), round(focus["y"], 3)]
+    blob = json.dumps(fields, sort_keys=True, ensure_ascii=False).encode() + picture.encode()
     return hashlib.sha256(blob).hexdigest()[:6]
+
+
+FOCUS_SOURCES = ("hand", "model", "auto")  # best first; a hand focus is never overwritten
+
+
+def valid_focus(f):
+    """A sidecar's focus {x, y, source, ...} if it is usable (x and y fractions 0-1), else None."""
+    if not isinstance(f, dict) or f.get("source") not in FOCUS_SOURCES:
+        return None
+    xy = (f.get("x"), f.get("y"))
+    if not all(isinstance(v, (int, float)) and not isinstance(v, bool) and 0 <= v <= 1 for v in xy):
+        return None
+    return f
 
 
 class Library:
@@ -209,8 +226,45 @@ class Library:
         else:
             d = {"title": meta.get("title") or meta.get("collection") or "", "place": meta.get("place", ""),
                  "credit": meta.get("credit", ""), "blurb": ""}
-        d["rev"] = rev_of(d, os.path.basename(self.master_path(iid)) if it else "")
+        d["rev"] = rev_of(d, os.path.basename(self.master_path(iid)) if it else "", self.focus(iid))
         return d
+
+    # ---------- focus points ----------
+    def stored_focus(self, iid):
+        """The sidecar's focus whatever its source, or None."""
+        return valid_focus((self.sidecars.get(iid) or {}).get("focus"))
+
+    def focus(self, iid):
+        """The focus point crops follow, or None for a centred crop. A hand focus always counts; one
+        from the captioner or the picture itself only with focus_auto on, and only for the version of
+        the picture it was found on."""
+        f = self.stored_focus(iid)
+        if not f or f["source"] == "hand":
+            return f
+        it = self.items.get(iid)
+        if not self.cfg.get("focus_auto") or not it or f.get("sha256") != it["sha256"]:
+            return None
+        return f
+
+    def save_focus(self, iid, focus, keep_hand=True):
+        """Write (or, with None, clear) the focus in iid's sidecar and leave the rest of it alone. A
+        focus set by hand stays unless keep_hand is False. True when something was written."""
+        with self.lock:
+            it = self.items.get(iid)
+            if not it:
+                return False
+            sc = dict(self.sidecars.get(iid) or {"id": iid, "source": it["path"]})
+            cur = valid_focus(sc.get("focus"))
+            if keep_hand and cur and cur["source"] == "hand":
+                return False
+            if focus is None:
+                if "focus" not in sc:
+                    return False
+                sc.pop("focus")
+            else:
+                sc["focus"] = focus
+            # force: the caption in the same file stays as it is, edited or not
+            return self.save_sidecar(iid, sc, force=True)
 
     # ---------- scanning ----------
     def _hash(self, path, st):

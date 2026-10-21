@@ -27,7 +27,7 @@ from PIL import Image
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import render  # noqa: E402
-from caption import Captioner  # noqa: E402
+from caption import Captioner, subject_box  # noqa: E402
 from library import Library, log, num, open_image, read_json, rev_of, write_json  # noqa: E402
 
 DEFAULTS = {
@@ -51,6 +51,9 @@ DEFAULTS = {
                 "max_tokens": 300, "temperature": 0.4, "image_px": 1024, "retry_failed_hours": 6,
                 "forbidden_titles": []},
     "overrides": {},
+    # Crop around the subject the captioner boxed, or else around the detail in the picture, instead of
+    # the centre. A focus point set by hand in the panel is used either way.
+    "focus_auto": False,
     # Home Assistant's Supervisor proxies authenticated ingress sessions from this address
     # (the official add-on guidance is "allow 172.30.32.2; deny all"). A request from here has
     # already been authenticated by Home Assistant, so it is trusted without the LAN check.
@@ -86,6 +89,12 @@ def load_config():
 
 def iso(ts):
     return dt.datetime.fromtimestamp(ts).astimezone().isoformat(timespec="seconds")
+
+
+def box_focus(box, sha):
+    """A focus at the centre of the captioner's subject box."""
+    return {"x": round((box[0] + box[2]) / 2, 3), "y": round((box[1] + box[3]) / 2, 3), "source": "model",
+            "sha256": sha}
 
 
 class Refused(Exception):
@@ -211,6 +220,7 @@ class Engine:
         self.render_locks = {}
         self.masters = OrderedDict()
         self.masters_lock = threading.Lock()
+        self.master_sizes = {}  # master path -> (w, h), for the panel's focus picker
         self.cache_dir = os.path.join(cfg["data_dir"], "cache")
         self.cache_bytes = None
         self.caption_busy = None
@@ -445,6 +455,61 @@ class Engine:
         log("re-caption queued:", iid)
         self.caption_wake.set()
 
+    def set_focus(self, iid, x, y):
+        """A focus point set by hand: crops keep it in frame, and nothing machine-made replaces it."""
+        it = self.lib.items.get(iid)
+        if not it:
+            raise Refused(404, "no picture with id %r" % iid)
+        self.lib.save_focus(iid, {"x": round(x, 3), "y": round(y, 3), "source": "hand", "sha256": it["sha256"],
+                                  "at": iso(time.time())}, keep_hand=False)
+        log("focus set by hand: %s at %.3f, %.3f" % (iid, x, y))
+        self.wake.set()
+
+    def reset_focus(self, iid):
+        """Drop a hand focus: back to the captioner's or the automatic one (focus_auto), or the centre."""
+        self._need_item(iid)
+        with self.lib.lock:
+            f = self.lib.stored_focus(iid)
+            if not f or f["source"] != "hand":
+                return
+            new = None
+            if self.cfg.get("focus_auto"):
+                try:
+                    new = self.machine_focus(iid)
+                except ValueError:  # too large to decode: it is never cropped anyway
+                    pass
+            self.lib.save_focus(iid, new, keep_hand=False)
+        log("focus reset:", iid, "now %s" % (new["source"] if new else "centred"))
+        self.wake.set()
+
+    def machine_focus(self, iid):
+        """The best focus short of a hand one: the centre of the subject the captioner boxed for this
+        version of the picture, else edge_focus() on the master."""
+        it = self.lib.items[iid]
+        sc = self.lib.sidecars.get(iid) or {}
+        box = subject_box(sc) if sc.get("sha256") == it["sha256"] else None
+        if box:
+            return box_focus(box, it["sha256"])
+        with Image.open(self.lib.ensure_master(iid)) as im:
+            im.draft("RGB", (192, 192))  # a JPEG decodes at 1/8 size or so: a few milliseconds
+            x, y = render.edge_focus(im)
+        return {"x": round(x, 3), "y": round(y, 3), "source": "auto", "sha256": it["sha256"]}
+
+    def ensure_focus(self, iid):
+        """With focus_auto on, give a picture without a focus (or with one from an older version of it)
+        an automatic one, so crops never wait on the captioner."""
+        if not self.cfg.get("focus_auto"):
+            return
+        with self.lib.lock:  # held for the few milliseconds of edge_focus, so a caption landing now is not undone
+            it = self.lib.items.get(iid)
+            f = self.lib.stored_focus(iid)
+            if not it or (f and (f["source"] == "hand" or f.get("sha256") == it["sha256"])):
+                return
+            new = self.machine_focus(iid)
+            saved = self.lib.save_focus(iid, new)
+        if saved:
+            log("focus %s: %s at %.3f, %.3f" % (new["source"], iid, new["x"], new["y"]))
+
     def set_rotation(self, lo, hi):
         r = self.cfg["rotation"]
         with self.lock:
@@ -596,7 +661,9 @@ class Engine:
         for iid in sorted(lib.items, key=lambda i: lib.items[i]["order"]):
             d = lib.display(iid)
             sc = lib.sidecars.get(iid) or {}
+            f = lib.focus(iid)
             out.append({"id": iid, "rev": d["rev"], "status": lib.status(iid), "title": d["title"],
+                        "focus": {k: f[k] for k in ("x", "y", "source")} if f else None,
                         "place": d["place"], "credit": d["credit"], "blurb": d["blurb"],
                         "caption_model": sc.get("caption_model", ""), "caption_at": sc.get("caption_at", ""),
                         "edited": bool(sc.get("edited")), "hidden": iid in hidden, "recaption_queued": iid in recap,
@@ -653,6 +720,7 @@ class Engine:
                     continue
                 try:
                     self.lib.ensure_master(iid)
+                    self.ensure_focus(iid)
                 except ValueError:  # too large: logged once by ensure_master, now in lib.skipped
                     pass
                 except Exception as e:
@@ -718,7 +786,18 @@ class Engine:
                       "caption_at": iso(time.time()), "caption_seconds": res["seconds"], "edited": False}
                 if res.get("accepted_with"):
                     sc["caption_note"] = "; ".join(res["accepted_with"])
-                saved = self.lib.save_sidecar(iid, sc, force=recap)
+                if res.get("subject"):
+                    sc["subject"] = res["subject"]
+                with self.lib.lock:  # the focus is read and written back in one go
+                    prev = self.lib.stored_focus(iid)
+                    if prev and prev["source"] == "hand":  # never replaced, re-caption or not
+                        sc["focus"] = prev
+                    elif res.get("subject"):
+                        sc["focus"] = box_focus(res["subject"], it["sha256"])
+                    elif prev and prev["source"] == "auto":
+                        sc["focus"] = prev
+                    # else an older caption's box: dropped, and ensure_focus finds an automatic one
+                    saved = self.lib.save_sidecar(iid, sc, force=recap)
                 if recap:
                     self._recaption_done(iid)
                 if saved:
@@ -777,6 +856,21 @@ class Engine:
             while len(self.masters) > 3:
                 self.masters.popitem(last=False)
         return im
+
+    def master_size(self, iid):
+        """The master's (width, height), read from its header, or None before it is built."""
+        try:
+            p = self.lib.master_path(iid)
+        except KeyError:  # gone in a rescan
+            return None
+        size = self.master_sizes.get(p)
+        if size is None and os.path.exists(p):
+            try:
+                with Image.open(p) as im:
+                    size = self.master_sizes[p] = im.size
+            except OSError:
+                return None
+        return size
 
     def cached(self, key_path, producer):
         """Return JPEG bytes for cache file key_path, rendering it with producer() on a miss."""
@@ -846,21 +940,23 @@ class Engine:
         """dim (quiet hours, clean and label only) darkens the render and gets its own cache file."""
         disp = self.lib.display(iid)
         meta = {k: disp[k] for k in ("title", "place", "credit", "blurb")}
+        f = self.lib.focus(iid)  # part of the rev, so it is part of the cache key too
+        f = (f["x"], f["y"]) if f else None
         sk = ("%.2f" % s).rstrip("0").rstrip(".")
         dk = ("-d%s" % dim_key(dim)) if dim else ""
         if kind == "clean":
             key = "%s/%s/clean-%dx%d%s.jpg" % (iid, rev, w, h, dk)
-            prod = lambda: self.renderer.encode(self.renderer.dim(self.renderer.clean(self.master_image(iid), w, h), dim))
+            prod = lambda: self.renderer.encode(self.renderer.dim(self.renderer.clean(self.master_image(iid), w, h, f), dim))
         elif kind == "label":
             key = "%s/%s/label-%dx%d-s%s%s.jpg" % (iid, rev, w, h, sk, dk)
             prod = lambda: self.renderer.encode(self.renderer.dim(
-                self.renderer.label(self.master_image(iid), meta, w, h, s), dim))
+                self.renderer.label(self.master_image(iid), meta, w, h, s, f), dim))
         else:
             layout = layout.replace(" ", "+").strip()
             lk = hashlib.sha1(layout.encode()).hexdigest()[:12]
             key = "%s/%s/span-%s-s%s.jpg" % (iid, rev, lk, sk)
             mons = render.parse_layout(layout, **self.span_limits())
-            prod = lambda: self.renderer.encode(self.renderer.span(self.master_image(iid), meta, mons, s))
+            prod = lambda: self.renderer.encode(self.renderer.span(self.master_image(iid), meta, mons, s, f))
         return self.cached(key, prod)
 
     def span_limits(self):
@@ -1199,6 +1295,16 @@ def arg_follow(a):
     return a["follow"]
 
 
+def focus_action(eng, a):
+    iid = arg_id(a)
+    if a.get("reset") is True:
+        return eng.reset_focus(iid)
+    x, y = a.get("x"), a.get("y")
+    if not all(isinstance(v, (int, float)) and not isinstance(v, bool) and 0 <= v <= 1 for v in (x, y)):
+        raise Refused(400, "x and y must be numbers from 0 to 1, or send reset: true")
+    return eng.set_focus(iid, float(x), float(y))
+
+
 def rotation_action(eng, a):
     if a.get("reset") is True:
         return eng.reset_rotation()
@@ -1230,6 +1336,7 @@ ACTIONS = {
     "/api/unhide": ("panel", lambda eng, a: eng.unhide(arg_id(a))),
     "/api/caption": ("panel", lambda eng, a: eng.set_caption(arg_id(a), arg_caption(a))),
     "/api/recaption": ("panel", lambda eng, a: eng.recaption(arg_id(a))),
+    "/api/focus": ("panel", focus_action),
     "/api/rotation": ("panel", rotation_action),
     "/api/screen": ("lan", lambda eng, a: eng.set_screen(arg_screen(a), arg_follow(a))),
     "/api/screen/forget": ("panel", lambda eng, a: eng.forget_screen(arg_screen(a))),
@@ -1269,23 +1376,48 @@ def gallery_html(eng, control, admin):
         out = [] if top else ['<button data-act="show"%s>Show now</button>' % no_ctl]
         out.append('<button data-act="edit"%s>Edit caption</button>' % no_admin)
         out.append('<button data-act="recaption"%s>Re-caption</button>' % no_recap)
+        if (it.get("focus") or {}).get("source") == "hand":
+            out.append('<button data-act="focus" data-body="%s"%s>Reset focus</button>' % (
+                esc(json.dumps({"id": it["id"], "reset": True}), quote=True), no_admin))
         if it["hidden"]:
             out.append('<button data-act="unhide"%s>Unhide</button>' % no_admin)
         else:
             out.append('<button data-act="hide"%s>%s</button>' % (no_admin, "Hide this picture" if top else "Hide"))
         return "".join(out)
 
+    def focus_bits(it):
+        """The thumbnail's crop of the picture (fractions: left top right bottom), so a click on it can be
+        turned into a point on the picture, and the dot for the focus point in use."""
+        size, f = eng.master_size(it["id"]), it["focus"]
+        if size:
+            mw, mh = size
+            l, t, r, b = render.crop_box(mw, mh, 640, 360, (f["x"], f["y"]) if f else None)
+            crop = (l / mw, t / mh, r / mw, b / mh)
+        else:  # no master yet: near enough for a 16:9 picture
+            crop = (0, 0, 1, 1)
+        dot = ""
+        if f:
+            how = {"hand": "set by hand", "model": "from the captioner", "auto": "found automatically"}[f["source"]]
+            dot = '<span class="dot %s" style="left:%.2f%%;top:%.2f%%" title="Focus point, %s"></span>' % (
+                f["source"], 100 * (f["x"] - crop[0]) / (crop[2] - crop[0]),
+                100 * (f["y"] - crop[1]) / (crop[3] - crop[1]), how)
+        return " ".join("%.5f" % v for v in crop), dot
+
+    pick = (' title="Click to set the focus point that crops keep in frame (Ctrl-click opens the labelled '
+            'picture)"' if admin else "")
     cards = []
     for it in items:
         cls = " is-current" if it["id"] == cur.get("id") else ""
         cls += " is-hidden" if it["hidden"] else ""
         src = "img/%s/%s" % (it["id"], it["rev"])
+        crop, dot = focus_bits(it)
         cards.append(
-            '<figure class="card%s" data-id="%s"><a class="thumb" href="%s/label/2560x1440.jpg" target="_blank" '
-            'rel="noopener"><img loading="lazy" src="%s/clean/640x360.jpg" alt=""></a><figcaption>'
+            '<figure class="card%s" data-id="%s"><a class="thumb%s" href="%s/label/2560x1440.jpg" target="_blank" '
+            'rel="noopener" data-crop="%s"%s><img loading="lazy" src="%s/clean/640x360.jpg" alt="">%s</a><figcaption>'
             '<div class="tags">%s</div><b>%s</b><small>%s%s</small><p>%s</p><div class="acts">%s</div>'
             '</figcaption></figure>' % (
-                cls, esc(it["id"]), esc(src), esc(src), tags(it), esc(it["title"] or it["id"]), esc(it["id"]),
+                cls, esc(it["id"]), " pick" if admin else "", esc(src), crop, pick, esc(src), dot, tags(it),
+                esc(it["title"] or it["id"]), esc(it["id"]),
                 (" · " + esc(it["place"])) if it["place"] else "", esc(it["blurb"] or it["error"]), buttons(it)))
 
     by_id = {i["id"]: i for i in items}
@@ -1448,7 +1580,9 @@ details.custom{margin-top:8px}details.custom summary{cursor:pointer;color:var(--
 .lib{margin:28px 0 0}.lib small{color:var(--mut);font-weight:400;margin-left:8px}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:14px;margin-top:12px}
 .card{margin:0;background:var(--card);border-radius:10px;overflow:hidden;display:flex;flex-direction:column}
-.card img{width:100%;aspect-ratio:16/9;display:block;object-fit:cover}
+.card img{width:100%;aspect-ratio:16/9;display:block;object-fit:cover}.thumb{display:block;position:relative}
+.thumb.pick{cursor:crosshair}.dot{position:absolute;width:12px;height:12px;margin:-6px 0 0 -6px;border-radius:50%;
+border:2px solid #fff;box-shadow:0 0 0 1px #000a,0 0 6px #000a;pointer-events:none}.dot.hand{background:var(--acc)}
 .card.is-current{outline:2px solid var(--acc)}.card.is-hidden .thumb,.card.is-hidden b,.card.is-hidden p{opacity:.45}
 figcaption{padding:10px 12px;display:flex;flex-direction:column;flex:1}figcaption small{display:block;color:var(--mut)}
 figcaption p{margin:.4em 0 0;font-size:13px;color:#c9d0cc;flex:1}
@@ -1525,6 +1659,19 @@ document.addEventListener('click', e => {
   const holder = b.closest('[data-id]'), id = holder ? holder.dataset.id : null;
   if (b.dataset.act === 'edit') return edit(id);
   run(b, b.dataset.act, b.dataset.body ? JSON.parse(b.dataset.body) : (id ? {id: id} : {}));
+});
+// Focus point: a click on a thumbnail is a point on the picture (the thumbnail is a crop of it, data-crop).
+// Ctrl, Cmd, Shift or a middle click still open the labelled picture.
+document.addEventListener('click', async e => {
+  const t = e.target.closest('a.thumb.pick');
+  if (!t || e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+  e.preventDefault();
+  const r = t.querySelector('img').getBoundingClientRect(), c = t.dataset.crop.split(' ').map(Number);
+  const at = (v, lo, hi) => Math.min(1, Math.max(0, lo + Math.min(1, Math.max(0, v)) * (hi - lo)));
+  const x = at((e.clientX - r.left) / r.width, c[0], c[2]), y = at((e.clientY - r.top) / r.height, c[1], c[3]);
+  msg.textContent = '';
+  try { await post('focus', {id: t.closest('[data-id]').dataset.id, x: x, y: y}); location.reload(); }
+  catch (err) { msg.textContent = 'Setting the focus point did not work: ' + err.message; }
 });
 // How often: the label follows the slider; letting go saves.
 const pace = document.getElementById('pace-r'), paceOut = document.getElementById('pace-out');

@@ -1,6 +1,6 @@
 """Fake OpenAI-compatible captioner for run_tests.py.
 
-Usage: fakecap.py <port> <flag-file> [key=<k>] [no-json-mode] [new-openai] [parts] [think]
+Usage: fakecap.py <port> <flag-file> [key=<k>] [no-json-mode] [new-openai] [parts] [think] [subject=<l,t,r,b>]
 
 Answers a valid caption, or garbage while <flag-file> exists. The options make it behave like
 servers that are pickier than llama.cpp:
@@ -9,11 +9,13 @@ servers that are pickier than llama.cpp:
   new-openai    400 on `max_tokens` and on a non-default `temperature` (newer OpenAI models)
   parts         the reply content is a list of content parts instead of a string
   think         the reply starts with an inline <think>...</think> block containing braces
+  subject=l,t,r,b  the reply carries this subject box ("subject": [l, t, r, b]), for focal-point crops
 """
 import json, os, sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 FLAG, OPTS = sys.argv[2], sys.argv[3:]
 KEY = next((o[4:] for o in OPTS if o.startswith("key=")), None)
+SUBJECT = next(([float(v) for v in o[8:].split(",")] for o in OPTS if o.startswith("subject=")), None)
 BLURB = ("a field of colour scattered with small pale specks that catch the light like frost on a window, "
          "the tone deepening toward the edges where the specks thin out and the surface settles into a calm "
          "and even glow")
@@ -35,7 +37,10 @@ class H(BaseHTTPRequestHandler):
         if "new-openai" in OPTS and req.get("temperature", 1) != 1:
             return self.send(400, {"error": {"message": "Unsupported value: 'temperature' does not support 0.4 with "
                                              "this model. Only the default (1) value is supported.", "param": "temperature"}})
-        content = "not json at all" if os.path.exists(FLAG) else json.dumps({"title": "Speckled Colour Field", "blurb": BLURB.capitalize() + "."})
+        reply = {"title": "Speckled Colour Field", "blurb": BLURB.capitalize() + "."}
+        if SUBJECT:
+            reply["subject"] = SUBJECT
+        content = "not json at all" if os.path.exists(FLAG) else json.dumps(reply)
         if "think" in OPTS:
             content = '<think>The user wants {"title", "blurb"}; keep it short.</think>\n' + content
         if "parts" in OPTS:

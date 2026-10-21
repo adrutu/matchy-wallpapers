@@ -53,6 +53,10 @@ readonly PORT=8160
 captions_on="$(opt 'caption_enabled' true)"
 [[ "${captions_on}" == "true" ]] || captions_on=false
 readonly captions_on
+# The same for focus_auto, whose default is off (centred crops).
+focus_auto="$(opt 'focus_auto' false)"
+[[ "${focus_auto}" == "true" ]] || focus_auto=false
+readonly focus_auto
 
 # ---------------------------------------------------------------- source folders
 folders='[]'
@@ -213,6 +217,7 @@ jq -n \
     --argjson master_max_px "$(int 'master_max_px' 3840)" \
     --argjson cache_max_mb "$(int 'cache_max_mb' 2048)" \
     --argjson render_threads "$(int 'render_threads' 2)" \
+    --argjson focus_auto "${focus_auto}" \
     --argjson scan_minutes "$(int 'folder_scan_minutes' 10)" \
     --argjson rot_min "$(int 'rotation_min_minutes' 15)" \
     --argjson rot_max "$(int 'rotation_max_minutes' 20)" \
@@ -235,6 +240,7 @@ jq -n \
         master_max_px: $master_max_px,
         cache_max_mb: $cache_max_mb,
         render_threads: $render_threads,
+        focus_auto: $focus_auto,
         folder_scan_minutes: $scan_minutes,
         rotation: {min_minutes: $rot_min, max_minutes: $rot_max},
         quiet_hours: $quiet_hours,
