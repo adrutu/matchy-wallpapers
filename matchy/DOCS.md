@@ -70,6 +70,8 @@ port>`. Leave it empty and only the sidebar panel works.
 | `remote_manifest_url` | URL | unset | Optional. Base URL of a web folder holding a `manifest.json` (`[{"name": "…", "file": "…"}]`) with the image files next to it. Fetched once a day; new files are downloaded into the add-on's data and get ids `remote-<file name>` (lower-cased, without the extension; a file whose name gives an id another file already has gets `-2`, `-3`…). Only `.jpg`, `.jpeg`, `.png` and `.webp` entries without a `/` are taken. |
 | `daily_json_url` | URL | unset | Optional. A JSON document `{date, title or caption, place, copyright}` describing a picture that changes daily. Checked hourly; each new date is stored as `daily-YYYYMMDD`. Needs `daily_image_url` too. |
 | `daily_image_url` | URL | unset | Optional. The image URL that goes with `daily_json_url`. |
+| `mqtt_enabled` | bool | false | Create a **Matchy Wallpapers** device with entities in Home Assistant over MQTT (see *Home Assistant entities*). Needs the Mosquitto broker add-on; the broker's address and login come from Home Assistant, nothing to type. Turning it off removes the entities again. |
+| `mqtt_image_url` | URL | unset | Optional. Where Home Assistant fetches the picture for the image entity, for example `http://<your-ha-host>:<published port>`. Empty: the add-on's own address on Home Assistant's internal network, which needs no published port. |
 
 Only options you set are written to the engine's config; everything else keeps the defaults above.
 
@@ -310,6 +312,41 @@ in `.veiled` until the reveal, so a client that refetches when `version` changes
 [docs/clients/home-assistant.md](https://github.com/adrutu/matchy-wallpapers/blob/main/docs/clients/home-assistant.md#5-guess-where-on-a-wallpanel-screensaver)
 sets this up for one tablet.
 
+### Home Assistant entities
+
+With `mqtt_enabled` on and the **Mosquitto broker** add-on running, Matchy creates its own entities in
+Home Assistant through MQTT discovery, with no YAML: one device, **Matchy Wallpapers**, under
+**Settings → Devices & services → MQTT**. Home Assistant names the entities after the device, so they
+come out as below; rename them as you like.
+
+| Entity | What it is |
+| :--- | :--- |
+| `image.matchy_wallpapers_now_showing` | The labelled picture on screen, 1920x1080. Home Assistant fetches it itself, so an `https://` dashboard shows it without mixed content, and a screensaver that follows an image entity changes with it. |
+| `sensor.matchy_wallpapers_title` | The title (the id until a picture has a caption). Attributes: `id`, `rev`, `place`, `credit`, `blurb`, `since`, `next_change`, `captioned`, `quiet` (in quiet hours), and the picture's `loved` mark and `palette`/`accent` colours when those features are present. |
+| `button.matchy_wallpapers_next` | Next picture. |
+| `button.matchy_wallpapers_love` | Mark the picture on screen loved. Only there when the favourites feature is in this version. |
+| `switch.matchy_wallpapers_pause` | Pause the rotation (on) or let it run (off). |
+| `select.matchy_wallpapers_rotation` | How often: the panel slider's stops (*Every 15 minutes* to *Every 12 hours*, *Day & night*) plus *Add-on options*, which goes back to the configured window. A custom window set in the panel shows as unknown. |
+| `switch.matchy_wallpapers_screen_<name>` | One per screen in the Screens list: on while it follows Matchy. It appears when the screen first asks for a picture and goes when you **Forget** it. |
+| `sensor.matchy_wallpapers_caption_queue` | Pictures waiting for a caption; attribute `writing` names the one being captioned. |
+
+The device is marked unavailable when the add-on is stopped or loses the broker (an MQTT last will),
+and everything comes back on its own when it reconnects. Turn `mqtt_enabled` off and the next start
+removes every retained message it published, so the device and its entities disappear from Home
+Assistant (as long as the broker is still reachable; the log says what was removed).
+
+The image entity needs an address Home Assistant can fetch from. By default that is the add-on's own
+hostname on Home Assistant's internal network (`http://<add-on hostname>:8160`), which works without a
+published port. If it does not in your setup, publish the port and put
+`http://<your-ha-host>:<published port>` in `mqtt_image_url`.
+
+The topics, should you want them from an automation or another program: state in `matchy/state` (one
+JSON object), the picture URL in `matchy/picture`, `matchy/status` for `online`/`offline`, and
+commands on `matchy/cmd/next`, `matchy/cmd/love` (payload `PRESS`), `matchy/pause/set` (`ON`/`OFF`),
+`matchy/rotation/set` (an option's label) and `matchy/screen/<key>/set` (`ON`/`OFF`). Discovery
+configs are retained under `homeassistant/`. The client is a small MQTT 3.1.1 one inside the add-on:
+plain TCP only, so a broker that insists on TLS is logged and left alone.
+
 ### Day & night
 
 **Day & night** puts one picture up at sunrise and the next at sunset. The add-on reads Home
@@ -513,9 +550,11 @@ undecodable one, re-captioning with no captioner) or `413` (body over 64 KB, or 
 | `POST /api/screen` | `{"id": "<name>", "follow": false}` | Network | Turn one screen off (`true`: on again). `404` for a screen Matchy has not seen. |
 | `POST /api/screen/forget` | `{"id": "<name>"}` | Panel | Drop a screen from the list until it asks again. |
 
-For example, a Home Assistant `rest_command` that pauses the rotation, and one that gives the
-picture on screen a heart (the id comes from `current.json`; a one-tap toggle for a wall tablet is in
-the Home Assistant client recipe in the repository):
+With `mqtt_enabled` on, Home Assistant has entities for next, pause, how often and the screens (see
+*Home Assistant entities*), so none of this is needed there. Otherwise, for example, a Home Assistant
+`rest_command` that pauses the rotation, and one that gives the picture on screen a heart (the id comes
+from `current.json`; a one-tap toggle for a wall tablet is in the Home Assistant client recipe in the
+repository):
 
 ```yaml
 rest_command:
@@ -561,6 +600,12 @@ The gallery page draws the buttons a viewer may not use as disabled, with the re
 - An API key you enter for a captioner is written to a file inside the add-on's own data directory
   at mode 600 and re-written on every start. It never appears in the generated config file or in
   the log. Like every add-on option it is also in Home Assistant's own `options.json` for the add-on.
+  The MQTT broker password Home Assistant hands the add-on is kept the same way.
+- Over MQTT, anyone who can publish to your broker can press Next, pause, change how often and turn
+  screens on or off: the same things as the Network tier, and nothing more (no hide, no caption
+  edits). The broker's own login is what protects it. A made-up screen name slipped into the Screens
+  list (the known gap above) gets a switch in Home Assistant like any other screen, until you
+  **Forget** it.
 - The engine runs as **root inside its container**, as official add-ons do; the Supervisor offers no
   option to change that, and Matchy does not drop privileges itself. `/media` and `/share` are
   mounted read-only, and the engine process is started without the Supervisor token (the start
@@ -574,7 +619,8 @@ add-on (`backup: hot`, the render cache excluded):
 | Path | What |
 | :--- | :--- |
 | `config.json` | Generated from the options on every start. |
-| `secrets/captioner-<n>.key` | Captioner keys, mode 600. |
+| `secrets/captioner-<n>.key`, `secrets/mqtt.key` | Captioner keys and the MQTT broker password, mode 600. |
+| `mqtt.json` | The retained MQTT topics published so far, so they can be removed when MQTT is turned off. |
 | `state.json` | What is on screen, the shuffle bag, hidden and loved ids, the panel's rotation choice, whether quiet hours hold the picture, history. |
 | `screens.json` | The Screens list: on or off, first and last seen (last seen is written at most every 5 minutes). |
 | `library/<id>.json` | One sidecar per picture: the caption, its `tags`, and where it came from, the captioner's `subject` box and the `focus` point (`{"x", "y", "source", "sha256"}`, `source` = `hand`, `model` or `auto`), the picture's colours (`colours`: `palette`, `accent`, `gnome_accent`, the source hash and the method version they were computed with), and the kids caption in `kids_*` fields (`kids_blurb`; `"kids_edited": true` for one written by hand). A hand edit here (set `"edited": true`) is picked up within a minute. A sidecar without a `tags` key is queued for a tag-only request (`tags_failed_at` and `tags_error` after a failed one, retried like a failed caption). |
@@ -629,6 +675,13 @@ Raise it if your screens are bigger than 4K, and remember a bigger master costs 
 the `ETag`; clients that use `/img/<id>/<rev>/...` URLs must re-read `current.json` to learn the new
 id. The sidebar panel does both for you.
 
+**No Matchy device in Home Assistant.** `mqtt_enabled` must be on and the Mosquitto broker add-on
+installed and started; the add-on log then says `mqtt: connected`. `no MQTT broker is set up` means
+the Supervisor has no broker to offer (start Mosquitto, then restart Matchy); `connection refused:
+bad user name or password` means the login the Supervisor handed out is not accepted, which a
+restart of both add-ons usually settles. A device whose image entity stays empty cannot fetch the
+picture: set `mqtt_image_url` to an address Home Assistant can reach.
+
 **Slow first start.** Expected: see *First run*. The panel answers straight away and fills in when
 the scan finishes.
 
@@ -681,13 +734,18 @@ generates, with its defaults:
   "daily": {"enabled": false},
   "art_sources": {"aic": {"enabled": false, "per_day": 3, "min_px": 2560},
                   "met": {"enabled": false, "per_day": 3, "min_px": 2560},
-                  "potd": {"enabled": false, "per_day": 1, "min_px": 2560}}
+                  "potd": {"enabled": false, "per_day": 1, "min_px": 2560}},
+  "mqtt": {"enabled": false, "host": "<broker>", "port": 1883, "username": "", "password": "",
+           "base_url": "http://<matchy-host>:8160"}
 }
 ```
 
 The add-on writes a captioner's key to a file and passes `api_key_file` instead of `api_key`; either
-works here. Leave `location` out and Day & night changes at 07:00 and 19:00. Leave `quiet_hours` out
-(or `{}`) for no quiet hours. Times are local to the container, so set `TZ` (for example `-e TZ=Europe/London`) or they are UTC.
+works here, and the same goes for the broker's `password` and `password_file`. Leave `location` out
+and Day & night changes at 07:00 and 19:00. Leave `quiet_hours` out (or `{}`) for no quiet hours. Times
+are local to the container, so set `TZ` (for example `-e TZ=Europe/London`) or they are UTC. For the Home
+Assistant entities, set `mqtt.enabled`, the broker's details and `base_url` (the address Home Assistant can
+fetch pictures from); `ssl` is not supported, so use the broker's plain port.
 For the weather, the engine reads `mood.weather_entity` from Home Assistant's REST API: inside the
 add-on through the Supervisor (`mood.api_url` defaults to `http://supervisor/core/api`, with the token
 from its environment); elsewhere set `mood.api_url` to `http://<your Home Assistant address>:8123/api`
@@ -712,6 +770,9 @@ Keys the engine understands but the add-on does not expose:
   most); `potd.days_back` (7) and `potd.language` (`en`, for the description);
 - under `mood`: `api_url`, `api_token` (above) and `refresh_minutes` (10, how often the weather
   entity is read; never under a minute);
+- under `mqtt`: `discovery_prefix` (`homeassistant`), `topic_prefix` (`matchy`, also the device
+  identifier and the start of every unique id, so two engines on one broker need two prefixes) and
+  `image_size` (`[1920, 1080]`, the labelled picture the image entity shows);
 - `rotation.caption_priority`, `dedupe.avoid_prefixes` and `ladder_prefer` (`"4k"`), `lan_cidrs`,
   `ingress_peers`, `size_limits`, `bind` and `style` (label proportions, fonts, `jpeg_quality`, and
   `kids_scale`, 1.3, the label scale for `?label=kids` without `s`).

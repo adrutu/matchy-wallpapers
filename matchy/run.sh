@@ -255,6 +255,43 @@ if bashio::config.has_value 'weather_entity'; then
     fi
 fi
 
+# ------------------------------------------------------------------------- MQTT
+# Home Assistant entities by MQTT discovery. The broker comes from the Supervisor's services API
+# (config.yaml: `services: mqtt:want`), which answers once the Mosquitto add-on is set up. The
+# details are passed even when the option is off, so the engine can take an earlier run's retained
+# entities back out of the broker. The password goes to a mode-600 file like a captioner key.
+mqtt_on="$(opt 'mqtt_enabled' false)"
+[[ "${mqtt_on}" == "true" ]] || mqtt_on=false
+readonly mqtt_on
+mqtt='{"enabled": false}'
+if bashio::services.available 'mqtt'; then
+    mqtt_pass_file="${SECRETS_DIR}/mqtt.key"
+    ( umask 077; bashio::services 'mqtt' 'password' > "${mqtt_pass_file}" )
+    chmod 600 "${mqtt_pass_file}"
+    # Where Home Assistant fetches the picture for the image entity: the add-on's own hostname on
+    # the internal network by default (no published port needed), or the address the user gave.
+    if bashio::config.has_value 'mqtt_image_url'; then
+        mqtt_base="$(bashio::config 'mqtt_image_url')"
+    else
+        mqtt_base="http://$(bashio::addon.hostname):${PORT}"
+    fi
+    # Only numbers and booleans may reach --argjson (see int above).
+    mqtt_port="$(bashio::services 'mqtt' 'port')"
+    [[ "${mqtt_port}" =~ ^[0-9]+$ ]] || mqtt_port=1883
+    mqtt_ssl="$(bashio::services 'mqtt' 'ssl')"
+    [[ "${mqtt_ssl}" == "true" ]] || mqtt_ssl=false
+    mqtt="$(jq -nc \
+        --argjson on "${mqtt_on}" \
+        --arg host "$(bashio::services 'mqtt' 'host')" \
+        --argjson port "${mqtt_port}" \
+        --arg user "$(bashio::services 'mqtt' 'username')" \
+        --argjson ssl "${mqtt_ssl}" \
+        --arg pf "${mqtt_pass_file}" --arg base "${mqtt_base%/}" \
+        '{enabled: $on, host: $host, port: $port, username: $user, password_file: $pf, ssl: $ssl, base_url: $base}')"
+elif [[ "${mqtt_on}" == "true" ]]; then
+    bashio::log.warning "mqtt_enabled is on but no MQTT broker is set up in Home Assistant (install and start the Mosquitto broker add-on); no entities until then."
+fi
+
 # ----------------------------------------------------------------- write config
 jq -n \
     --argjson port "${PORT}" \
@@ -284,6 +321,7 @@ jq -n \
     --argjson palette_enabled "${palette_on}" \
     --argjson location "${location}" \
     --argjson mood "${mood}" \
+    --argjson mqtt "${mqtt}" \
     '{
         port: $port,
         data_dir: $data_dir,
@@ -310,14 +348,15 @@ jq -n \
             max_words: $caption_max_words,
             kids: {enabled: $caption_kids}
         },
-        palette: {enabled: $palette_enabled}
+        palette: {enabled: $palette_enabled},
+        mqtt: $mqtt
      } | del(..|nulls)' > "${CONFIG_FILE}.tmp"
 mv "${CONFIG_FILE}.tmp" "${CONFIG_FILE}"
 
 export WE_CONFIG="${CONFIG_FILE}"
 export WE_DATA_DIR="${DATA_DIR}"
 
-bashio::log.info "Matchy Wallpapers: port ${PORT}, ${usable_folders} source folder(s), ${art_enabled} art source(s), captions ${captions_on}, ${captioner_count} captioner(s)."
+bashio::log.info "Matchy Wallpapers: port ${PORT}, ${usable_folders} source folder(s), ${art_enabled} art source(s), captions ${captions_on}, ${captioner_count} captioner(s), MQTT entities ${mqtt_on}."
 if [[ "${captions_on}" == "true" ]] && [[ "${captioner_count}" -eq 0 ]]; then
     bashio::log.warning "Captions are on but no captioner is configured: wallpapers will rotate without gallery labels. Add a captioner, or set caption_enabled to false. See DOCS.md."
 fi

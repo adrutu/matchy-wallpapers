@@ -35,6 +35,8 @@ and serves your pictures on your own network.
   dashboard theme or the lights can follow it.
 - **A sidebar panel** in Home Assistant: next, pause, show any picture now, hide one, edit or redo a
   caption.
+- **Home Assistant entities**, optional, over MQTT: the picture on screen as an image entity, its
+  title and caption, Next and Pause, how often, and a switch per screen. No YAML.
 
 <p align="center"><img src="docs/images/label.jpg" alt="The gallery label close up: title, place, credit and a short blurb" width="560"></p>
 

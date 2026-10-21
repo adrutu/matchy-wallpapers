@@ -208,6 +208,18 @@ configuration:
   daily_image_url:
     name: Picture of the day (image)
     description: Optional. The image that goes with the details above.
+  mqtt_enabled:
+    name: Home Assistant entities
+    description: >-
+      Create a Matchy Wallpapers device in Home Assistant over MQTT (needs the Mosquitto broker
+      add-on): the picture on screen, its title and caption, Next, Pause, how often, and a switch
+      per screen. Turning it off removes them again.
+  mqtt_image_url:
+    name: Picture address for Home Assistant
+    description: >-
+      Optional. Where Home Assistant fetches the picture for the image entity, such as
+      http://<your Home Assistant address>:<published port>. Leave empty to use the add-on's own
+      address inside Home Assistant.
 network:
   8160/tcp: >-
     For screens other than the sidebar panel: desktops, wall tablets, dashboard backgrounds.
