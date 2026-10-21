@@ -213,13 +213,54 @@ the gallery blurb; so does a kids satellite while a picture has no kids caption 
 
 ## 4. With MQTT entities
 
-Matchy does not publish MQTT entities yet. When it does, the recipe above stays the same shape and
-three things change: the speech templates read the picture's attributes from the MQTT sensor instead
-of `sensor.matchy_feed`; **Next** and **Love** press the MQTT buttons (`button.press`) and
-**Pause**/**Resume** turn the rotation switch off and on (`switch.turn_off`, `switch.turn_on`)
-instead of calling `rest_command`s; and the `homeassistant.update_entity` steps go, because MQTT
-pushes every change. Until then, and on any install without an MQTT broker, the REST recipe above
-is the one to use.
+With `mqtt_enabled` on (see *Home Assistant entities* in [DOCS.md](../../matchy/DOCS.md#home-assistant-entities)),
+the same sentences file works and the `intent_script` gets simpler: the answers read
+`sensor.matchy_wallpapers_title` (its state is the title; `place` and `blurb` are attributes), the
+actions press the MQTT buttons and flip the pause switch, and no `rest_command` or
+`homeassistant.update_entity` is needed, because MQTT pushes every change.
+
+```yaml
+intent_script:
+  MatchyWhatsOnTheWall:
+    speech:
+      text: >-
+        {%- set s = 'sensor.matchy_wallpapers_title' -%}
+        {%- if not has_value(s) -%}
+          I can't reach the wallpaper right now.
+        {%- else -%}
+          {%- set place = state_attr(s, 'place') -%}
+          This is {{ states(s) }}{% if place %}, {{ place }}{% endif %}.
+          {{ state_attr(s, 'blurb') or '' }}
+        {%- endif -%}
+  MatchyNext:
+    action:
+      - action: button.press
+        target: {entity_id: button.matchy_wallpapers_next}
+      - delay: "00:00:02"       # the new title arrives over MQTT within a moment
+    speech:
+      text: "Now showing {{ states('sensor.matchy_wallpapers_title') }}."
+  MatchyPause:
+    action:
+      - action: switch.turn_on
+        target: {entity_id: switch.matchy_wallpapers_pause}
+    speech:
+      text: "Holding {{ states('sensor.matchy_wallpapers_title') }} on the wall."
+  MatchyResume:
+    action:
+      - action: switch.turn_off
+        target: {entity_id: switch.matchy_wallpapers_pause}
+    speech:
+      text: "The wallpaper will change again."
+  MatchyLove:
+    action:
+      - action: button.press
+        target: {entity_id: button.matchy_wallpapers_love}
+    speech:
+      text: "Noted. {{ states('sensor.matchy_wallpapers_title') }} is marked loved."
+```
+
+If you renamed the device or its entities, use your entity ids. On an install without an MQTT
+broker, the REST recipe above is the one to use.
 
 ## Checking
 
