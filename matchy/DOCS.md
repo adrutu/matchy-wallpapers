@@ -309,7 +309,7 @@ changes at the reveal, so a client that sends `If-None-Match` gets the label as 
 `/current.json?reveal=<seconds>` (same number) adds `reveal_at` and `revealed`, and its `version` ends
 in `.veiled` until the reveal, so a client that refetches when `version` changes (a Home Assistant
 `image` entity, for example) picks the label up too. The Wallpanel screensaver recipe in
-[docs/clients/home-assistant.md](https://github.com/adrutu/matchy-wallpapers/blob/main/docs/clients/home-assistant.md#5-guess-where-on-a-wallpanel-screensaver)
+[docs/clients/home-assistant.md](https://github.com/adrutu/matchy-wallpapers/blob/main/docs/clients/home-assistant.md#6-guess-where-on-a-wallpanel-screensaver)
 sets this up for one tablet.
 
 ### Home Assistant entities
@@ -322,9 +322,9 @@ come out as below; rename them as you like.
 | Entity | What it is |
 | :--- | :--- |
 | `image.matchy_wallpapers_now_showing` | The labelled picture on screen, 1920x1080. Home Assistant fetches it itself, so an `https://` dashboard shows it without mixed content, and a screensaver that follows an image entity changes with it. |
-| `sensor.matchy_wallpapers_title` | The title (the id until a picture has a caption). Attributes: `id`, `rev`, `place`, `credit`, `blurb`, `since`, `next_change`, `captioned`, `quiet` (in quiet hours), and the picture's `loved` mark and `palette`/`accent` colours when those features are present. |
+| `sensor.matchy_wallpapers_title` | The title (the id until a picture has a caption). Attributes: `id`, `rev`, `place`, `credit`, `blurb`, `since`, `next_change`, `captioned`, `quiet` (in quiet hours), and the picture's `loved` mark and `palette`/`accent` colours. |
 | `button.matchy_wallpapers_next` | Next picture. |
-| `button.matchy_wallpapers_love` | Mark the picture on screen loved. Only there when the favourites feature is in this version. |
+| `button.matchy_wallpapers_love` | Mark the picture on screen loved. |
 | `switch.matchy_wallpapers_pause` | Pause the rotation (on) or let it run (off). |
 | `select.matchy_wallpapers_rotation` | How often: the panel slider's stops (*Every 15 minutes* to *Every 12 hours*, *Day & night*) plus *Add-on options*, which goes back to the configured window. A custom window set in the panel shows as unknown. |
 | `switch.matchy_wallpapers_screen_<name>` | One per screen in the Screens list: on while it follows Matchy. It appears when the screen first asks for a picture and goes when you **Forget** it. |

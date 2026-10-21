@@ -1,6 +1,32 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 (unreleased, on trial at home)
+
+New features, all documented in DOCS.md; the client recipes are in `docs/clients`.
+
+- **Quiet hours:** `quiet_hours` holds the picture overnight and dims `/current/...` (`start`, `end`,
+  `hold`, `dim`). Off by default.
+- **Focus points:** each screen's crop is centred on the picture's subject. Click a thumbnail in the
+  panel to set one; with `focus_auto` on, the captioner or a quick look at the picture finds one.
+- **Open-access art:** new pictures every day from the Art Institute of Chicago
+  (`art_institute_chicago`), The Met (`the_met`) and Wikimedia's Picture of the Day
+  (`wikimedia_picture_of_the_day`). Each is off by default.
+- **Gentle motion:** `?pad=1.0`–`1.3` serves a larger picture for a slow pan and zoom, with the label
+  kept on screen. The Home Assistant, Wallpanel and Homepage recipes drift and crossfade.
+- **Kids labels:** with `caption_kids` on, `?label=kids` serves a simpler blurb in bigger type.
+- **Guess where?:** `?reveal=<seconds>` shows the clean picture first and the label later.
+- **Loved pictures:** a heart in the panel, or `POST /api/love` from any client on your network. A loved
+  picture comes up `love_weight` times as often (3 by default).
+- **Voice:** a Home Assistant Assist recipe for "what's on the wall?", "next wallpaper" and a heart by
+  voice (`docs/clients/home-assistant-assist.md`).
+- **Colour match:** `palette`, `accent` and `gnome_accent` for every picture, in `/current.json` and
+  `/library.json` (`palette_enabled`, on by default). The GNOME follower can set the desktop accent
+  (off by default). The Home Assistant recipe can tint the theme and any lights that are already on.
+- **Mood-aware picks:** `mood: light` or `strong` lets the time of day, the season and
+  `weather_entity` choose the next picture, using tags you can edit in the panel. Off by default.
+- **Home Assistant entities:** with `mqtt_enabled` on and the Mosquitto broker running, Matchy creates
+  its own device by MQTT discovery: now showing, title, next, love, pause, rotation, one switch per
+  screen and the caption queue. Off by default.
 
 Bug fixes from a review of the add-on; each has a test in `tests/run_tests.py`.
 
