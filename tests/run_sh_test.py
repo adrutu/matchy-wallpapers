@@ -124,6 +124,25 @@ if cfg:
     check("full: no nulls", not has_null(cfg))
     check("key never logged", "s3cr3t-key" not in err)
 
+# quiet hours: off by default (an empty object), only the fields set, an explicit hold: false kept
+rc, cfg, err, data, tmp = run(dict(base)); temps.append(tmp)
+check("quiet hours: default is an empty object", rc == 0 and cfg and cfg.get("quiet_hours") == {}, cfg and cfg.get("quiet_hours"))
+rc, cfg, err, data, tmp = run(dict(base, quiet_hours={})); temps.append(tmp)
+check("quiet hours: {} stays off", rc == 0 and cfg and cfg.get("quiet_hours") == {}, cfg and cfg.get("quiet_hours"))
+rc, cfg, err, data, tmp = run(dict(base, quiet_hours={"start": "23:00", "end": "07:00", "hold": False, "dim": 0.6}))
+temps.append(tmp)
+check("quiet hours: every field", rc == 0 and cfg and cfg.get("quiet_hours") == {"start": "23:00", "end": "07:00",
+                                                                                  "hold": False, "dim": 0.6},
+      (cfg and cfg.get("quiet_hours"), err[-300:]))
+rc, cfg, err, data, tmp = run(dict(base, quiet_hours={"start": "22:30", "end": "6:15", "hold": True, "dim": 1}))
+temps.append(tmp)
+check("quiet hours: hold true, dim 1", rc == 0 and cfg and cfg.get("quiet_hours") == {"start": "22:30", "end": "6:15",
+                                                                                      "hold": True, "dim": 1},
+      (cfg and cfg.get("quiet_hours"), err[-300:]))
+rc, cfg, err, data, tmp = run(dict(base, quiet_hours={"start": "23:00", "end": "07:00", "dim": "lots"})); temps.append(tmp)
+check("quiet hours: a bad dim is dropped with a warning", rc == 0 and cfg and cfg.get("quiet_hours") == {
+    "start": "23:00", "end": "07:00"} and "quiet_hours.dim" in err, (cfg and cfg.get("quiet_hours"), err[-300:]))
+
 # Home Assistant's location (Day & night rotation), through a fake curl on PATH; sleep made instant
 fake = tempfile.mkdtemp(prefix="matchy-bin-"); temps.append(fake)
 def fake_bin(curl_body):

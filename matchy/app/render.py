@@ -14,7 +14,7 @@ import re
 import threading
 import warnings
 
-from PIL import Image, ImageDraw, ImageFilter, ImageFont, features
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, features
 
 from library import log
 
@@ -247,6 +247,11 @@ class Renderer:
             tile = self.label(master, meta, mw, mh, s) if i == primary else self.cover(master, mw, mh)
             canvas.paste(tile, (x, y))
         return canvas
+
+    @staticmethod
+    def dim(img, amount):
+        """img darkened by amount: 0 leaves it as it is, 1 is black. Quiet hours, label and all."""
+        return ImageEnhance.Brightness(img).enhance(1 - amount) if amount else img
 
     def encode(self, img, quality=None):
         buf = io.BytesIO()
