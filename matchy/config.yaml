@@ -24,7 +24,9 @@ panel_icon: mdi:image-frame
 panel_title: Matchy Wallpapers
 
 # run.sh reads Home Assistant's latitude/longitude (GET /core/api/config) once at start, so the
-# Day & night rotation can change at sunrise and sunset. Nothing else uses the API.
+# Day & night rotation and the mood-aware picks know sunrise and sunset; and with `weather_entity`
+# set, the engine reads that entity's state (GET /core/api/states/<entity>) every ten minutes for
+# the mood-aware picks. Nothing else uses the API.
 homeassistant_api: true
 
 # The container always listens on 8160; the user picks the host port in the UI.
@@ -68,6 +70,7 @@ options:
   caption_min_words: 30
   caption_max_words: 45
   captioners: []
+  mood: "off"   # quoted: a bare off is YAML for false
 
 schema:
   source_folders:
@@ -98,6 +101,8 @@ schema:
       model: str
       api_key: "password?"
       timeout: "int(5,600)?"
+  mood: "list(off|light|strong)"
+  weather_entity: "str?"
   remote_manifest_url: "url?"
   daily_json_url: "url?"
   daily_image_url: "url?"

@@ -15,6 +15,7 @@ import urllib.request
 
 from PIL import Image
 
+import mood
 from library import log
 
 UK_SPELLING = {
@@ -191,12 +192,26 @@ class Captioner:
             "Never guess a location.\n"
             "- Do not repeat the title or the credit, do not mention the photographer, and do not say 'image', "
             "'photo', 'picture' or 'wallpaper'.\n"
-            'Reply with JSON only: {"title": "...", "blurb": "..."}'
+            "- %s\n"
+            'Reply with JSON only: {"title": "...", "blurb": "...", "tags": ["...", "..."]}'
         ) % (facts_txt, title_rule, min(c["max_words"] - 4, c["min_words"] + 6), c["max_words"],
-             (c["min_words"] + 2 * c["max_words"]) // 3, lang, sp)
+             (c["min_words"] + 2 * c["max_words"]) // 3, lang, sp, self.tags_rule())
         if feedback:
             text += "\n\nYour previous answer was rejected: %s. Fix that and answer again." % feedback
         return text
+
+    @staticmethod
+    def tags_rule():
+        return ('"tags": %d to %d words from this list only, the ones true of the picture (time of day, weather, '
+                'season, place, feel): %s. Leave out any you are not sure of.'
+                % (mood.MIN_TAGS, mood.MAX_TAGS, ", ".join(mood.TAGS)))
+
+    def tags_prompt(self, meta):
+        """The tag-only request, for pictures captioned before tags existed (the backfill)."""
+        text = "Describe this picture with %s\n" % self.tags_rule()
+        if meta.get("abstract"):
+            text += "It is digital/illustrated desktop art: tag what it evokes.\n"
+        return text + 'Reply with JSON only: {"tags": ["...", "..."]}'
 
     # ---------- transport ----------
     def body(self, ep, prompt, data_url):
@@ -276,7 +291,10 @@ class Captioner:
         if not m:
             raise ValueError("no JSON object")
         obj = json.loads(m.group(0))
-        return str(obj.get("title", "")).strip().strip('"'), " ".join(str(obj.get("blurb", "")).split())
+        if not isinstance(obj, dict):
+            raise ValueError("no JSON object")
+        return (str(obj.get("title", "")).strip().strip('"'), " ".join(str(obj.get("blurb", "")).split()),
+                mood.clean_tags(obj.get("tags")))
 
     def check(self, meta, title, blurb):
         c = self.cfg
@@ -301,6 +319,20 @@ class Captioner:
 
     def caption(self, meta, master_path):
         """Return (sidecar_fields, endpoint) or raise RuntimeError when every endpoint failed/declined."""
+        return self._with_endpoints(master_path, lambda ep, data_url: self._caption_with(ep, meta, data_url))
+
+    def tags(self, meta, master_path):
+        """Return (tags, endpoint): the tag-only request. Like caption(), every endpoint failed raises
+        RuntimeError; an answer without usable tags is an empty list, not an error."""
+        def ask(ep, data_url):
+            t = time.time()
+            tags = self.parse(self.call(ep, self.tags_prompt(meta), data_url))[2]
+            log("tags via %s %.1fs: %s" % (ep["name"], time.time() - t, ", ".join(tags) or "none"))
+            return tags
+        return self._with_endpoints(master_path, ask)
+
+    def _with_endpoints(self, master_path, ask):
+        """ask(endpoint, image data URL) on each available endpoint in turn, until one answers."""
         c = self.cfg
         data_url = image_data_url(master_path, c.get("image_px", 1024))
         eps = self.available()
@@ -309,7 +341,7 @@ class Captioner:
         last_err = None
         for ep in eps:
             try:
-                return self._caption_with(ep, meta, data_url), ep
+                return ask(ep, data_url), ep
             except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as e:
                 mins = ep.get("down_minutes", 10)
                 self.down_until[ep["name"]] = time.time() + 60 * mins
@@ -332,7 +364,7 @@ class Captioner:
             raw = self.call(ep, self.prompt(meta, feedback), data_url)
             dt = time.time() - t
             try:
-                title, blurb = self.parse(raw)
+                title, blurb, tags = self.parse(raw)
             except ValueError as e:
                 feedback = "it was not valid JSON (%s)" % e
                 log("caption attempt", attempt, "bad JSON from", ep["name"])
@@ -342,10 +374,13 @@ class Captioner:
             if c.get("spelling", "").lower().startswith("brit"):
                 blurb, title = to_uk(blurb), (title if meta.get("title") else to_uk(title))
             problems, words = self.check(meta, title, blurb)
-            log("caption attempt %d via %s %.1fs: %d words%s" % (
-                attempt, ep["name"], dt, words, (" - " + "; ".join(problems)) if problems else ""))
+            log("caption attempt %d via %s %.1fs: %d words, tags %s%s" % (
+                attempt, ep["name"], dt, words, ", ".join(tags) or "none",
+                (" - " + "; ".join(problems)) if problems else ""))
             target = (c["min_words"] + 2 * c["max_words"]) // 3
-            cand = {"title": title, "blurb": blurb, "problems": problems, "words": words, "seconds": round(dt, 1)}
+            # Tags never get a caption rejected: a blurb is worth more, and the tag-only request asks again.
+            cand = {"title": title, "blurb": blurb, "tags": tags, "problems": problems, "words": words,
+                    "seconds": round(dt, 1)}
             if not problems:
                 return cand
             if best is None or len(problems) < len(best["problems"]):

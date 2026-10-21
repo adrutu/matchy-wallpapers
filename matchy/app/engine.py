@@ -19,13 +19,16 @@ import sys
 import threading
 import time
 import traceback
+import urllib.error
 import urllib.parse
+import urllib.request
 from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from PIL import Image
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import mood  # noqa: E402
 import render  # noqa: E402
 from caption import Captioner  # noqa: E402
 from library import Library, log, open_image, read_json, rev_of, write_json  # noqa: E402
@@ -50,6 +53,12 @@ DEFAULTS = {
                 "max_tokens": 300, "temperature": 0.4, "image_px": 1024, "retry_failed_hours": 6,
                 "forbidden_titles": []},
     "overrides": {},
+    # Mood-aware picks: level off (today's shuffle) / light / strong; a Home Assistant weather entity
+    # read every refresh_minutes through api_url (the Supervisor's core API proxy; a plain Home
+    # Assistant /api with a long-lived api_token works outside the add-on). Without an entity, the
+    # time of day and the season still count.
+    "mood": {"level": "off", "weather_entity": "", "api_url": "http://supervisor/core/api", "api_token": "",
+             "refresh_minutes": 10},
     # Home Assistant's Supervisor proxies authenticated ingress sessions from this address
     # (the official add-on guidance is "allow 172.30.32.2; deny all"). A request from here has
     # already been authenticated by Home Assistant, so it is trusted without the LAN check.
@@ -108,6 +117,28 @@ PACE_STOPS = [("Every 15 minutes", 15), ("Every 20 minutes", 20), ("Every half h
               ("Every 2 hours", 120), ("Every 4 hours", 240), ("Every 8 hours", 480), ("Every 12 hours", 720),
               ("Day & night", None)]
 DAYNIGHT_FALLBACK = (7, 19)  # local hours with no location, or on a day the sun never rises or never sets
+WEATHER_STALE_S = 3 * 3600   # a weather reading older than this no longer steers the picks
+
+
+def fetch_weather(api_url, token, entity, timeout=10):
+    """The weather entity's state from Home Assistant's REST API: {"condition", "temperature_c"}.
+    °F is converted; a missing or odd temperature is None. Raises on any failure."""
+    url = api_url.rstrip("/") + "/states/" + urllib.parse.quote(entity, safe="")
+    headers = {"Accept": "application/json"}
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        st = json.loads(r.read(200_000))
+    if not isinstance(st, dict) or not isinstance(st.get("state"), str):
+        raise ValueError("not an entity state")
+    attrs = st.get("attributes") if isinstance(st.get("attributes"), dict) else {}
+    temp = attrs.get("temperature")
+    if isinstance(temp, bool) or not isinstance(temp, (int, float)):
+        temp = None
+    elif "f" in str(attrs.get("temperature_unit", "")).lower():
+        temp = (temp - 32) * 5 / 9
+    return {"condition": st["state"], "temperature_c": temp}
 
 
 def sun_events(lat, lon, day):
@@ -163,6 +194,12 @@ class Engine:
         self.screens = {k: v for k, v in screens.items() if isinstance(v, dict)} if isinstance(screens, dict) else {}
         self.screens_saved = 0.0
         self.screens_full_logged = False
+        self.weather = None        # {"condition", "temperature_c", "at"} from the weather entity
+        self.weather_error = None  # why the last reading failed, for the panel
+        lvl = cfg["mood"].get("level")
+        if lvl not in mood.LEVELS:
+            log("mood: unknown level %r; off (one of %s)" % (lvl, ", ".join(mood.LEVELS)))
+            cfg["mood"]["level"] = "off"
 
     # ---------------- rotation ----------------
     def save_state(self):
@@ -191,13 +228,19 @@ class Engine:
     def rotation_mode(self):
         return "daynight" if (self.state.get("rotation_override") or {}).get("mode") == "daynight" else "minutes"
 
-    def next_sun_change(self, now):
-        """(epoch, name) of the first sunrise or sunset more than a minute after now. With no location, or
-        on a day the sun never rises or never sets, DAYNIGHT_FALLBACK's local hours stand in. Yesterday to
-        the day after tomorrow in UTC dates, so no time zone can skip one."""
+    def latitude(self):
         loc = self.cfg.get("location") or {}
         lat, lon = loc.get("latitude"), loc.get("longitude")
         known = all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in (lat, lon))
+        return lat if known else None
+
+    def sun_timeline(self, now):
+        """Sunrises and sunsets as (epoch, name) from yesterday to the day after tomorrow in UTC dates, so
+        no time zone can skip one. With no location, or on a day the sun never rises or never sets,
+        DAYNIGHT_FALLBACK's local hours stand in, named morning and evening."""
+        loc = self.cfg.get("location") or {}
+        lat, lon = loc.get("latitude"), loc.get("longitude")
+        known = self.latitude() is not None
         today_utc = dt.datetime.fromtimestamp(now, dt.timezone.utc).date()
         today_local = dt.datetime.fromtimestamp(now).date()
         events = []
@@ -209,7 +252,43 @@ class Engine:
             d = today_local + dt.timedelta(days=offset)
             events += [(time.mktime((d.year, d.month, d.day, h, 0, 0, 0, 0, -1)), name)
                        for h, name in zip(DAYNIGHT_FALLBACK, ("morning", "evening"))]
-        return min(e for e in events if e[0] > now + 60)
+        return sorted(events)
+
+    def next_sun_change(self, now):
+        """(epoch, name) of the first sunrise or sunset more than a minute after now."""
+        return min(e for e in self.sun_timeline(now) if e[0] > now + 60)
+
+    def sun_around(self, now):
+        """(the last sun event up to now, the next one after it)."""
+        events = self.sun_timeline(now)
+        return max(e for e in events if e[0] <= now), min(e for e in events if e[0] > now)
+
+    # ---------------- mood ----------------
+    def mood_level(self):
+        return self.cfg["mood"].get("level") or "off"
+
+    def weather_now(self, now=None):
+        """The last weather reading while it is fresh, else None."""
+        w = self.weather
+        return w if w and (now or time.time()) - w.get("at", 0) < WEATHER_STALE_S else None
+
+    def mood_context(self, now=None):
+        """The tags of the moment: time of day (from the sun, as Day & night sees it), the season, and the
+        weather entity's last reading. Computed on the fly: it is a few sun positions."""
+        now = now or time.time()
+        return mood.context_tags(now, self.sun_around(now), dt.datetime.fromtimestamp(now).date(),
+                                 self.weather_now(now), self.latitude())
+
+    def mood_view(self):
+        """For library.json and the panel: the level, the moment, and the weather reading behind it."""
+        lvl = self.mood_level()
+        m = self.cfg["mood"]
+        w = self.weather_now()
+        out = {"level": lvl, "context": self.mood_context() if lvl != "off" else [],
+               "weather_entity": m.get("weather_entity") or "", "weather": None, "weather_error": self.weather_error}
+        if w:
+            out["weather"] = {"condition": w["condition"], "temperature_c": w["temperature_c"], "at": iso(w["at"])}
+        return out
 
     def interval(self):
         if self.rotation_mode() == "daynight":
@@ -223,6 +302,7 @@ class Engine:
         if not el:  # cold start before the first scan, or everything hidden
             return None
         st = self.state
+        st.pop("mood_pick", None)
         st["priority"] = [i for i in st["priority"] if i in el]
         if st["priority"]:
             return st["priority"].pop(0)
@@ -234,7 +314,16 @@ class Engine:
                 bag.append(bag.pop(0))
             st["bag"] = bag
             log("rotation: new shuffle of %d" % len(bag))
-        return st["bag"].pop(0) if st["bag"] else None
+        if not st["bag"]:
+            return None
+        k = 0
+        if self.mood_level() != "off":
+            # The moment's tags pull a matching picture forward in the shuffle; the bag itself is
+            # untouched, so every picture still comes up once per shuffle (mood.choose).
+            ctx = self.mood_context()
+            k = mood.choose(st["bag"], self.lib.tags, ctx, self.mood_level(), exclude)
+            st["mood_pick"] = {"context": ctx, "matched": sorted(set(ctx) & set(self.lib.tags(st["bag"][k])))}
+        return st["bag"].pop(k)
 
     def _show(self, iid, now, reason, picked=False):
         """Put iid on screen. Caller holds self.lock. `picked` marks a choice made by hand,
@@ -242,8 +331,10 @@ class Engine:
         self.state.update(current=iid, since=now, next_change=now + self.interval(), picked=picked)
         self.state["history"] = ([{"id": iid, "at": int(now)}] + self.state["history"])[:50]
         self.save_state()
-        log("rotate (%s) -> %s, next at %s%s" % (reason, iid, iso(self.state["next_change"]),
-                                                 " (rotation paused)" if self.state.get("paused") else ""))
+        mp = self.state.get("mood_pick")
+        log("rotate (%s) -> %s%s, next at %s%s" % (
+            reason, iid, (" [mood: %s]" % (", ".join(mp["matched"]) or "no match")) if mp else "",
+            iso(self.state["next_change"]), " (rotation paused)" if self.state.get("paused") else ""))
 
     def rotate(self, reason):
         with self.lock:
@@ -298,6 +389,7 @@ class Engine:
         with self.lock:
             self.state["bag"] = [i for i in self.state["bag"] if i != iid]
             self.state["priority"] = [i for i in self.state["priority"] if i != iid]
+            self.state.pop("mood_pick", None)
             self._show(iid, time.time(), "picked", picked=True)
 
     def hide(self, iid):
@@ -323,7 +415,8 @@ class Engine:
                 log("back in rotation:", iid)
 
     def set_caption(self, iid, fields):
-        """A caption written by hand. edited: true keeps the captioner off it until a re-caption."""
+        """A caption written by hand. edited: true keeps the captioner off it until a re-caption.
+        `fields` may carry `tags` (a list from mood.TAGS); without it the tags stay as they were."""
         it = self.lib.items.get(iid)  # one lookup: a rescan can drop the item at any moment
         if not it:
             raise Refused(404, "no picture with id %r" % iid)
@@ -460,12 +553,17 @@ class Engine:
             since = self.state.get("since") or time.time()
             nxt = self.state.get("next_change") or since
             paused = bool(self.state.get("paused"))
+            tags = self.lib.tags(cur)
+            matched = list((self.state.get("mood_pick") or {}).get("matched") or []) if self.mood_level() != "off" else []
         rev = d["rev"]
         return {
             "id": cur, "rev": rev, "version": "%s.%s.%d" % (cur, rev, int(since)),
             "title": d["title"], "place": d["place"], "credit": d["credit"], "blurb": d["blurb"],
             "since": iso(since), "next_change": None if paused else iso(nxt), "paused": paused,
             "captioned": self.lib.status(cur) == "captioned",
+            # Mood-aware picks: the picture's tags, and which of them matched the moment when it was
+            # picked ([] with mood off, for a hand-picked picture, or when nothing matched).
+            "tags": tags, "mood_match": matched,
             # Root-absolute by default, so a direct-port client can use them as-is. Behind Home
             # Assistant ingress the handler passes the ingress prefix, because the page lives
             # under /api/hassio_ingress/<token>/ there.
@@ -481,8 +579,10 @@ class Engine:
         c, now = self.captioner, time.time()
         if not c:
             return {"configured": False, "enabled": bool(self.cfg["caption"].get("enabled", True)),
-                    "busy": None, "waiting": 0, "endpoints": []}
-        return {"configured": True, "enabled": True, "busy": self.caption_busy, "waiting": len(self.caption_queue()),
+                    "busy": None, "waiting": 0, "tagging": 0, "endpoints": []}
+        captions, tagging = self.queues()
+        return {"configured": True, "enabled": True, "busy": self.caption_busy, "waiting": len(captions),
+                "tagging": len(tagging),
                 "endpoints": [{"name": ep["name"],
                                "skipped_until": iso(c.down_until[ep["name"]]) if c.down_until.get(ep["name"], 0) > now else None}
                               for ep in c.endpoints]}
@@ -495,7 +595,7 @@ class Engine:
             d = lib.display(iid)
             sc = lib.sidecars.get(iid) or {}
             out.append({"id": iid, "rev": d["rev"], "status": lib.status(iid), "title": d["title"],
-                        "place": d["place"], "credit": d["credit"], "blurb": d["blurb"],
+                        "place": d["place"], "credit": d["credit"], "blurb": d["blurb"], "tags": lib.tags(iid),
                         "caption_model": sc.get("caption_model", ""), "caption_at": sc.get("caption_at", ""),
                         "edited": bool(sc.get("edited")), "hidden": iid in hidden, "recaption_queued": iid in recap,
                         "error": (lib.skipped[iid][1] if iid in lib.skipped
@@ -508,7 +608,7 @@ class Engine:
             at, name = self.next_sun_change(time.time())
             rot["next_sun"] = {"at": iso(at), "event": name}
         return {"items": out, "current": self.state.get("current"), "paused": bool(self.state.get("paused")),
-                "rotation": rot,
+                "rotation": rot, "mood": self.mood_view(),
                 "captioning": self.caption_busy, "captioner": self.captioner_view()}
 
     # ---------------- background workers ----------------
@@ -560,19 +660,22 @@ class Engine:
                 self.wake.set()
             time.sleep(60)
 
-    def caption_queue(self):
+    def queues(self):
+        """(ids waiting for a caption, in order; captioned ids waiting for tags, the backfill)."""
         lib = self.lib
         retry = 3600 * float(self.cfg["caption"].get("retry_failed_hours", 6))
         prio = self.cfg["rotation"].get("caption_priority", [])
         now = time.time()
         # Asked for from the panel: first, whatever their status, and even over a hand edit.
         recap = [i for i in self.state["recaption"] if i in lib.items]
-        todo = []
+        todo, tagging = [], []
         for iid, it in lib.items.items():
             if iid in recap:
                 continue
             stt = lib.status(iid)
             if stt == "captioned":
+                if iid not in lib.skipped and lib.needs_tags(iid, retry):
+                    tagging.append((it["order"], iid))
                 continue
             sc = lib.sidecars.get(iid) or {}
             if sc.get("edited"):
@@ -582,7 +685,35 @@ class Engine:
             rank = (0, prio.index(iid)) if iid in prio else (1, 0) if it["kind"] == "daily" else (2, 0)
             todo.append((rank, it["kind"] != "daily", it["meta"].get("date", "") and -int(it["meta"]["date"]) or 0, it["order"], iid))
         todo.sort()
-        return recap + [t[-1] for t in todo]
+        tagging.sort()
+        return recap + [t[-1] for t in todo], [t[-1] for t in tagging]
+
+    def caption_queue(self):
+        """Everything the caption worker has to do, captions first: pictures captioned before tags
+        existed get their tags at the back, one tag-only request each."""
+        captions, tagging = self.queues()
+        return captions + tagging
+
+    def tag_picture(self, iid, it):
+        """The tag-only request for a captioned picture. Returns the endpoint's gap."""
+        try:
+            master = self.lib.ensure_master(iid)
+            self.caption_busy = iid
+            tags, ep = self.captioner.tags(it["meta"], master)
+            self.lib.set_tags(iid, tags)
+            log("tagged %s: %s" % (iid, ", ".join(tags) or "nothing fitted"))
+            return float(ep.get("gap_seconds", 0))
+        except RuntimeError as e:
+            if "no caption endpoint available" in str(e) or not any(ep for ep in self.captioner.available()):
+                gap = self.captioner.retry_in()
+                log("tags", iid, "postponed %ds:" % gap, e)
+                return gap
+            self.lib.set_tags(iid, failed=str(e))
+            log("tags", iid, "failed:", e)
+        except Exception as e:  # noqa: BLE001 - one picture's failure must not stop the queue
+            self.lib.set_tags(iid, failed=repr(e))
+            log("tags", iid, "failed:", repr(e))
+        return 30
 
     def _recaption_done(self, iid):
         with self.lock:
@@ -604,6 +735,14 @@ class Engine:
             iid = queue[0]
             it = self.lib.items.get(iid)
             recap = iid in self.state["recaption"]
+            if not recap and self.lib.status(iid) == "captioned":  # the tag backfill: the caption stays
+                try:
+                    gap = self.tag_picture(iid, it)
+                finally:
+                    self.caption_busy = None
+                self.caption_wake.wait(gap)
+                self.caption_wake.clear()
+                continue
             gap = 30
             try:
                 master = self.lib.ensure_master(iid)
@@ -614,13 +753,16 @@ class Engine:
                       "place": it["meta"].get("place", ""), "credit": it["meta"].get("credit", ""),
                       "blurb": res["blurb"], "caption_model": "%s@%s" % (ep["model"], ep["name"]),
                       "caption_at": iso(time.time()), "caption_seconds": res["seconds"], "edited": False}
+                if res.get("tags"):  # none at all: left out, so the tag-only request asks once more
+                    sc["tags"] = res["tags"]
                 if res.get("accepted_with"):
                     sc["caption_note"] = "; ".join(res["accepted_with"])
                 saved = self.lib.save_sidecar(iid, sc, force=recap)
                 if recap:
                     self._recaption_done(iid)
                 if saved:
-                    log("captioned %s: %s | %s" % (iid, res["title"], res["blurb"]))
+                    log("captioned %s: %s | %s | tags: %s" % (iid, res["title"], res["blurb"],
+                                                              ", ".join(res.get("tags") or []) or "none"))
                     if it["kind"] == "daily":
                         with self.lock:
                             self.state["priority"] = [iid] + [i for i in self.state["priority"] if i != iid]
@@ -658,6 +800,41 @@ class Engine:
         sc.pop("blurb", None)
         self.lib.save_sidecar(iid, sc)
         log("caption", iid, "failed:", err)
+
+    def weather_worker(self):
+        """Read the weather entity every refresh_minutes. A failure keeps the last reading (it steers the
+        picks for WEATHER_STALE_S) and is logged once until it changes or clears."""
+        m = self.cfg["mood"]
+        entity = m.get("weather_entity") or ""
+        if not entity:
+            return
+        if not mood.WEATHER_ENTITY_RE.match(entity):
+            self.weather_error = "not a weather entity id (weather.<name>)"
+            log("mood: weather_entity %r is not a weather entity id (weather.<name>); ignored" % entity)
+            return
+        token = m.get("api_token") or os.environ.get("SUPERVISOR_TOKEN") or ""
+        try:
+            wait = max(60.0, 60 * float(m.get("refresh_minutes") or 10))
+        except (TypeError, ValueError):
+            wait = 600.0
+        while True:
+            try:
+                w = fetch_weather(m.get("api_url") or DEFAULTS["mood"]["api_url"], token, entity)
+                w["at"] = time.time()
+                old = self.weather
+                self.weather = w
+                if self.weather_error:
+                    log("mood: %s read again" % entity)
+                    self.weather_error = None
+                if mood.weather_text(old) != mood.weather_text(w):
+                    log("mood: %s says %s" % (entity, mood.weather_text(w)))
+            except Exception as e:  # noqa: BLE001 - the weather is optional; never stop the thread
+                err = "HTTP %d: %s" % (e.code, e.reason) if isinstance(e, urllib.error.HTTPError) else str(e) or repr(e)
+                if err != self.weather_error:
+                    log("mood: cannot read %s (%s); %s" % (
+                        entity, err, "keeping the last reading for a while" if self.weather else "picks go by the time of day and season"))
+                    self.weather_error = err
+            time.sleep(wait)
 
     # ---------------- rendering + cache ----------------
     def master_image(self, iid):
@@ -1061,6 +1238,13 @@ def arg_caption(a):
         out[k] = v
     if not out["blurb"]:
         raise Refused(400, "blurb required")
+    if "tags" in a:  # optional: left out, the tags stay as they were
+        if not isinstance(a["tags"], list):
+            raise Refused(400, "tags must be a list of words")
+        try:
+            out["tags"] = mood.clean_tags(a["tags"], strict=True)
+        except ValueError as e:
+            raise Refused(400, str(e))
     return out
 
 
@@ -1118,6 +1302,49 @@ def hhmm(stamp):
     return stamp[11:16] if stamp else ""
 
 
+def join_words(words):
+    """'a, b and c'."""
+    words = list(words)
+    return " and ".join(x for x in (", ".join(words[:-1]), words[-1]) if x) if words else ""
+
+
+def why_html(cur, picked, m):
+    """The "Why this one" line under the picture on screen: with mood on, which of its tags matched the
+    moment (or that it was simply its turn); otherwise just its tags, so the words are in view."""
+    esc = html.escape
+    tags = cur.get("tags") or []
+    tagged = ("tagged " + esc(join_words(tags))) if tags else "not tagged yet"
+    if m["level"] == "off":
+        return ('<p class="mut small why">Tags: %s.</p>' % esc(", ".join(tags))) if tags else ""
+    if picked:
+        why = "you picked it. It is %s." % tagged
+    elif cur.get("mood_match"):
+        why = "%s %s the moment (%s)." % (esc(join_words(cur["mood_match"])),
+                                          "fit" if len(cur["mood_match"]) > 1 else "fits",
+                                          esc(", ".join(m["context"])) or "nothing known")
+    else:
+        why = "its turn in the shuffle; it is %s, and the moment is %s." % (tagged, esc(", ".join(m["context"])))
+    return '<p class="mut small why"><b>Why this one:</b> %s</p>' % why
+
+
+def mood_html(m):
+    """The Mood line in the Rotation box: the level, the moment, and what the weather entity said."""
+    esc = html.escape
+    if m["level"] == "off":
+        return ('Mood: <b>off</b>. Set <code>mood</code> to light or strong in the add-on options and the weather, '
+                'the season and the time of day steer which picture comes next.')
+    out = "Mood: <b>%s</b>. The moment: %s." % (esc(m["level"]), esc(", ".join(m["context"])) or "nothing known")
+    if m["weather"]:
+        out += " %s says %s (read at %s)." % (esc(m["weather_entity"]), esc(mood.weather_text(m["weather"])),
+                                               esc(hhmm(m["weather"]["at"])))
+    elif m["weather_entity"]:
+        out += " %s: %s." % (esc(m["weather_entity"]), ("not read yet (%s)" % esc(m["weather_error"])) if m["weather_error"]
+                             else "not read yet")
+    else:
+        out += " No weather entity is set, so only the time of day and the season count."
+    return out
+
+
 def gallery_html(eng, control, admin):
     """The sidebar panel. control/admin: whether this viewer may use the "lan"/"panel" actions;
     the buttons they may not use are drawn disabled, with the reason as a tooltip."""
@@ -1161,10 +1388,11 @@ def gallery_html(eng, control, admin):
         cards.append(
             '<figure class="card%s" data-id="%s"><a class="thumb" href="%s/label/2560x1440.jpg" target="_blank" '
             'rel="noopener"><img loading="lazy" src="%s/clean/640x360.jpg" alt=""></a><figcaption>'
-            '<div class="tags">%s</div><b>%s</b><small>%s%s</small><p>%s</p><div class="acts">%s</div>'
+            '<div class="tags">%s</div><b>%s</b><small>%s%s</small><p>%s</p>%s<div class="acts">%s</div>'
             '</figcaption></figure>' % (
                 cls, esc(it["id"]), esc(src), esc(src), tags(it), esc(it["title"] or it["id"]), esc(it["id"]),
-                (" · " + esc(it["place"])) if it["place"] else "", esc(it["blurb"] or it["error"]), buttons(it)))
+                (" · " + esc(it["place"])) if it["place"] else "", esc(it["blurb"] or it["error"]),
+                ('<small class="words">%s</small>' % esc(" · ".join(it["tags"]))) if it["tags"] else "", buttons(it)))
 
     by_id = {i["id"]: i for i in items}
     if cur.get("id"):
@@ -1172,10 +1400,11 @@ def gallery_html(eng, control, admin):
         src = "img/%s/%s/label" % (cur["id"], cur["rev"])
         top = ('<section class="top" data-id="%s"><a class="shot" href="%s/2560x1440.jpg" target="_blank" '
                'rel="noopener"><img src="%s/1920x1080.jpg" alt="The wallpaper on screen now"></a><div class="meta">'
-               '<p class="kicker">On screen now</p><h1>%s</h1><p class="mut">%s</p><p>%s</p>'
+               '<p class="kicker">On screen now</p><h1>%s</h1><p class="mut">%s</p><p>%s</p>%s'
                '<div class="acts"><button class="primary" data-act="next"%s>Next picture</button>%s</div></div></section>') % (
             esc(cur["id"]), esc(src), esc(src), esc(cur["title"] or cur["id"]),
             esc(" · ".join(x for x in (cur["place"], cur["credit"]) if x)), esc(cur["blurb"]),
+            why_html(cur, bool(eng.state.get("picked")), lib["mood"]),
             no_ctl, buttons(by_id.get(cur["id"], {"hidden": False}), top=True))
     else:
         top = ('<section class="top empty"><div class="meta"><p class="kicker">On screen now</p><h1>Nothing yet</h1>'
@@ -1262,17 +1491,25 @@ def gallery_html(eng, control, admin):
             capline += "<br>Writing a caption for %s now." % esc(cap["busy"])
         if cap["waiting"]:
             capline += "<br>%d picture%s waiting for a caption." % (cap["waiting"], "" if cap["waiting"] == 1 else "s")
+        if cap["tagging"]:
+            capline += "<br>%d picture%s captioned before tags existed, waiting for tags." % (
+                cap["tagging"], "" if cap["tagging"] == 1 else "s")
     n_cap = sum(1 for i in items if i["status"] == "captioned")
     n_hidden = sum(1 for i in items if i["hidden"])
     summary = "%d picture%s · %d captioned%s" % (len(items), "" if len(items) == 1 else "s", n_cap,
                                                  (" · %d hidden" % n_hidden) if n_hidden else "")
 
     data = {"version": cur.get("version"),
-            "items": [{k: i[k] for k in ("id", "title", "place", "credit", "blurb")} for i in items],
+            "items": [{k: i[k] for k in ("id", "title", "place", "credit", "blurb", "tags")} for i in items],
             "pace": [{"label": label, "body": {"min_minutes": m, "max_minutes": m} if m else {"mode": "daynight"}}
                      for label, m in PACE_STOPS]}
+    tagboxes = "".join(
+        '<div class="taggroup"><span>%s</span>%s</div>' % (esc(group), "".join(
+            '<label class="tagbox"><input type="checkbox" name="tags" value="%s"> %s</label>' % (t, t) for t in words))
+        for group, words in mood.TAG_GROUPS.items())
     return PAGE.substitute(
         top=top, state=state, toggle=toggle, window=window, screens=screens, capline=capline, summary=esc(summary),
+        moodline=mood_html(lib["mood"]), tagboxes=tagboxes,
         cards="\n".join(cards), data=json.dumps(data, ensure_ascii=False).replace("<", "\\u003c"),
         lim_title=CAPTION_LIMITS["title"], lim_place=CAPTION_LIMITS["place"],
         lim_credit=CAPTION_LIMITS["credit"], lim_blurb=CAPTION_LIMITS["blurb"])
@@ -1314,17 +1551,21 @@ figcaption p{margin:.4em 0 0;font-size:13px;color:#c9d0cc;flex:1}
 .tags{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px}.tag{font-size:11px;border-radius:6px;padding:1px 7px;background:#333}
 .tag.captioned{background:#24402d}.tag.failed{background:#5a2a2a}.tag.pending{background:#40391f}
 .tag.on{background:var(--acc);color:#0b120e}.tag.hid{background:#3a3f55}.tag.off{background:#5a2a2a}.tag.stale{background:#40391f}
+.words{margin-top:6px;font-style:italic}.why{margin-top:8px}
+.taggroup{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:center;margin-top:6px}.taggroup>span{color:var(--mut);font-size:12px;min-width:7em}
+.tagbox{font-size:13px;white-space:nowrap}.tagbox input{accent-color:var(--acc);vertical-align:-2px}
 dialog{background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:12px;width:min(640px,calc(100vw - 32px));padding:18px}
 dialog::backdrop{background:#000a}dialog label{display:block;margin:10px 0 0;font-size:13px;color:var(--mut)}
 dialog input,dialog textarea{display:block;width:100%;margin-top:4px;font:15px/1.4 system-ui,sans-serif;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:6px 8px}
 dialog menu{display:flex;justify-content:flex-end;gap:8px;padding:0;margin:16px 0 0}#ed-msg{color:var(--bad);min-height:1.2em;margin:8px 0 0}
+.tagset{border:1px solid var(--line);border-radius:8px;margin:12px 0 0;padding:6px 10px 10px}.tagset legend{padding:0 4px}
 .foot{margin-top:24px;font-size:13px}.foot a{color:var(--acc)}
 @media(max-width:800px){.top{grid-template-columns:1fr}}
 </style></head><body><main>
 <header><span class="brand">Matchy Wallpapers</span><span id="msg" role="status"></span></header>
 $top
 <section class="panels">
-<div class="box"><h2>Rotation</h2><p>$state</p><div class="acts">$toggle</div>$window</div>
+<div class="box"><h2>Rotation</h2><p>$state</p><div class="acts">$toggle</div>$window<p class="mut small">$moodline</p></div>
 <div class="box"><h2>Captions</h2><p>$capline</p></div>
 <div class="box"><h2>Screens</h2>$screens</div>
 </section>
@@ -1339,6 +1580,7 @@ $top
 <label>Place <input name="place" maxlength="$lim_place"></label>
 <label>Credit <input name="credit" maxlength="$lim_credit"></label>
 <label>Blurb <textarea name="blurb" rows="5" maxlength="$lim_blurb" required></textarea></label>
+<fieldset class="tagset"><legend class="mut small">Tags (the mood-aware picks match them to the weather, season and time of day)</legend>$tagboxes</fieldset>
 <p id="ed-msg" role="status"></p>
 <menu><button value="cancel" formnovalidate>Cancel</button><button class="primary" value="save">Save caption</button></menu>
 </form></dialog>
@@ -1369,6 +1611,7 @@ function edit(id) {
   edMsg.textContent = '';
   document.getElementById('ed-id').textContent = it.title || id;
   FIELDS.forEach(k => { form.elements[k].value = it[k] || ''; });
+  form.querySelectorAll('input[name=tags]').forEach(b => { b.checked = (it.tags || []).includes(b.value); });
   dlg.showModal();
 }
 form.addEventListener('submit', async e => {
@@ -1376,6 +1619,7 @@ form.addEventListener('submit', async e => {
   e.preventDefault();
   const body = {id: form.dataset.id};
   FIELDS.forEach(k => { body[k] = form.elements[k].value; });
+  body.tags = Array.from(form.querySelectorAll('input[name=tags]:checked'), b => b.value);
   try { await post('caption', body); location.reload(); } catch (err) { edMsg.textContent = err.message; }
 });
 document.addEventListener('click', e => {
@@ -1418,7 +1662,8 @@ def main():
     srv = ThreadingHTTPServer((cfg["bind"], cfg["port"]), Handler)
     srv.daemon_threads = True
     log("listening on %s:%d" % (cfg["bind"], cfg["port"]))
-    for name, fn in (("scanner", eng.scanner), ("rotator", eng.rotator), ("captioner", eng.caption_worker)):
+    for name, fn in (("scanner", eng.scanner), ("rotator", eng.rotator), ("captioner", eng.caption_worker),
+                     ("weather", eng.weather_worker)):
         threading.Thread(target=fn, name=name, daemon=True).start()
     srv.serve_forever()
 

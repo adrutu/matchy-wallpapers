@@ -85,6 +85,16 @@ if cfg:
     check("defaults: no nulls", not has_null(cfg))
     check("defaults: rotation and caption", cfg["rotation"] == {"min_minutes": 15, "max_minutes": 20}
           and cfg["caption"]["spelling"] == "British", cfg)
+    check("defaults: mood off, no weather entity", cfg["mood"] == {"level": "off"}, cfg.get("mood"))
+
+# mood-aware picks: the level and a weather entity
+rc, cfg, err, data, tmp = run(dict(base, mood="light", weather_entity="weather.forecast_home")); temps.append(tmp)
+check("mood light with a weather entity", rc == 0 and cfg and cfg["mood"] == {"level": "light", "weather_entity": "weather.forecast_home"},
+      (rc, cfg and cfg.get("mood"), err[-300:]))
+rc, cfg, err, data, tmp = run(dict(base, mood="loud", weather_entity="sensor.outside_temperature")); temps.append(tmp)
+check("bad mood level and entity: off, entity ignored, both warned", rc == 0 and cfg and cfg["mood"] == {"level": "off"}
+      and "'mood' must be off, light or strong" in err and "'weather_entity' is not a weather entity id" in err,
+      (rc, cfg and cfg.get("mood"), err[-400:]))
 
 # sets, exclude, a keyed captioner, a missing folder
 opts = dict(base, source_folders=[src, "/nonexistent/matchy"], exclude=["aether-*", "test-3"],

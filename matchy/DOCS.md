@@ -57,6 +57,8 @@ port>`. Leave it empty and only the sidebar panel works.
 | `caption_min_words` | int, 5–200 | 30 | Shortest blurb asked for. Keep it at or below the longest. |
 | `caption_max_words` | int, 5–200 | 45 | Longest blurb asked for. After a second try, a blurb within three words of the range is kept. |
 | `captioners` | list of objects | `[]` | OpenAI-compatible vision endpoints, tried in order. Fields: `name` (required), `url` (required, the full `/v1/chat/completions` URL), `model` (required), `api_key` (optional), `timeout` (seconds, 5–600, default 120). |
+| `mood` | `off`, `light` or `strong` | off | Mood-aware picks (see below). `off` is a plain shuffle, exactly as before the option existed. `light` pulls a picture whose tags fit the moment forward about 3 shuffles in 4, `strong` about 19 in 20; every picture still comes up once per shuffle. |
+| `weather_entity` | entity id | unset | Optional. A Home Assistant weather entity (`weather.forecast_home`, `weather.open_meteo`…) read every ten minutes for the mood-aware picks. Without it only the time of day and the season count. |
 | `remote_manifest_url` | URL | unset | Optional. Base URL of a web folder holding a `manifest.json` (`[{"name": "…", "file": "…"}]`) with the image files next to it. Fetched once a day; new files are downloaded into the add-on's data and get ids `remote-<file name>` (lower-cased, without the extension). Only `.jpg`, `.jpeg`, `.png` and `.webp` entries without a `/` are taken. |
 | `daily_json_url` | URL | unset | Optional. A JSON document `{date, title or caption, place, copyright}` describing a picture that changes daily. Checked hourly; each new date is stored as `daily-YYYYMMDD`. Needs `daily_image_url` too. |
 | `daily_image_url` | URL | unset | Optional. The image URL that goes with `daily_json_url`. |
@@ -104,6 +106,14 @@ server's default (newer OpenAI models). A `400` that names none of them is blame
 
 A local 8-billion-parameter vision model takes a couple of seconds per picture on a desktop GPU.
 
+Along with the blurb, the captioner is asked for 3 to 6 **tags** from a fixed list (`"tags": [...]` in
+the same JSON): dawn, day, dusk, night · sun, cloud, rain, snow, fog, storm · spring, summer, autumn,
+winter · sea, mountain, forest, city, desert · warm, cool, cosy, bright, calm, dramatic. Words outside
+the list are dropped (a few near misses are folded in: cozy, ocean, sunset…); tags never get a caption
+rejected. Pictures captioned before tags existed get them through one tag-only request each, at the
+back of the captioning queue, without touching the caption (a hand-written one included). The tags
+are what the mood-aware picks match against.
+
 ## First run
 
 The first start does real work:
@@ -150,8 +160,8 @@ page reloads itself when the picture changes (it checks every 30 seconds). From 
 - **Show now** on any picture in the library.
 - **Hide** a picture so it never comes up in rotation, and **Unhide** it later. Hiding the picture on
   screen moves on at once. The last visible picture cannot be hidden.
-- **Edit caption** by hand (title, place, credit, blurb; limits 100/120/200/600 characters). A
-  hand-written caption is never overwritten by the captioner.
+- **Edit caption** by hand (title, place, credit, blurb; limits 100/120/200/600 characters), and tick
+  the picture's **tags**. A hand-written caption is never overwritten by the captioner.
 - **Re-caption** a picture: it jumps the captioning queue and replaces even a hand-written caption.
   If the captioner fails, the old caption stays.
 - **How often**: a slider from every 15 minutes to every 12 hours, plus **Day & night**. It saves
@@ -162,7 +172,10 @@ page reloads itself when the picture changes (it checks every 30 seconds). From 
   **Turn off** / **Turn on** one screen, or **Forget** it. When and from where each was last seen is in
   `/screens.json`.
 - See whether each captioner is ready or being skipped, what it is writing now and how many pictures
-  are waiting.
+  are waiting (for a caption, or for tags).
+- **Why this one**, under the picture on screen, when `mood` is on: which of its tags fit the moment,
+  or that it was simply its turn; and a **Mood** line in the Rotation box with the moment's tags and
+  what the weather entity last said.
 
 Every thumbnail opens the labelled picture at 2560x1440.
 
@@ -177,9 +190,46 @@ dashboard, Home Assistant tablets and plain `curl` are in the repository:
 
 **Day & night** puts one picture up at sunrise and the next at sunset. The add-on reads Home
 Assistant's latitude and longitude once at start (that is what its Home Assistant API access,
-`homeassistant_api`, is for; nothing else uses it). Without a location, or on a day the sun does not
-rise or does not set there, it changes at 07:00 and 19:00 local time instead. Restart the add-on after
-moving the home location.
+`homeassistant_api`, is for, together with the weather entity of the mood-aware picks below; nothing
+else uses it). Without a location, or on a day the sun does not rise or does not set there, it
+changes at 07:00 and 19:00 local time instead. Restart the add-on after moving the home location.
+
+### Mood-aware picks
+
+With `mood` set to `light` or `strong`, the next picture is steered by the moment: cosy on a cold wet
+evening, bright on a sunny morning. The moment is a set of tags from the same list the captioner
+uses:
+
+- **Time of day**, from the same sunrise and sunset as Day & night (or 07:00 and 19:00 without a
+  location): `day` or `night`, and `dawn` or `dusk` for the hour either side of sunrise and sunset
+  (together with the day or night it borders on, so the change is gradual).
+- **Season**, from the date: meteorological seasons (December to February is `winter`…), the other
+  way round south of the equator.
+- **Weather**, from `weather_entity`, read every ten minutes: `sunny` gives `sun` (and `bright` by day),
+  `partlycloudy` `sun` and `cloud`, `cloudy` and `windy-variant` `cloud`, `rainy` `rain`, `pouring`
+  and `hail` `rain` and `storm`, `lightning` `storm`, `snowy` `snow`, `snowy-rainy` `snow` and `rain`,
+  `fog` `fog`. Rain, snow, fog or a storm add `cosy`, a storm `dramatic`. At or below 8 °C the moment
+  also wants `warm` and `cosy`; at or above 25 °C, `cool`. A reading older than three hours is dropped
+  (the last one is kept while the entity cannot be read, and the log says so once); without an entity,
+  or without a reading, only the time of day and the season count.
+
+The picker keeps its shuffle: every picture still comes up exactly once per shuffle, hidden ones
+aside, so nothing is excluded and nothing starves. What changes is the order within the shuffle: with
+`light`, about 3 picks in 4 pull forward a picture whose tags share something with the moment (a
+picture matching three tags is three times as likely as one matching one); with `strong`, about 19 in
+20. The rest of the picks, and every pick when nothing in the shuffle matches, are the next picture in
+the shuffle, as with `off`. The picture on screen is never shown twice in a row. Show now, hide and the
+rotation window work as before.
+
+`/current.json` carries the picture's `tags` and `mood_match` (the tags that fit the moment when it
+was picked; empty with `mood: off`, for a hand-picked picture, or when nothing fitted), and
+`/library.json` a `mood` object (`level`, the moment's `context`, `weather_entity`, the last `weather`
+reading as `{"condition", "temperature_c", "at"}` or null, and `weather_error`). The log line for each
+rotation names the matched tags (`[mood: cosy, rain, warm]`).
+
+Tags live in the sidecar (`"tags"`), next to the caption, and can be edited in the panel (tick boxes
+under the caption) or by hand in the file. They are not part of the label, so changing them does not
+change the picture's `rev`.
 
 ### Screens
 
@@ -207,8 +257,8 @@ Read endpoints:
 
 | Endpoint | Description |
 | :--- | :--- |
-| `GET /current.json` | The current picture: `id`, `rev`, `version`, `title`, `place`, `credit`, `blurb`, `since`, `next_change` (null while paused), `paused`, `captioned`, and `urls` (`original`, `clean`, `label`, `span` templates with `{w}`, `{h}`, `{layout}` to fill in). `version` changes on every rotation and every caption edit; clients compare it. `screens_off` lists the screens turned off; with `?screen=<name>`, `follow` says whether that one should follow. `503` while the library is empty. |
-| `GET /library.json` | Every picture with its status, caption, `hidden` and `recaption_queued` flags, plus the rotation (`mode` = `minutes` or `daynight`, the window, and `next_sun` = `{"at", "event"}` in Day & night, `event` being `sunrise`/`sunset`, or `morning`/`evening` without a location) and captioner state. |
+| `GET /current.json` | The current picture: `id`, `rev`, `version`, `title`, `place`, `credit`, `blurb`, `tags`, `mood_match` (see Mood-aware picks), `since`, `next_change` (null while paused), `paused`, `captioned`, and `urls` (`original`, `clean`, `label`, `span` templates with `{w}`, `{h}`, `{layout}` to fill in). `version` changes on every rotation and every caption edit; clients compare it. `screens_off` lists the screens turned off; with `?screen=<name>`, `follow` says whether that one should follow. `503` while the library is empty. |
+| `GET /library.json` | Every picture with its status, caption, `tags`, `hidden` and `recaption_queued` flags, plus the rotation (`mode` = `minutes` or `daynight`, the window, and `next_sun` = `{"at", "event"}` in Day & night, `event` being `sunrise`/`sunset`, or `morning`/`evening` without a location), the `mood` object (see Mood-aware picks) and captioner state (`waiting` for a caption, `tagging` for tags). |
 | `GET /screens.json` | The Screens list (see Screens). Network tier only, and without CORS, because it carries addresses. |
 | `GET /` (also `/index.html`) | The gallery page. |
 | `GET /current/clean/WxH.jpg` | The current picture at any size, without the label. Sends an `ETag`; `If-None-Match` gets a `304` until the picture changes. |
@@ -239,7 +289,7 @@ undecodable one, re-captioning with no captioner) or `413` (body over 64 KB, or 
 | `POST /api/show` | `{"id": "<id>"}` | Network | Put this picture on screen now. |
 | `POST /api/hide` | `{"id": "<id>"}` | Panel | Keep this picture out of rotation. |
 | `POST /api/unhide` | `{"id": "<id>"}` | Panel | Put it back (an id that is not hidden changes nothing). |
-| `POST /api/caption` | `{"id", "title", "place", "credit", "blurb"}` | Panel | Write the caption by hand; `blurb` is required, the others may be empty. |
+| `POST /api/caption` | `{"id", "title", "place", "credit", "blurb", "tags"}` | Panel | Write the caption by hand; `blurb` is required, the others may be empty. `tags` is optional: a list of words from the tag list (case and a few synonyms are folded; an unknown word is a `400` naming it); left out, the tags stay as they were. |
 | `POST /api/recaption` | `{"id": "<id>"}` | Panel | Ask the captioner for a fresh caption. |
 | `POST /api/rotation` | `{"min_minutes": 10, "max_minutes": 12}`, `{"mode": "daynight"}` or `{"reset": true}` | Panel | Set the rotation window (whole minutes, 1–1440), switch to Day & night, or go back to the options. |
 | `POST /api/screen` | `{"id": "<name>", "follow": false}` | Network | Turn one screen off (`true`: on again). `404` for a screen Matchy has not seen. |
@@ -301,7 +351,7 @@ add-on (`backup: hot`, the render cache excluded):
 | `secrets/captioner-<n>.key` | Captioner keys, mode 600. |
 | `state.json` | What is on screen, the shuffle bag, hidden ids, the panel's rotation choice, history. |
 | `screens.json` | The Screens list: on or off, first and last seen (last seen is written at most every 5 minutes). |
-| `library/<id>.json` | One sidecar per picture: the caption and where it came from. A hand edit here (set `"edited": true`) is picked up within a minute. |
+| `library/<id>.json` | One sidecar per picture: the caption, its `tags`, and where it came from. A hand edit here (set `"edited": true`) is picked up within a minute. A sidecar without a `tags` key is queued for a tag-only request (`tags_failed_at` and `tags_error` after a failed one, retried like a failed caption). |
 | `masters/` | The downscaled master copy of each picture. |
 | `originals/`, `remote.json` | Pictures fetched from a remote manifest or the daily URL, and their index. |
 | `cache/` | Rendered JPEGs, evicted LRU. Safe to delete; not in backups. |
@@ -323,6 +373,13 @@ reply (finish_reason: length)` means a reasoning model spent its token budget th
 non-thinking model (the budget, `caption.max_tokens`, can only be raised when running without Home
 Assistant). A blurb that breaks the word-count or grounding rules is retried once immediately with the
 reason, then that picture is retried six hours later; the panel card shows the last error.
+
+**The picks do not follow the weather.** The Rotation box's Mood line says what the weather entity
+last said, or why it could not be read (`cannot read weather.… (HTTP 404: …)` in the log means the
+entity id is wrong; `HTTP 401` that the add-on has no API access). Pictures only match once they have
+tags: the Captions box counts the ones still waiting for them, and a card's tags are under its blurb.
+With `mood: light` about one pick in four is deliberately not a match, and once every matching picture
+has had its turn in the current shuffle, the rest follow until the next shuffle.
 
 **The same image never changes.** Check how many images it actually found: the panel's library count,
 or the `library: N items` line in the log. One usable image means no rotation. Pictures that are
@@ -376,6 +433,7 @@ generates, with its defaults:
   "folder_scan_minutes": 10,
   "rotation": {"min_minutes": 15, "max_minutes": 20},
   "location": {"latitude": 53.35, "longitude": -6.26},
+  "mood": {"level": "off", "weather_entity": "weather.forecast_home"},
   "folders": [{"path": "/sources/wallpapers",
                "sets": {"art": {"id_prefix": "art", "name": "Classic Art", "abstract": false}}}],
   "exclude": [],
@@ -392,7 +450,11 @@ generates, with its defaults:
 
 The add-on writes a captioner's key to a file and passes `api_key_file` instead of `api_key`; either
 works here. Leave `location` out and Day & night changes at 07:00 and 19:00. Times are local to the
-container, so set `TZ` (for example `-e TZ=Europe/London`) or they are UTC.
+container, so set `TZ` (for example `-e TZ=Europe/London`) or they are UTC. For the weather, the
+engine reads `mood.weather_entity` from Home Assistant's REST API: inside the add-on through the
+Supervisor (`mood.api_url` defaults to `http://supervisor/core/api`, with the token from its
+environment); elsewhere set `mood.api_url` to `http://<your Home Assistant address>:8123/api` and
+`mood.api_token` to a long-lived access token (the token never reaches the log).
 
 Keys the engine understands but the add-on does not expose:
 
@@ -402,7 +464,9 @@ Keys the engine understands but the add-on does not expose:
   `gap_seconds` (0, a pause after each caption) and `json_mode` (true; false never sends
   `response_format`);
 - under `caption`: `max_tokens` (300), `temperature` (0.4), `image_px` (1024, the size sent to the
-  model), `retry_failed_hours` (6) and `forbidden_titles`;
+  model), `retry_failed_hours` (6, also for a failed tag request) and `forbidden_titles`;
+- under `mood`: `api_url`, `api_token` (above) and `refresh_minutes` (10, how often the weather
+  entity is read; never under a minute);
 - `rotation.caption_priority`, `dedupe.avoid_prefixes` and `ladder_prefer` (`"4k"`), `lan_cidrs`,
   `ingress_peers`, `size_limits`, `bind` and `style` (label proportions, fonts, `jpeg_quality`).
 

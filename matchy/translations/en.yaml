@@ -94,6 +94,17 @@ configuration:
       timeout:
         name: Timeout
         description: Seconds to wait for one caption (default 120).
+  mood:
+    name: Mood-aware picks
+    description: >-
+      Off: pictures come up in a plain shuffle. Light or strong: a picture whose tags fit the
+      moment (the weather, the season, the time of day) is pulled forward more or less often. Every
+      picture still comes up once per shuffle.
+  weather_entity:
+    name: Weather entity
+    description: >-
+      Optional. A Home Assistant weather entity, e.g. weather.forecast_home, read every ten minutes
+      for the mood-aware picks. Without it only the season and the time of day count.
   remote_manifest_url:
     name: Remote folder
     description: >-

@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- Mood-aware picks: `mood: light` or `strong` lets the weather (a Home Assistant `weather_entity`,
+  read every ten minutes through the add-on's API access), the season and the time of day steer which
+  picture comes next; `off` (the default) is the plain shuffle as before. The captioner tags each
+  picture with 3 to 6 words from a fixed list (stored in the sidecar; pictures captioned earlier get
+  theirs through one tag-only request each, at the back of the queue); tags can be ticked by hand in
+  the caption editor. Matching pictures are pulled forward within the shuffle, so every picture still
+  comes up once per shuffle. The panel shows **Why this one** under the picture on screen and a Mood
+  line in the Rotation box; `/current.json` gains `tags` and `mood_match`, `/library.json` `tags` per
+  picture and a `mood` object. `tests/mood_test.py`, also in CI.
+
 ## 0.4.0 (2026-10-17)
 
 First public release.

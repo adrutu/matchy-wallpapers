@@ -11,6 +11,8 @@ import urllib.request
 
 from PIL import Image
 
+import mood
+
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp"}
 HASH_SAVE_SECS = 10  # a long cold scan checkpoints hash-cache.json this often
 SMALL_WORDS = {"a", "an", "and", "as", "at", "but", "by", "for", "in", "of", "on", "or", "the", "to", "with", "over", "under", "from", "into"}
@@ -90,7 +92,9 @@ def rev_of(sc):
 
 class Library:
     """Holds items {id: item}. item = {id, kind, path, sha256, meta{title,place,credit,context,collection}, order}.
-    Sidecars (captions) live in <data>/library/<id>.json and are the source of truth for display text."""
+    Sidecars (captions) live in <data>/library/<id>.json and are the source of truth for display text.
+    They also carry the picture's `tags` (words from mood.TAGS, for the mood-aware picks), which are not
+    part of the label: a hand-edited caption keeps them, and they do not change the rev."""
 
     def __init__(self, cfg):
         self.cfg = cfg
@@ -150,6 +154,36 @@ class Library:
             self._sc_mtime[iid] = os.stat(p).st_mtime
         self.changed.set()
         return True
+
+    def tags(self, iid):
+        """The picture's tags, vocabulary words only (a sidecar edited by hand may hold anything)."""
+        return mood.clean_tags((self.sidecars.get(iid) or {}).get("tags"))
+
+    def needs_tags(self, iid, retry_s):
+        """A captioned picture whose sidecar has no `tags` yet (captioned before tags existed), unless a
+        tag request for it failed less than retry_s ago. A tag-only request fills it in, whatever the caption's
+        `edited` flag: tags are not the caption."""
+        if self.status(iid) != "captioned":
+            return False
+        sc = self.sidecars.get(iid) or {}
+        return "tags" not in sc and time.time() - float(sc.get("tags_failed_at") or 0) >= retry_s
+
+    def set_tags(self, iid, tags=None, failed=None):
+        """Write the tags (or note a failed tag request) into the sidecar, leaving the caption as it is:
+        this bypasses save_sidecar's hand-edit guard on purpose."""
+        with self.lock:
+            sc = dict(self.sidecars.get(iid) or {})
+            if failed:
+                sc["tags_failed_at"] = time.time()
+                sc["tags_error"] = failed[:300]
+            else:
+                sc["tags"] = list(tags or [])
+                sc.pop("tags_failed_at", None)
+                sc.pop("tags_error", None)
+            p = self.sidecar_path(iid)
+            write_json(p, sc)
+            self.sidecars[iid] = sc
+            self._sc_mtime[iid] = os.stat(p).st_mtime
 
     def sync_sidecar_meta(self):
         """Unedited sidecars follow the live metadata for place/credit (and a known title), so a config fix shows up."""
