@@ -30,6 +30,8 @@ def make_images():
         shutil.copy(os.path.join(IMGS, "test-%d.jpg" % i), os.path.join(S, "imgs-big"))
     # 56 MP: over the engine's 50 MP cap, cheap to write as a flat PNG
     Image.new("RGB", (8000, 7000), (90, 30, 120)).save(os.path.join(S, "imgs-big", "huge.png"))
+    # named like a picture, but not one Pillow can decode
+    open(os.path.join(S, "imgs-big", "broken.jpg"), "wb").write(b"not a picture at all " * 1000)
 
 
 make_images()
@@ -82,6 +84,323 @@ r = engine_mod.sun_events(51.8985, -8.4756, _dt.date(2026, 12, 21))
 check("sun: Cork midwinter", "08:20" <= utc_hm(r[0]) <= "08:50" and "16:10" <= utc_hm(r[1]) <= "16:40", [utc_hm(t) for t in r])
 check("sun: midnight sun has none", engine_mod.sun_events(78.2, 15.6, _dt.date(2026, 6, 21)) is None)
 
+# ---------------- in-process: odd files and names, races, leaks ----------------
+import contextlib, functools, http.server, io, threading, ast
+import library as library_mod  # noqa: E402
+from PIL import Image as _Image
+
+
+def noisy(path, size=(1600, 900), **kw):
+    _Image.effect_noise(size, 60).convert("RGB").save(path, **kw)
+
+
+def lib_engine(name, files=(), **extra):
+    """An Engine on its own folder and data dir, never served: for the library and render paths."""
+    root = os.path.join(S, "unit-" + name)
+    src = os.path.join(root, "src")
+    os.makedirs(src)
+    for rel, make in files:
+        full = os.fsdecode(os.path.join(os.fsencode(src), rel if isinstance(rel, bytes) else rel.encode()))
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        make(full)
+    cfg = engine_mod.merge(engine_mod.DEFAULTS, dict(dict(data_dir=os.path.join(root, "data"), folders=[{"path": src}],
+                                                          captioners=[], caption={"enabled": False}), **extra))
+    os.makedirs(cfg["data_dir"], exist_ok=True)
+    with contextlib.redirect_stdout(io.StringIO()):
+        return engine_mod.Engine(cfg)
+
+
+quiet = functools.partial(contextlib.redirect_stdout, io.StringIO())
+garbage = lambda p: open(p, "wb").write(b"not a picture at all " * 1000)
+
+
+def truncated(p):
+    noisy(p)
+    data = open(p, "rb").read()
+    open(p, "wb").write(data[:len(data) // 2])
+
+
+# A picture Pillow cannot decode (not an image, or cut short) is skipped with its reason, like one too large:
+# before, it stayed in rotation and every render of it answered 500.
+e = lib_engine("corrupt", [("good.jpg", noisy), ("broken.jpg", garbage), ("trunc.jpg", truncated)])
+with quiet():
+    e.lib.rescan()
+    errs = {}
+    for iid in ("broken", "trunc"):
+        try:
+            e.lib.ensure_master(iid)
+        except Exception as x:
+            errs[iid] = x
+check("unit corrupt: ValueError with a reason", all(isinstance(x, ValueError) for x in errs.values()) and len(errs) == 2,
+      {k: repr(v) for k, v in errs.items()})
+check("unit corrupt: out of rotation", e.eligible() == ["good"] and set(e.lib.skipped) == {"broken", "trunc"}, e.eligible())
+check("unit corrupt: no file path in the public reason", all(S not in v[1] for v in e.lib.skipped.values()), e.lib.skipped)
+e = lib_engine("corrupt-png", [("good.jpg", noisy), ("broken.png", garbage)])
+with quiet():
+    e.lib.rescan()
+    try:
+        e.original("broken"); orig = "no error"
+    except Exception as x:
+        orig = x
+check("unit corrupt: its original is a 400 (ValueError), not a 500", isinstance(orig, ValueError), repr(orig))
+# ...and one already on screen gives way, as a removed one does.
+e = lib_engine("corrupt-current", [("good.jpg", noisy), ("broken.jpg", garbage)])
+with quiet():
+    e.lib.rescan()
+    e.state.update(current="broken", since=time.time(), next_change=time.time() + 3600)
+    threading.Thread(target=e.rotator, daemon=True).start()
+    try:
+        e.lib.ensure_master("broken")
+    except Exception:
+        pass
+    for _ in range(80):
+        if e.state.get("current") != "broken":
+            break
+        time.sleep(0.1)
+check("unit corrupt: the one on screen gives way", e.state.get("current") == "good", e.state.get("current"))
+
+# A file that disappears (or cannot be read) between the folder listing and its hash: the rest still loads.
+e = lib_engine("vanish", [("a.jpg", noisy), ("b.jpg", noisy), ("c.jpg", noisy)])
+real_sha = library_mod.sha256_file
+def flaky_sha(p):
+    if p.endswith("b.jpg"):
+        raise FileNotFoundError(2, "No such file or directory", p)
+    return real_sha(p)
+library_mod.sha256_file = flaky_sha
+try:
+    with quiet():
+        e.lib.rescan()
+    check("unit vanished file: the others load", sorted(e.lib.items) == ["a", "c"], sorted(e.lib.items))
+except Exception as x:
+    check("unit vanished file: the others load", False, repr(x))
+finally:
+    library_mod.sha256_file = real_sha
+
+# File and folder names that are not UTF-8 (old archives, a Samba share in another charset): Python hands
+# them over with surrogates, which json.dump to a UTF-8 file refuses, so the whole scan failed.
+e = lib_engine("bytes", [(b"caf\xe9.jpg", noisy), (b"Gem\xe4lde/one.jpg", noisy), ("plain.jpg", noisy)])
+try:
+    with quiet():
+        e.lib.rescan()
+        page = engine_mod.gallery_html(e, True, True).encode()
+        lib_json = json.dumps(e.library_view(), ensure_ascii=False).encode()
+        cache_back = library_mod.read_json(e.lib.hash_cache_path, {})
+    check("unit non-UTF-8 names: scanned", len(e.lib.items) == 3, sorted(e.lib.items))
+    check("unit non-UTF-8 names: hash cache reloads whole", len(cache_back) == 3, cache_back)
+    check("unit non-UTF-8 names: library.json and the page encode", b"gem" in lib_json.lower() and b"Gem" in page)
+except Exception as x:
+    check("unit non-UTF-8 names: scanned", False, repr(x))
+try:
+    buf = io.TextIOWrapper(io.BytesIO(), encoding="utf-8", errors="strict")
+    with contextlib.redirect_stdout(buf):
+        library_mod.log("master", "x", "skipped:", os.fsdecode(b"/media/caf\xe9.jpg"))
+    check("unit non-UTF-8 names: a log line with one does not raise", True)
+except Exception as x:
+    check("unit non-UTF-8 names: a log line with one does not raise", False, repr(x))
+
+# A '|' in a file name: the hash cache split its key on the first '|' and dropped the entry after every
+# scan, so that file was hashed again every folder_scan_minutes.
+e = lib_engine("pipe", [("sun|set.jpg", noisy), ("plain.jpg", noisy)])
+hashed = []
+library_mod.sha256_file = lambda p: hashed.append(p) or real_sha(p)
+try:
+    with quiet():
+        e.lib.rescan(); first = len(hashed); e.lib.rescan()
+    check("unit '|' in a name: hashed once, not every scan", first == 2 and len(hashed) == 2 and len(e.lib.hash_cache) == 2,
+          (first, len(hashed), list(e.lib.hash_cache)))
+finally:
+    library_mod.sha256_file = real_sha
+
+# Phone photos store portrait pictures landscape with an EXIF Orientation tag; the master ignored it.
+exif = _Image.Exif(); exif[0x0112] = 6  # rotate 90° clockwise to view
+e = lib_engine("exif", [("phone.jpg", lambda p: noisy(p, exif=exif.tobytes()))])
+with quiet():
+    e.lib.rescan()
+    size = _Image.open(e.lib.ensure_master("phone")).size
+check("unit EXIF orientation: portrait master", size == (900, 1600), size)
+
+# A 16-bit greyscale PNG (0-65535): convert("RGB") clips it, so the wallpaper came out plain white.
+def grey16(p):
+    import random
+    im = _Image.new("I;16", (800, 600))
+    im.putdata([random.randrange(20000, 40000) for _ in range(800 * 600)])
+    im.save(p)
+e = lib_engine("grey16", [("scan.png", grey16)])
+with quiet():
+    e.lib.rescan()
+    m = _Image.open(e.lib.ensure_master("scan")).convert("L")
+mean = sum(m.resize((80, 60)).tobytes()) / 4800
+check("unit 16-bit greyscale PNG: mid grey, not white", 90 < mean < 145, mean)
+
+# A master made before those two fixes (named <id>-<first 8 of sha256>.jpg) is made again, and the old one goes.
+e = lib_engine("upgrade", [("phone.jpg", lambda p: noisy(p, exif=exif.tobytes()))])
+with quiet():
+    e.lib.rescan()
+    old = os.path.join(e.cfg["data_dir"], "masters", "phone-%s.jpg" % e.lib.items["phone"]["sha256"][:8])
+    _Image.new("RGB", (1600, 900)).save(old)  # sideways, as 0.4.0 made it
+    size = _Image.open(e.lib.ensure_master("phone")).size
+check("unit masters from before are rebuilt", size == (900, 1600) and not os.path.exists(old), (size, os.path.exists(old)))
+
+# Masters of pictures taken out of the folders stayed in masters/ (and in every backup) for good. They now go
+# after a scan, but never while a picture folder is missing or empty: an unmounted share must not cost them.
+e = lib_engine("orphans", [("a.jpg", noisy), ("b.jpg", noisy), ("sub/c.jpg", noisy)])
+src = e.cfg["folders"][0]["path"]
+mdir = os.path.join(e.cfg["data_dir"], "masters")
+masters = lambda: sorted(f.split("-")[0] for f in os.listdir(mdir))
+with quiet():
+    e.lib.rescan()
+    for i in list(e.lib.items):
+        e.lib.ensure_master(i)
+    os.remove(os.path.join(src, "b.jpg"))
+    e.lib.rescan()
+check("unit masters of a deleted picture are removed", masters() == ["a", "sub"], masters())
+with quiet():
+    os.rename(src, src + ".away")  # the share is unmounted
+    e.lib.rescan()
+    kept_missing = masters()
+    os.makedirs(src)  # an empty mount point
+    e.lib.rescan()
+    kept_empty = masters()
+    os.rmdir(src); os.rename(src + ".away", src)
+check("unit masters kept while the folder is missing or empty", kept_missing == kept_empty == ["a", "sub"],
+      (kept_missing, kept_empty))
+
+# A picture replaced by a new version under the same name, with the label text unchanged (captions off, or a
+# caption written by hand): the rev, and so the render cache key and the /img/ URL, stayed the same, so the
+# old picture was served on (and browsers keep /img/ URLs for a year).
+def tinted(p, rgb):
+    _Image.merge("RGB", [_Image.effect_noise((1600, 900), 20).point(lambda v, c=c: min(255, v // 4 + c)) for c in rgb]).save(p)
+e = lib_engine("replaced", [("sunset.png", lambda p: tinted(p, (200, 0, 0))), ("pad.jpg", noisy)])
+with quiet():
+    e.lib.rescan()
+    rev1 = e.lib.display("sunset")["rev"]
+    e.render_kind("sunset", rev1, "clean", 640, 360)
+    tinted(os.path.join(e.cfg["folders"][0]["path"], "sunset.png"), (0, 0, 200))
+    os.utime(os.path.join(e.cfg["folders"][0]["path"], "sunset.png"), (1, 1))  # a copy brings its own mtime
+    e.lib.rescan()
+    rev2 = e.lib.display("sunset")["rev"]
+    px = _Image.open(io.BytesIO(e.render_kind("sunset", rev2, "clean", 640, 360))).getpixel((320, 180))
+check("unit a replaced picture gets a new rev and is rendered anew", rev1 != rev2 and px[2] > px[0], (rev1, rev2, px))
+
+# Two threads building the same master (a screen and the panel asking for the new picture at once, or
+# the scanner and the captioner): both wrote <master>.tmp, and the loser's os.replace found it gone.
+e = lib_engine("race", [("big.jpg", lambda p: noisy(p, size=(5000, 3000), quality=95))])
+with quiet():
+    e.lib.rescan()
+    race_errs = []
+    for _ in range(4):
+        for f in os.listdir(os.path.join(e.cfg["data_dir"], "masters")):
+            os.remove(os.path.join(e.cfg["data_dir"], "masters", f))
+        def build():
+            try:
+                _Image.open(e.lib.ensure_master("big")).load()
+            except Exception as x:
+                race_errs.append(repr(x))
+        ts = [threading.Thread(target=build) for _ in range(3)]
+        [t.start() for t in ts]; [t.join() for t in ts]
+check("unit concurrent master builds: no errors", not race_errs, race_errs[:2])
+
+# A render that fails (an undecodable picture) left its per-key lock in render_locks for good, one per
+# size asked for: memory any client on the port could grow.
+e = lib_engine("locks", [("ok.jpg", noisy), ("bad.jpg", garbage)])
+with quiet():
+    e.lib.rescan()
+    rev = e.lib.display("bad")["rev"]
+    for w in range(320, 340):
+        try:
+            e.render_kind("bad", rev, "clean", w, 400)
+        except Exception:
+            pass
+check("unit failed renders leave no locks behind", not e.render_locks, len(e.render_locks))
+
+# screens_off() walked the screens dict without the lock while a request added a screen: "dictionary
+# changed size during iteration", a 500 on /current.json.
+e = lib_engine("screens", [("a.jpg", noisy)])
+e.save_screens = lambda: None
+stop, scr_errs = [], []
+def add_screens():
+    n = 0
+    while not stop:
+        e.saw_screen("s%d" % n, "10.0.0.1", "ua"); n += 1
+def read_screens():
+    while not stop:
+        try:
+            e.screens_off()
+        except RuntimeError as x:
+            scr_errs.append(str(x))
+with quiet():
+    ts = [threading.Thread(target=add_screens), threading.Thread(target=read_screens)]
+    [t.start() for t in ts]; time.sleep(3); stop.append(1); [t.join() for t in ts]
+check("unit screens list read while one is added", not scr_errs, scr_errs[:1])
+
+# A source folder that holds the add-on's own data (source_folders: ["/"], or the data dir itself): its
+# masters were scanned as new pictures, whose masters were scanned again, one more set every scan.
+root = os.path.join(S, "unit-selfscan")
+os.makedirs(os.path.join(root, "pics"))
+for n in "ab":
+    noisy(os.path.join(root, "pics", n + ".jpg"))
+cfg = engine_mod.merge(engine_mod.DEFAULTS, {"data_dir": os.path.join(root, "data"), "folders": [{"path": root}],
+                                            "captioners": [], "caption": {"enabled": False}})
+os.makedirs(cfg["data_dir"])
+with quiet():
+    e = engine_mod.Engine(cfg)
+    counts = []
+    for _ in range(3):
+        e.lib.rescan()
+        for i in list(e.lib.items):
+            try:
+                e.lib.ensure_master(i)
+            except Exception:
+                pass
+        counts.append(len(e.lib.items))
+check("unit the data dir is never scanned as pictures", counts == [2, 2, 2], counts)
+
+# Remote manifest: two file names with the same slug (non-Latin names, Sunset.jpg and sunset.png) got one
+# id; only the first was downloaded, and it ended up with the other one's title.
+web = os.path.join(S, "unit-web")
+os.makedirs(web)
+manifest = [("Moscow", "Москва.jpg"), ("Kyiv", "Київ.jpg"), ("Sunset JPEG", "Sunset.jpg"), ("Sunset PNG", "sunset.png")]
+for _title, fn in manifest:
+    noisy(os.path.join(web, fn), size=(800, 600))
+json.dump([{"name": t, "file": f} for t, f in manifest], open(os.path.join(web, "manifest.json"), "w"))
+json.dump({"date": "20261020", "title": "a quiet lake", "place": "Somewhere", "copyright": None},
+          open(os.path.join(web, "daily.json"), "w"))
+class _Quiet(http.server.SimpleHTTPRequestHandler):
+    def log_message(self, *a): pass
+web_srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(_Quiet, directory=web))
+threading.Thread(target=web_srv.serve_forever, daemon=True).start()
+web_url = "http://127.0.0.1:%d/" % web_srv.server_port
+e = lib_engine("remote", static_manifest={"enabled": True, "base_url": web_url, "id_prefix": "remote"})
+with quiet():
+    e.lib.sync_static_manifest(); e.lib.sync_static_manifest()
+titles = sorted(v["title"] for v in e.lib.remote.values())
+shas = {v["sha256"] for v in e.lib.remote.values()}
+check("unit remote names with the same slug: every picture, its own title",
+      titles == sorted(t for t, _f in manifest) and len(shas) == 4, {k: v["title"] for k, v in e.lib.remote.items()})
+
+# Daily JSON with "copyright": null (the other fields already allowed null): TypeError on every check.
+e = lib_engine("daily", daily={"enabled": True, "json_url": web_url + "daily.json", "image_url": web_url + "Sunset.jpg",
+                               "id_prefix": "daily"})
+try:
+    with quiet():
+        got = e.lib.sync_daily()
+    check("unit daily with a null copyright", got == "daily-20261020", got)
+except Exception as x:
+    check("unit daily with a null copyright", False, repr(x))
+web_srv.shutdown()
+
+# A keep-alive connection whose client vanished (a tablet dropping off Wi-Fi) held a server thread forever.
+check("unit idle connections time out", isinstance(engine_mod.Handler.timeout, (int, float))
+      and 0 < engine_mod.Handler.timeout <= 300, engine_mod.Handler.timeout)
+
+# tools/: meta.json is read by the engine as UTF-8, so the tools must write it as UTF-8 whatever the
+# locale (Windows: cp1252 turned "·" in every credit into a byte the engine rejects, losing the file).
+for tool in ("retro_themes.py", "make_artwork.py"):
+    tree = ast.parse(open(os.path.join(HERE, "..", "tools", tool), encoding="utf-8").read())
+    bad = [n.lineno for n in ast.walk(tree) if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "open"
+           and not any(k.arg == "encoding" for k in n.keywords)
+           and not any(isinstance(a, ast.Constant) and "b" in str(a.value) for a in n.args[1:2])]
+    check("tools/%s opens text files as UTF-8" % tool, not bad, bad)
 # ---------------- quiet hours (pure): windows across midnight, and the clocks changing in Europe/Dublin ----------------
 def at(y, mo, d, h, mi=0): return time.mktime((y, mo, d, h, mi, 0, 0, 0, -1))
 def hours(w): return (w[2] - w[1]) / 3600
@@ -387,23 +706,27 @@ try:
 finally:
     pc.terminate(); pc.wait()
 
-# ---------------- D: an image too large to decode stays out of rotation ----------------
+# ---------------- D: images too large, or impossible, to decode stay out of rotation ----------------
 D = BASE + 6
 pd = start("D", {"port": D, "ingress_peers": ["127.0.0.0/8"], "captioners": [], "caption": {"enabled": False},
                  "_imgs": os.path.join(S, "imgs-big")})
 try:
     for _ in range(60):
-        h = [i for i in lib(D)["items"] if i["id"] == "huge"]
-        if h and h[0]["error"]: break
+        bad = {i["id"]: i for i in lib(D)["items"] if i["id"] in ("huge", "broken")}
+        if len(bad) == 2 and all(i["error"] for i in bad.values()): break
         time.sleep(1)
-    check("D huge shows its reason", h and "too large" in h[0]["error"], h)
+    check("D huge shows its reason", "too large" in bad.get("huge", {}).get("error", ""), bad.get("huge"))
+    check("D broken shows its reason", "cannot be decoded" in bad.get("broken", {}).get("error", ""), bad.get("broken"))
     seen = set()
     for _ in range(12):
         req(D, "POST", "/api/next", {}); seen.add(cur(D)["id"])
-    check("D huge never rotates in", "huge" not in seen and len(seen) >= 2, seen)
+    check("D huge and broken never rotate in", not {"huge", "broken"} & seen and len(seen) >= 2, seen)
     st, _, txt, _ = req(D, "POST", "/api/show", {"id": "huge"}); check("D show huge 409", st == 409, (st, txt))
+    st, _, txt, _ = req(D, "POST", "/api/show", {"id": "broken"}); check("D show broken 409", st == 409, (st, txt))
+    st, _, txt, _ = req(D, "GET", "/img/broken/%s/clean/640x360.jpg" % bad["broken"]["rev"])
+    check("D broken render is a 400 with the reason, not a 500", st == 400 and "cannot be decoded" in txt, (st, txt))
     for i in [x for x in seen][:3]: req(D, "POST", "/api/hide", {"id": i})
-    left = [i["id"] for i in lib(D)["items"] if not i["hidden"] and i["id"] != "huge"]
+    left = [i["id"] for i in lib(D)["items"] if not i["hidden"] and i["id"] not in ("huge", "broken")]
     st, *_ = req(D, "POST", "/api/hide", {"id": left[0]}); check("D cannot hide last decodable one", st == 409 and len(left) == 1, (st, left))
 finally:
     pd.terminate(); pd.wait()
@@ -486,6 +809,10 @@ try:
     req(G, "GET", "/current/label/1280x720.jpg")
     missing = [l for l in open(os.path.join(S, "log-G.txt")).read().splitlines() if "unusable" in l]
     check("G missing font logged once per file", missing and len(missing) == len({l.split()[3] for l in missing}), missing)
+    # caption_enabled false stops the captioner, not the blurbs: one written by hand still shows (DOCS says so)
+    req(G, "POST", "/api/caption", {"id": "test-1", "title": "Green", "blurb": "Written by hand."})
+    req(G, "POST", "/api/show", {"id": "test-1"})
+    c = cur(G); check("G captions off: a hand-written blurb still shows", c["blurb"] == "Written by hand." and c["captioned"], c)
 finally:
     pg.terminate(); pg.wait()
 

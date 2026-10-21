@@ -80,8 +80,8 @@ configuration:
   caption_enabled:
     name: Gallery captions
     description: >-
-      Write a short blurb for each picture with a vision model. Off: the label shows the title
-      and credit only.
+      Write a short blurb for each picture with a vision model. Off: nothing is captioned, and a
+      picture without a blurb shows the title and credit only.
   caption_language:
     name: Caption language
     description: The language the blurb is asked for.

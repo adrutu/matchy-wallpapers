@@ -609,10 +609,10 @@ def main():
         path = os.path.join(a.out, THEMES[theme][0], "meta.json")
         old = {}
         if os.path.exists(path):
-            with open(path) as f:
+            with open(path, encoding="utf-8") as f:
                 old = json.load(f)
         old.update(entries)
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:  # the engine reads it as UTF-8 whatever the locale
             json.dump(old, f, indent=1, ensure_ascii=False)
             f.write("\n")
 

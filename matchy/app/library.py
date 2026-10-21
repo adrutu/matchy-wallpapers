@@ -9,15 +9,19 @@ import time
 import urllib.parse
 import urllib.request
 
-from PIL import Image
+from PIL import Image, ImageOps
 
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp"}
 HASH_SAVE_SECS = 10  # a long cold scan checkpoints hash-cache.json this often
+# Bump when masters are made differently, so the ones on disk are rebuilt (2: EXIF orientation, 16-bit greyscale).
+MASTER_FORMAT = 2
 SMALL_WORDS = {"a", "an", "and", "as", "at", "but", "by", "for", "in", "of", "on", "or", "the", "to", "with", "over", "under", "from", "into"}
 
 
 def log(*a):
-    print(time.strftime("%Y-%m-%d %H:%M:%S"), *a, flush=True)
+    # A file name that is not UTF-8 arrives with surrogates, which a strict stdout refuses to print.
+    line = " ".join(str(x) for x in a).encode("utf-8", "backslashreplace").decode("utf-8")
+    print(time.strftime("%Y-%m-%d %H:%M:%S"), line, flush=True)
 
 
 def slug(text):
@@ -27,14 +31,15 @@ def slug(text):
 
 def write_json(path, obj):
     tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
+    # surrogateescape: file names that are not UTF-8 (held as surrogates) go back to disk as their own bytes
+    with open(tmp, "w", encoding="utf-8", errors="surrogateescape") as f:
         json.dump(obj, f, ensure_ascii=False, indent=1, sort_keys=True)
     os.replace(tmp, path)
 
 
 def read_json(path, default=None):
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8", errors="surrogateescape") as f:
             return json.load(f)
     except (OSError, ValueError):
         return default
@@ -83,8 +88,10 @@ def display_fields(sc):
     return {k: sc.get(k, "") or "" for k in ("title", "place", "credit", "blurb")}
 
 
-def rev_of(sc):
-    blob = json.dumps(display_fields(sc), sort_keys=True, ensure_ascii=False).encode()
+def rev_of(sc, picture=""):
+    """picture: what the master is cut from, so a replaced file (or a new master format) gets new URLs
+    and cache keys even when the label text stays the same."""
+    blob = json.dumps(display_fields(sc), sort_keys=True, ensure_ascii=False).encode() + picture.encode()
     return hashlib.sha256(blob).hexdigest()[:6]
 
 
@@ -106,7 +113,8 @@ class Library:
         self.hash_cache_path = os.path.join(self.data, "hash-cache.json")
         self.hash_cache = read_json(self.hash_cache_path, {}) or {}
         self.scan_lock = threading.Lock()
-        self.skipped = {}  # id -> (sha256, reason) for sources that cannot be decoded (too large)
+        self.master_locks = {}  # id -> lock while its master is built: two builds would share one .tmp file
+        self.skipped = {}  # id -> (sha256, reason) for sources that cannot be decoded (too large, or broken)
         self.changed = threading.Event()
 
     # ---------- sidecars ----------
@@ -187,7 +195,7 @@ class Library:
         else:
             d = {"title": meta.get("title") or meta.get("collection") or "", "place": meta.get("place", ""),
                  "credit": meta.get("credit", ""), "blurb": ""}
-        d["rev"] = rev_of(d)
+        d["rev"] = rev_of(d, os.path.basename(self.master_path(iid)) if it else "")
         return d
 
     # ---------- scanning ----------
@@ -204,13 +212,18 @@ class Library:
         found = []
         n0 = saved = len(self.hash_cache)  # it only grows during the walk: the growth is the fresh hashes
         t0 = t = time.time()
+        own = os.path.realpath(self.data)  # our own masters and cache must never come back as pictures
         for fi, folder in enumerate(self.cfg["folders"]):
             root = folder["path"]
             if not os.path.isdir(root):
                 log("folder missing:", root)
                 continue
+            if os.path.realpath(root) == own or os.path.realpath(root).startswith(own + os.sep):
+                log("folder skipped, it is the add-on's own data:", root)
+                continue
             for dirpath, dirnames, filenames in os.walk(root):
-                dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
+                dirnames[:] = sorted(d for d in dirnames if not d.startswith(".")
+                                     and os.path.realpath(os.path.join(dirpath, d)) != own)
                 for fn in sorted(filenames):
                     if fn.startswith(".") or os.path.splitext(fn)[1].lower() not in IMAGE_EXT:
                         continue
@@ -221,14 +234,20 @@ class Library:
                         continue
                     if st.st_size < 10_000:
                         continue
-                    found.append((fi, root, os.path.relpath(full, root), full, self._hash(full, st)))
+                    try:
+                        sha = self._hash(full, st)
+                    except OSError as e:  # gone since the listing, or unreadable: the rest of the scan goes on
+                        log("scan: cannot read, skipped:", full, "-", e)
+                        continue
+                    found.append((fi, root, os.path.relpath(full, root), full, sha))
                     # checkpoint a cold scan, so a kill mid-walk keeps the hashes done so far
                     if len(self.hash_cache) > saved and time.time() - t >= HASH_SAVE_SECS:
                         write_json(self.hash_cache_path, self.hash_cache)
                         saved, t = len(self.hash_cache), time.time()
                         log("scan: %d files hashed so far, cache saved" % (saved - n0))
         hashed = len(self.hash_cache) - n0
-        live = {k for k in self.hash_cache if k.split("|")[0] in {f[3] for f in found}}
+        paths = {f[3] for f in found}
+        live = {k for k in self.hash_cache if k.rsplit("|", 2)[0] in paths}  # a path may hold "|" itself
         self.hash_cache = {k: v for k, v in self.hash_cache.items() if k in live}
         write_json(self.hash_cache_path, self.hash_cache)
         if hashed:
@@ -287,7 +306,9 @@ class Library:
             base, n = iid, 2
             while iid in items:
                 iid, n = "%s-%d" % (base, n), n + 1
-            collection = scfg.get("name") or (setname.replace("-", " ").title() if setname else "")
+            # a folder name that is not UTF-8 holds surrogates, which no page or label can show
+            shown = os.fsencode(setname).decode("utf-8", "replace")
+            collection = scfg.get("name") or (shown.replace("-", " ").title() if setname else "")
             items[iid] = {
                 "id": iid, "kind": "folder", "path": full, "sha256": sha, "order": (0, fi, rel),
                 "meta": {"title": scfg.get("title", ""), "place": "", "credit": scfg.get("credit", folder.get("credit", "")),
@@ -314,6 +335,9 @@ class Library:
 
     def rescan(self):
         items = self.scan_folders()
+        # Every folder there and holding pictures: only then can a missing picture be taken as deleted, not as
+        # an unmounted share or an empty mount point.
+        whole = {it["order"][1] for it in items.values()} == set(range(len(self.cfg["folders"])))
         items.update(self.remote_items())
         for iid, ov in (self.cfg.get("overrides") or {}).items():
             if iid in items:
@@ -328,10 +352,25 @@ class Library:
             self.skipped = {i: v for i, v in self.skipped.items() if i in items and items[i]["sha256"] == v[0]}
         self.load_sidecars()
         self.sync_sidecar_meta()
+        if whole:
+            self.drop_orphan_masters(items)
         if added or gone:
             log("library: %d items (+%d -%d)" % (len(items), len(added), len(gone)))
             self.changed.set()
         return added
+
+    def drop_orphan_masters(self, items):
+        """Masters of pictures no longer in the library (deleted, renamed or excluded): they are in backups."""
+        d = os.path.join(self.data, "masters")
+        want = {os.path.basename(self.master_path(i)) for i in items}
+        gone = [fn for fn in os.listdir(d) if fn.endswith(".jpg") and fn not in want]  # never a .tmp being written
+        for fn in gone:
+            try:
+                os.remove(os.path.join(d, fn))
+            except OSError:
+                pass
+        if gone:
+            log("masters: removed %d of pictures no longer in the library" % len(gone))
 
     # ---------- remote sources ----------
     def _store_remote(self, iid, kind, data, meta):
@@ -371,8 +410,11 @@ class Library:
             name, fn = (entry.get("name") or "").strip(), (entry.get("file") or "").strip()
             if not fn or fn in skip or "/" in fn or ".." in fn or os.path.splitext(fn)[1].lower() not in IMAGE_EXT:
                 continue
-            iid = "%s-%s" % (prefix, slug(os.path.splitext(fn)[0]))
-            meta = {"title": name, "collection": c.get("collection", "")}
+            iid = first = "%s-%s" % (prefix, slug(os.path.splitext(fn)[0]))
+            n = 2
+            while (self.remote.get(iid) or {}).get("manifest_file", fn) != fn:  # another file has that slug
+                iid, n = "%s-%d" % (first, n), n + 1
+            meta = {"title": name, "collection": c.get("collection", ""), "manifest_file": fn}
             meta.update(parse_credit_line(credits.get(name, "")))
             known = self.remote.get(iid)
             if known:
@@ -412,7 +454,7 @@ class Library:
         meta = {"title": title_case(title) if title else "", "place": (j.get("place") or "").strip(),
                 "credit": "", "context": (j.get("copyright") or "").strip(), "collection": c.get("collection", ""),
                 "date": date}
-        m = re.search(r"\(\s*(©[^)]*)\)", j.get("copyright", ""))
+        m = re.search(r"\(\s*(©[^)]*)\)", j.get("copyright") or "")
         if m:
             meta["credit"] = re.sub(r"\s*/\s*", " / ", m.group(1).strip())
         self._store_remote(iid, "daily", data, meta)
@@ -422,12 +464,25 @@ class Library:
     # ---------- masters ----------
     def master_path(self, iid):
         it = self.items[iid]
-        return os.path.join(self.data, "masters", "%s-%s.jpg" % (iid, it["sha256"][:8]))
+        tag = hashlib.sha256(("%s|%d" % (it["sha256"], MASTER_FORMAT)).encode()).hexdigest()[:8]
+        return os.path.join(self.data, "masters", "%s-%s.jpg" % (iid, tag))
 
     def ensure_master(self, iid):
         p = self.master_path(iid)
         if os.path.exists(p):
             return p
+        with self.lock:
+            lk = self.master_locks.setdefault(iid, threading.Lock())
+        try:
+            with lk:
+                if os.path.exists(p):  # built by the thread we waited for
+                    return p
+                return self._make_master(iid, p)
+        finally:
+            with self.lock:
+                self.master_locks.pop(iid, None)
+
+    def _make_master(self, iid, p):
         it = self.items[iid]
         if iid in self.skipped:  # reported once already; it stays in the library so the gallery can say why
             raise ValueError(self.skipped[iid][1])
@@ -435,17 +490,23 @@ class Library:
         t = time.time()
         try:
             im = open_image(it["path"])
-        except ValueError as e:
-            self.skipped[iid] = (it["sha256"], str(e))
-            log("master", iid, "skipped:", e, "-", it["path"])
+            with im:
+                if im.format == "JPEG":
+                    im.draft("RGB", (cap, cap))
+                ImageOps.exif_transpose(im, in_place=True)  # phone photos: portrait stored landscape
+                if im.mode in ("I", "I;16", "I;16B", "I;16L"):  # 16-bit greyscale PNG, which convert() clips white
+                    im = im.point(lambda v: v / 256)
+                im = im.convert("RGB")
+        except FileNotFoundError:  # gone since the scan; the next scan drops it
             raise
-        with im:
-            if im.format == "JPEG":
-                im.draft("RGB", (cap, cap))
-            im = im.convert("RGB")
-            if max(im.size) > cap:
-                im.thumbnail((cap, cap), Image.LANCZOS, reducing_gap=3.0)
-            im.save(p + ".tmp", "JPEG", quality=93, optimize=True)
+        except (ValueError, OSError, SyntaxError) as e:  # too large, not a picture, or a broken file
+            why = str(e) if isinstance(e, ValueError) else "cannot be decoded (%s)" % e.__class__.__name__
+            self.skipped[iid] = (it["sha256"], why)
+            log("master", iid, "skipped:", e, "-", it["path"])
+            raise ValueError(why) from None
+        if max(im.size) > cap:
+            im.thumbnail((cap, cap), Image.LANCZOS, reducing_gap=3.0)
+        im.save(p + ".tmp", "JPEG", quality=93, optimize=True)
         os.replace(p + ".tmp", p)
         # drop masters of older versions of this id
         for fn in os.listdir(os.path.dirname(p)):

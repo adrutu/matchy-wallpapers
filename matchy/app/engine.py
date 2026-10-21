@@ -227,7 +227,7 @@ class Engine:
 
     def eligible(self):
         """Captioned images not hidden, or every image not hidden when none are captioned.
-        Sources too large to decode (lib.skipped) never count: they would only ever be a 400.
+        Sources too large or too broken to decode (lib.skipped) never count: they would only ever be a 400.
 
         Without the fallback an install with no captioner shows one frozen picture forever,
         because the shuffle bag is always empty.
@@ -348,7 +348,8 @@ class Engine:
             cur = self.state.get("current")
             still = paused or holding
             due = not still and self.state.get("next_change", 0) <= now
-            missing = cur and cur not in self.lib.items
+            # gone, or found undecodable since it went up: either way it cannot be rendered
+            missing = cur and (cur not in self.lib.items or cur in self.lib.skipped)
             # An uncaptioned stand-in gives way as soon as a captioned picture exists,
             # unless it was picked by hand or the rotation is paused or held on it.
             placeholder = (cur and not still and not self.state.get("picked")
@@ -516,7 +517,8 @@ class Engine:
         return (self.screens.get(sid) or {}).get("follow", True) is not False
 
     def screens_off(self):
-        return sorted(k for k, v in self.screens.items() if v.get("follow") is False)
+        with self.lock:  # a request adding a screen meanwhile would break the iteration
+            return sorted(k for k, v in self.screens.items() if v.get("follow") is False)
 
     def set_screen(self, sid, follow):
         with self.lock:
@@ -789,23 +791,25 @@ class Engine:
             pass
         with self.lock:
             lk = self.render_locks.setdefault(key_path, threading.Lock())
-        with lk:
-            if os.path.exists(full):
-                with open(full, "rb") as f:
-                    return f.read()
-            with self.render_sem:
-                t = time.time()
-                data = producer()
-                ms = int((time.time() - t) * 1000)
-            self.stats["renders"] += 1
-            self.stats["render_ms_last"] = ms
-            log("render %s %d ms %d KB" % (key_path, ms, len(data) // 1024))
-            os.makedirs(os.path.dirname(full), exist_ok=True)
-            with open(full + ".tmp", "wb") as f:
-                f.write(data)
-            os.replace(full + ".tmp", full)
-        with self.lock:
-            self.render_locks.pop(key_path, None)
+        try:
+            with lk:
+                if os.path.exists(full):
+                    with open(full, "rb") as f:
+                        return f.read()
+                with self.render_sem:
+                    t = time.time()
+                    data = producer()
+                    ms = int((time.time() - t) * 1000)
+                self.stats["renders"] += 1
+                self.stats["render_ms_last"] = ms
+                log("render %s %d ms %d KB" % (key_path, ms, len(data) // 1024))
+                os.makedirs(os.path.dirname(full), exist_ok=True)
+                with open(full + ".tmp", "wb") as f:
+                    f.write(data)
+                os.replace(full + ".tmp", full)
+        finally:  # a render that fails must not leave its lock behind (one per size asked for)
+            with self.lock:
+                self.render_locks.pop(key_path, None)
         self.evict(len(data))
         return data
 
@@ -870,8 +874,11 @@ class Engine:
                 return f.read()
 
         def prod():
-            with open_image(it["path"]) as im:
-                return self.renderer.encode(im.convert("RGB"), quality=92)
+            try:
+                with open_image(it["path"]) as im:
+                    return self.renderer.encode(im.convert("RGB"), quality=92)
+            except (OSError, SyntaxError) as e:  # not a picture after all, or cut short: a 400, not a 500
+                raise ValueError("cannot be decoded (%s)" % e.__class__.__name__) from None
         return self.cached("%s/original-%s.jpg" % (iid, it["sha256"][:8]), prod)
 
 
@@ -883,6 +890,7 @@ class Handler(BaseHTTPRequestHandler):
     engine = None
     server_version = "wallpaper-engine/1"
     protocol_version = "HTTP/1.1"
+    timeout = 60  # seconds a keep-alive connection may sit idle: a client that vanished must not hold a thread
 
     def log_message(self, fmt, *args):
         if os.environ.get("WE_ACCESS_LOG"):
@@ -1372,7 +1380,8 @@ def gallery_html(eng, control, admin):
                    'with <code>?screen=&lt;name&gt;</code> on the address.</p>')
 
     if not cap["enabled"]:
-        capline = 'Captioner: <b>off</b>. <code>caption_enabled</code> is false, so labels carry titles only.'
+        capline = ('Captioner: <b>off</b>. <code>caption_enabled</code> is false, so no blurbs are written; a picture '
+                   'without one carries its title only.')
     elif not cap["configured"]:
         capline = ('Captioner: <b>not set up</b>. Add one under <code>captioners</code> in the add-on options '
                    'to get written blurbs.')

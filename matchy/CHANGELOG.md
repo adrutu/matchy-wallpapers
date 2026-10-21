@@ -1,5 +1,51 @@
 # Changelog
 
+## Unreleased
+
+Bug fixes from a review of the add-on; each has a test in `tests/run_tests.py`.
+
+- A file named like a picture that Pillow cannot decode (not really an image, or cut short by an
+  interrupted copy) stayed in rotation, and every render of it answered `500`. It is now kept out
+  like a picture over 50 megapixels: the panel card says "cannot be decoded", `Show now` answers
+  `409`, its renders and its original `400`, and if it was already on screen the rotation moves on.
+- A file that disappeared or could not be read between the folder listing and its hash (moved
+  during a long first scan) aborted the whole scan, so the library stayed empty or stale until the
+  next one. It is now skipped and logged.
+- A file or folder name that is not valid UTF-8 (old archives, a share in another character set)
+  made every scan fail while saving the hash cache, and such a folder name broke `library.json`
+  and the panel. The data files now keep those names as their own bytes.
+- A `|` in a file name made the hash cache forget that file, so it was hashed again on every
+  folder scan.
+- Phone photos with an EXIF orientation showed sideways: masters are now turned upright.
+- A 16-bit greyscale PNG rendered as plain white.
+- A picture replaced by a new version under the same file name kept showing the old one wherever
+  its label text did not change (captions off, or a caption written by hand): its renders and
+  `/img/` URLs did not change. The `rev` in those URLs now follows the file too.
+- After updating, every master is made once more in the background (so the two fixes above reach
+  pictures already in the library), and every `rev` changes once; clients holding an old `/img/`
+  URL get the usual `302` to the new one.
+- Two requests that needed the same new master at once (a screen and the panel right after a new
+  picture went up) could both write it, and one of them failed with `500`, or a caption was marked
+  failed for six hours. Masters are now built one at a time.
+- A render that failed left a lock behind for every size asked for, memory that grew with each
+  request.
+- `/current.json` could answer `500` while another request added a screen to the Screens list.
+- A source folder that contains the add-on's own data (for example `/`) had its masters scanned as
+  new pictures, one more set every scan. The data directory is now never scanned.
+- Remote manifest: two file names that give the same id (names in a non-Latin script, or
+  `Sunset.jpg` and `sunset.png`) were one picture, and it took the other one's title. The second
+  now gets `-2`, `-3`…
+- Daily picture: a JSON document with `"copyright": null` stopped the daily source.
+- A keep-alive connection whose client disappeared held a server thread for good; idle
+  connections now close after a minute.
+- Masters of pictures taken out of the folders (deleted, renamed or excluded) stayed in `masters/`,
+  and in every backup, for good. They are now removed after a folder scan, except while any picture
+  folder is missing or empty, so a share that is briefly unmounted does not cost them.
+- `tools/retro_themes.py` wrote `meta.json` in the system's encoding, which the engine (reading
+  UTF-8) rejected on Windows, losing every title and credit.
+- Docs: `caption_enabled: false` stops the captioner; it does not hide blurbs already written or
+  written in the panel, as DOCS.md, the option's description and the panel said.
+
 ## 0.4.0 (2026-10-17)
 
 First public release.
