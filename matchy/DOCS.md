@@ -64,6 +64,7 @@ port>`. Leave it empty and only the sidebar panel works.
 | `art_institute_chicago` | object | off | Public-domain works from the Art Institute of Chicago. Fields: `enabled` (false), `per_day` (1–50, default 3, new works a day), `min_px` (640–7680, default 2560, the smallest long side kept). See [Open-access art](#open-access-art). |
 | `the_met` | object | off | Public-domain highlights from The Metropolitan Museum of Art. Same fields and defaults. |
 | `wikimedia_picture_of_the_day` | object | off | Wikimedia Commons' Picture of the Day. Same fields; `per_day` is 1–7, default 1 (today's picture; more fills in the days before). |
+| `palette_enabled` | bool | true | Colour match: work out each picture's main colours, an accent and the nearest GNOME accent name (see [Colour match](#colour-match)). Off: `palette` is `[]` and `accent` and `gnome_accent` are `null` everywhere, and nothing is computed. |
 | `remote_manifest_url` | URL | unset | Optional. Base URL of a web folder holding a `manifest.json` (`[{"name": "…", "file": "…"}]`) with the image files next to it. Fetched once a day; new files are downloaded into the add-on's data and get ids `remote-<file name>` (lower-cased, without the extension; a file whose name gives an id another file already has gets `-2`, `-3`…). Only `.jpg`, `.jpeg`, `.png` and `.webp` entries without a `/` are taken. |
 | `daily_json_url` | URL | unset | Optional. A JSON document `{date, title or caption, place, copyright}` describing a picture that changes daily. Checked hourly; each new date is stored as `daily-YYYYMMDD`. Needs `daily_image_url` too. |
 | `daily_image_url` | URL | unset | Optional. The image URL that goes with `daily_json_url`. |
@@ -236,6 +237,8 @@ page reloads itself when the picture changes (it checks every 30 seconds). From 
 - **Focus point**: click a thumbnail to put the picture's focus point there (a filled dot); every crop
   then keeps that point in frame. **Reset focus** drops it again. A hollow dot is a focus point found
   by the captioner or automatically (see Focus points).
+- Under the picture on screen, its colours: a swatch per palette colour and the accent, with the
+  GNOME accent name (see Colour match).
 
 Every thumbnail opens the labelled picture at 2560x1440 (in the sidebar panel, where a click sets the
 focus point, Ctrl-click or a middle click does).
@@ -314,6 +317,28 @@ hidden picture stays off the screen however many hearts it has, and comes back l
 Hearts are kept in `state.json`, show as `loved` in `/current.json` and `/library.json`, and can be
 given from any client on your network with `POST /api/love` (a dashboard tile, say), because they
 only change how often a picture comes up.
+
+### Colour match
+
+Matchy works out each picture's colours once, from its master copy, and serves them with the picture
+so the room can follow it: a desktop's accent colour, a dashboard theme, the lights. Three fields, in
+`/current.json` and per picture in `/library.json`:
+
+| Field | What |
+| :--- | :--- |
+| `palette` | Up to five hex colours, most prominent first. Near-black, near-white and grey are left out unless the picture is mostly that (a black-and-white or a night picture keeps its greys); otherwise they only fill up a palette with fewer than five colours of its own. |
+| `accent` | The one colour to use for a UI: the most vivid colour with real presence in the picture, then nudged to where GNOME's own accents sit, at least 3:1 contrast against both white and black (so it reads on a light and a dark theme) and saturated enough to look like a colour. It is a usable tint of a palette colour, not always a colour in the palette. `null` for a picture with no colour in it. |
+| `gnome_accent` | The nearest of GNOME's accent colours by hue: `blue`, `teal`, `green`, `yellow`, `orange`, `red`, `pink` or `purple`, and `slate` for grey or for a picture with no accent. Always a name once the colours are known. |
+
+Until a picture's colours are computed, `palette` is `[]` and the other two `null` (a cold start: the
+picture on screen gets its colours first, within seconds; the rest follow the master copies). A
+changed source file gets fresh colours on the next folder scan. The colours live in the picture's
+sidecar (`colours`), next to the caption; a hand-written caption keeps them, and a re-caption does not
+touch them. They take a few milliseconds per picture.
+
+Clients: the GNOME follower can set the desktop's accent colour from `gnome_accent` (off by default),
+and the Home Assistant recipe has a theme accent and a lights automation that only tints lights
+already on. See the client recipes in the repository.
 
 ### Quiet hours
 
@@ -394,8 +419,8 @@ Read endpoints:
 
 | Endpoint | Description |
 | :--- | :--- |
-| `GET /current.json` | The current picture: `id`, `rev`, `version`, `title`, `place`, `credit`, `blurb`, `since`, `next_change` (null while paused or held by quiet hours), `paused`, `captioned`, `quiet` (true during quiet hours), `quiet_window` (`{"start", "end", "hold", "dim"}`: the quiet window now, or else the next one; `null` when quiet hours are off), `loved`, and `urls` (`original`, `clean`, `label`, `span` templates with `{w}`, `{h}`, `{layout}` to fill in). `version` changes on every rotation, every caption edit and every focus point change; clients compare it. `kids_blurb` is the kids caption (empty until there is one). With `?reveal=<seconds>`, also `reveal_at` and `revealed`, and `version` ends in `.veiled` until the reveal (see *Guess where?*). `screens_off` lists the screens turned off; with `?screen=<name>`, `follow` says whether that one should follow. `503` while the library is empty. |
-| `GET /library.json` | Every picture with its status, caption, `hidden`, `loved` and `recaption_queued` flags, the focus point crops use (`focus` = `{"x", "y", "source"}`, `source` being `hand`, `model` or `auto`; null for a centred crop), plus the rotation (`mode` = `minutes` or `daynight`, the window, `love_weight`, and `next_sun` = `{"at", "event"}` in Day & night, `event` being `sunrise`/`sunset`, or `morning`/`evening` without a location) and captioner state. |
+| `GET /current.json` | The current picture: `id`, `rev`, `version`, `title`, `place`, `credit`, `blurb`, `since`, `next_change` (null while paused or held by quiet hours), `paused`, `captioned`, `quiet` (true during quiet hours), `quiet_window` (`{"start", "end", "hold", "dim"}`: the quiet window now, or else the next one; `null` when quiet hours are off), `loved`, `palette`, `accent`, `gnome_accent` (see Colour match), and `urls` (`original`, `clean`, `label`, `span` templates with `{w}`, `{h}`, `{layout}` to fill in). `version` changes on every rotation, every caption edit and every focus point change; clients compare it (the colours do not change it: they arrive for a new picture within seconds of a cold start, so a client that uses them reads them on every poll). `kids_blurb` is the kids caption (empty until there is one). With `?reveal=<seconds>`, also `reveal_at` and `revealed`, and `version` ends in `.veiled` until the reveal (see *Guess where?*). `screens_off` lists the screens turned off; with `?screen=<name>`, `follow` says whether that one should follow. `503` while the library is empty. |
+| `GET /library.json` | Every picture with its status, caption, `hidden`, `loved` and `recaption_queued` flags and its `palette`, `accent` and `gnome_accent`, the focus point crops use (`focus` = `{"x", "y", "source"}`, `source` being `hand`, `model` or `auto`; null for a centred crop), plus the rotation (`mode` = `minutes` or `daynight`, the window, `love_weight`, and `next_sun` = `{"at", "event"}` in Day & night, `event` being `sunrise`/`sunset`, or `morning`/`evening` without a location) and captioner state. |
 | `GET /screens.json` | The Screens list (see Screens). Network tier only, and without CORS, because it carries addresses. |
 | `GET /` (also `/index.html`) | The gallery page. |
 | `GET /current/clean/WxH.jpg[?pad=]` | The current picture at any size, without the label. Sends an `ETag`; `If-None-Match` gets a `304` until the picture changes or quiet hours start or end. Dimmed during quiet hours. `pad` (1.0–1.3) makes it that many times larger for a client that pans over it (see Gentle motion). |
@@ -502,7 +527,7 @@ add-on (`backup: hot`, the render cache excluded):
 | `secrets/captioner-<n>.key` | Captioner keys, mode 600. |
 | `state.json` | What is on screen, the shuffle bag, hidden and loved ids, the panel's rotation choice, whether quiet hours hold the picture, history. |
 | `screens.json` | The Screens list: on or off, first and last seen (last seen is written at most every 5 minutes). |
-| `library/<id>.json` | One sidecar per picture: the caption and where it came from, the captioner's `subject` box and the `focus` point (`{"x", "y", "source", "sha256"}`, `source` = `hand`, `model` or `auto`), and the kids caption in `kids_*` fields (`kids_blurb`; `"kids_edited": true` for one written by hand). A hand edit here (set `"edited": true`) is picked up within a minute. |
+| `library/<id>.json` | One sidecar per picture: the caption and where it came from, the captioner's `subject` box and the `focus` point (`{"x", "y", "source", "sha256"}`, `source` = `hand`, `model` or `auto`), the picture's colours (`colours`: `palette`, `accent`, `gnome_accent`, the source hash and the method version they were computed with), and the kids caption in `kids_*` fields (`kids_blurb`; `"kids_edited": true` for one written by hand). A hand edit here (set `"edited": true`) is picked up within a minute. |
 | `masters/` | The downscaled master copy of each picture. A picture's master goes after the first folder scan that no longer finds it, but not while any picture folder is missing or empty, so an unmounted share costs nothing. |
 | `originals/`, `remote.json` | Pictures fetched from a remote manifest, the daily URL or an open-access art source, and their index (with each work's credit and facts). |
 | `art-skipped.json` | Works an art source offered that will never do (not public domain, no image, too small), so they are not fetched again. |
@@ -593,6 +618,7 @@ generates, with its defaults:
   ],
   "caption": {"enabled": true, "language": "English", "spelling": "British",
               "min_words": 30, "max_words": 45, "kids": {"enabled": false}},
+  "palette": {"enabled": true},
   "static_manifest": {"enabled": false},
   "daily": {"enabled": false},
   "art_sources": {"aic": {"enabled": false, "per_day": 3, "min_px": 2560},

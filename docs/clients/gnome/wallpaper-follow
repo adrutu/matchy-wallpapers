@@ -17,6 +17,10 @@ that exact layout, if there is one, instead of leaving a stretched span.
 Kill switch: touch ~/.config/matchy/disabled. Never touches org.gnome.desktop.screensaver.
 Matchy's Screens list: every request names this machine (?screen=<hostname>). Turned off there, the
 engine answers "follow": false and this puts back the wallpaper from the undo file until it is turned on.
+Accent colour (off unless MATCHY_ACCENT=1): the desktop's accent colour (org.gnome.desktop.interface
+accent-color, GNOME 47 and later) follows the picture's `gnome_accent`, one write per picture. Your own
+accent goes into the undo file first and comes back when the screen is turned off in Matchy, when the
+kill switch appears, and when the service stops.
 
 Undo: systemctl --user disable --now wallpaper-follow, then run the gsettings lines in
 ~/.local/share/backgrounds/matchy-undo.txt (written before the first change if missing).
@@ -27,6 +31,7 @@ import json
 import os
 import re
 import shlex
+import signal
 import socket
 import sys
 import time
@@ -37,6 +42,8 @@ from pathlib import Path
 # Where Matchy answers: the host port you published in the add-on's Network section, or the Docker
 # port. Set MATCHY_URL in the systemd unit; this default only works where mDNS resolves it.
 BASE = os.environ.get("MATCHY_URL", "http://homeassistant.local:8160").rstrip("/")
+# Follow the picture's accent colour too. Off by default: it recolours every window's highlights.
+ACCENT = os.environ.get("MATCHY_ACCENT", "").strip().lower() in ("1", "true", "yes", "on")
 TICK_S = 30
 SETTLE_S = 3  # after MonitorsChanged, let a dock/hotplug finish before reading the layout
 HOME = Path.home()
@@ -44,6 +51,8 @@ OUT_DIR = HOME / ".local/share/backgrounds/matchy"
 UNDO = HOME / ".local/share/backgrounds/matchy-undo.txt"
 KILL = HOME / ".config/matchy/disabled"
 SCHEMA = "org.gnome.desktop.background"
+IFACE = "org.gnome.desktop.interface"
+ACCENT_KEY = "accent-color"
 KEEP_RECENT = 2        # current + previous
 KEEP_OTHER_LAYOUTS = 4  # plus the newest image of up to 4 other layouts (fallback when away)
 # Engine limits (API contract): each monitor side 320..7680, canvas <= 12000x8000
@@ -127,16 +136,52 @@ def layout_hash(spec):
 
 
 def undo_settings(text):
-    """The undo file's gsettings lines -> {key: value}, only the background keys write_undo_once saves."""
+    """The undo file's gsettings lines -> {(schema, key): value}: the background keys write_undo_once
+    saves, and the accent colour when accent following saved it."""
     out = {}
     for line in text.splitlines():
         try:
             parts = shlex.split(line, comments=True)
         except ValueError:
             continue
-        if len(parts) == 5 and parts[:3] == ["gsettings", "set", SCHEMA] and parts[3] in UNDO_KEYS:
-            out[parts[3]] = parts[4]
+        if len(parts) != 5 or parts[:2] != ["gsettings", "set"]:
+            continue
+        if (parts[2] == SCHEMA and parts[3] in UNDO_KEYS) or (parts[2] == IFACE and parts[3] == ACCENT_KEY):
+            out[(parts[2], parts[3])] = parts[4]
     return out
+
+
+def undo_line(schema, key, value):
+    return "gsettings set %s %s '%s'" % (schema, key, value.replace("'", "'\\''"))
+
+
+def set_undo_line(schema, key, value):
+    """Add or replace one key's line in the undo file, keeping every other line."""
+    try:
+        lines = UNDO.read_text().splitlines()
+    except OSError:
+        lines = [f"# Wallpaper before wallpaper-follow took over ({time.strftime('%F %T')}). Undo:"]
+    keep = []
+    for line in lines:
+        try:
+            parts = shlex.split(line, comments=True)
+        except ValueError:
+            parts = []
+        if not (len(parts) == 5 and parts[:4] == ["gsettings", "set", schema, key]):
+            keep.append(line)
+    keep.append(undo_line(schema, key, value))
+    UNDO.parent.mkdir(parents=True, exist_ok=True)
+    UNDO.write_text("\n".join(keep) + "\n")
+
+
+def accent_names(settings):
+    """The names org.gnome.desktop.interface accent-color takes on this desktop, [] before GNOME 47.
+    Read from the installed schema, so a name the engine sends that this GNOME lacks is never written."""
+    schema = settings.props.settings_schema
+    if not schema.has_key(ACCENT_KEY):
+        return []
+    kind, values = schema.get_key(ACCENT_KEY).get_range().unpack()
+    return list(values) if kind == "enum" else []
 
 
 def with_screen(url):
@@ -192,8 +237,9 @@ def http_get(url, timeout, limit):
 
 
 def fetch_current():
-    """(version, span template, follow). follow is False only when this screen was turned off in Matchy;
-    an engine without the Screens list never sends it."""
+    """(version, span template, follow, gnome_accent). follow is False only when this screen was turned
+    off in Matchy; an engine without the Screens list never sends it. gnome_accent is one of GNOME's accent
+    names, or None (an older engine, colour match off, or the colours not computed yet)."""
     raw = http_get(with_screen(BASE + "/current.json"), 8, 1_000_000)
     try:
         cur = json.loads(raw)
@@ -203,7 +249,8 @@ def fetch_current():
     if not (isinstance(version, str) and VERSION_RE.match(version)
             and isinstance(span, str) and span.startswith("/") and "{layout}" in span):
         raise Problem("engine", f"current.json has an unexpected version/span: {version!r} {span!r}")
-    return version, span, cur.get("follow") is not False
+    accent = cur.get("gnome_accent")
+    return version, span, cur.get("follow") is not False, accent if isinstance(accent, str) else None
 
 
 def download(span_tpl, spec, canvas, dest):
@@ -251,18 +298,69 @@ class Follower:
         self.disabled = False
         self.off = False      # turned off in Matchy's Screens list: own wallpaper restored
         self.bad = None       # (version, spec) whose image failed validation: don't refetch it
+        self.iface = None     # org.gnome.desktop.interface, only with accent following on
+        self.accents = []     # the names accent-color takes here; [] = not following, or no such key
+        self.accent_applied = None  # the name last written by us
+        if ACCENT:
+            self.iface = Gio.Settings.new(IFACE)
+            self.accents = accent_names(self.iface)
+            if not self.accents:
+                log(f"MATCHY_ACCENT is set, but this desktop has no {IFACE} {ACCENT_KEY} (GNOME 47+): not followed")
 
     def write_undo_once(self, refresh=False):
-        """refresh: turned back on in Matchy, so save the wallpaper picked while it was off."""
-        uri = self.settings.get_string("picture-uri")
-        if (UNDO.exists() and not refresh) or OUT_DIR.as_uri() in uri:
+        """Your own wallpaper into the undo file before the first change (an accent line already there
+        stays). refresh: turned back on in Matchy, so save the wallpaper picked while it was off."""
+        if OUT_DIR.as_uri() in self.settings.get_string("picture-uri"):
             return
-        lines = [f"# Wallpaper before wallpaper-follow took over ({time.strftime('%F %T')}). Undo:"]
+        try:
+            saved = undo_settings(UNDO.read_text())
+        except OSError:
+            saved = {}
+        if not refresh and any((SCHEMA, key) in saved for key in UNDO_KEYS):
+            return
         for key in UNDO_KEYS:
-            val = self.settings.get_string(key).replace("'", "'\\''")
-            lines.append(f"gsettings set {SCHEMA} {key} '{val}'")
-        UNDO.parent.mkdir(parents=True, exist_ok=True)
-        UNDO.write_text("\n".join(lines) + "\n")
+            set_undo_line(SCHEMA, key, self.settings.get_string(key))
+
+    # ----- accent colour (GNOME 47+), only with MATCHY_ACCENT=1 -----
+    def save_accent_once(self, refresh=False):
+        """Your own accent into the undo file before the first change; refresh: turned back on in Matchy,
+        so save whatever you picked meanwhile."""
+        if not self.accents:
+            return
+        try:
+            have = (IFACE, ACCENT_KEY) in undo_settings(UNDO.read_text())
+        except OSError:
+            have = False
+        if have and not refresh:
+            return
+        set_undo_line(IFACE, ACCENT_KEY, self.iface.get_string(ACCENT_KEY))
+
+    def apply_accent(self, name):
+        """One write per picture: nothing when the name is unknown here, or already applied."""
+        from gi.repository import Gio
+        if not self.accents or name not in self.accents or name == self.accent_applied:
+            return
+        self.save_accent_once()
+        if self.iface.get_string(ACCENT_KEY) != name:
+            self.iface.set_string(ACCENT_KEY, name)
+            Gio.Settings.sync()
+        self.accent_applied = name
+        log(f"accent colour {name}")
+
+    def restore_accent(self, why):
+        """Back to your own accent (from the undo file), when the screen is turned off, paused or stopped."""
+        from gi.repository import Gio
+        if not self.accents:
+            return
+        try:
+            saved = undo_settings(UNDO.read_text()).get((IFACE, ACCENT_KEY))
+        except OSError:
+            saved = None
+        if saved in self.accents and self.iface.get_string(ACCENT_KEY) != saved:
+            self.iface.set_string(ACCENT_KEY, saved)
+            Gio.Settings.sync()
+            log(f"{why}: accent colour back to {saved}")
+        self.accent_applied = None
 
     def set_background(self, path):
         from gi.repository import Gio
@@ -288,8 +386,9 @@ class Follower:
             return
         s = self.settings
         s.delay()
-        for key, val in saved.items():
-            s.set_string(key, val)
+        for (schema, key), val in saved.items():
+            if schema == SCHEMA:
+                s.set_string(key, val)
         s.apply()
         Gio.Settings.sync()
         log("turned off in Matchy: back to this machine's own wallpaper")
@@ -299,6 +398,7 @@ class Follower:
             if not self.disabled:
                 log(f"kill switch {KILL} present: standing by")
                 self.disabled = True
+                self.restore_accent("kill switch")
             return
         if self.disabled:
             log("kill switch removed: following the engine again")
@@ -308,14 +408,18 @@ class Follower:
             spec, canvas = layout_spec(read_layout())
             if spec is None:
                 raise Problem("layout", "no monitor is on")
-            version, span_tpl, follow = fetch_current()
+            version, span_tpl, follow, accent = fetch_current()
             if not follow and not self.off:
                 self.restore_own()
+                self.restore_accent("turned off in Matchy")
                 self.off, self.applied = True, None  # applied=None also keeps fallback() away
             elif follow and self.off:
                 log("turned back on in Matchy: following again")
                 self.write_undo_once(refresh=True)
+                self.save_accent_once(refresh=True)
                 self.off = False
+            if follow:
+                self.apply_accent(accent)
             if follow and (version, spec) != self.applied and (version, spec) != self.bad:
                 OUT_DIR.mkdir(parents=True, exist_ok=True)
                 path = OUT_DIR / f"{version}-{layout_hash(spec)}.jpg"
@@ -380,11 +484,20 @@ def main():
         f.tick()
         return True
 
+    def on_stop(*_args):
+        # Stopping the service (or Ctrl-C) hands the accent back; the wallpaper stays, as before.
+        f.restore_accent("stopping")
+        loop.quit()
+        return False
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        GLib.unix_signal_add(GLib.PRIORITY_HIGH, sig, on_stop)
+
     bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
     bus.signal_subscribe("org.gnome.Mutter.DisplayConfig", "org.gnome.Mutter.DisplayConfig",
                          "MonitorsChanged", "/org/gnome/Mutter/DisplayConfig", None,
                          Gio.DBusSignalFlags.NONE, on_monitors_changed)
-    log(f"following {BASE} every {TICK_S} s")
+    log(f"following {BASE} every {TICK_S} s" + (", accent colour too" if f.accents else ""))
     f.tick()
     GLib.timeout_add_seconds(TICK_S, every_tick)
     loop.run()

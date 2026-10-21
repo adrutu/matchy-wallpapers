@@ -84,6 +84,7 @@ options:
     enabled: false
     per_day: 1
     min_px: 2560
+  palette_enabled: true
 
 schema:
   source_folders:
@@ -134,6 +135,7 @@ schema:
     enabled: bool
     per_day: int(1,7)
     min_px: int(640,7680)
+  palette_enabled: bool
   remote_manifest_url: "url?"
   daily_json_url: "url?"
   daily_image_url: "url?"

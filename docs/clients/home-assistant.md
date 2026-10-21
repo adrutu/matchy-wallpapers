@@ -1,8 +1,8 @@
 # Home Assistant dashboards and wall tablets
 
 Three pieces, each optional, a fourth for the Screens list (section 4), a fifth for gentle motion
-(section 5), a sixth for a "Guess where?" screensaver (section 6) and a seventh for a one-tap heart
-(section 7):
+(section 5), a sixth for a "Guess where?" screensaver (section 6), a seventh for a one-tap heart
+(section 7) and an eighth for the picture's colours in the theme and the lights (section 8):
 
 1. A **package** that turns `current.json` into entities: a sensor with the picture's title, blurb
    and image URLs, an `image` entity with the labelled render, and a *Next wallpaper* script.
@@ -546,6 +546,108 @@ rest_command:
 The switch follows the picture: when the rotation moves on, it shows whether the new picture is
 loved. The id is read at the moment of the tap, so a tap just as the picture changes hearts the one
 that was on screen when `sensor.matchy_feed` last polled (up to `scan_interval` seconds earlier).
+
+## 8. Colour match: the theme's accent and the lights
+
+`current.json` carries the picture's colours (see *Colour match* in [DOCS.md](../../matchy/DOCS.md#colour-match)):
+`palette` (up to five hex colours, most prominent first), `accent` (one usable colour, with enough
+contrast on a light and a dark theme; `null` for a picture without colour) and `gnome_accent`. Two
+uses, both optional.
+
+**Package.** Add the three to the feed and to `sensor.matchy` (merge into the blocks from section 1):
+
+```yaml
+rest:
+  - resource: <matchy-url>/current.json
+    sensor:
+      - name: Matchy feed
+        json_attributes:
+          # ... the list from section 1, plus:
+          - palette
+          - accent
+          - gnome_accent
+
+template:
+  - sensor:
+      - name: Matchy
+        attributes:
+          # ... as in section 1, plus:
+          palette: "{{ state_attr('sensor.matchy_feed', 'palette') or [] }}"
+          accent: "{{ state_attr('sensor.matchy_feed', 'accent') }}"
+          gnome_accent: "{{ state_attr('sensor.matchy_feed', 'gnome_accent') }}"
+```
+
+**Theme accent.** Themes are static, but card-mod re-renders a `card-mod-root` rule on every state
+change of the entities it names, so the dashboard's accent can follow the picture with no theme
+reload. In the theme from section 2:
+
+```yaml
+Matchy Background:
+  card-mod-theme: Matchy Background
+  # The picture's accent as the dashboard's primary colour, when there is one; the theme's own
+  # colours otherwise (a black-and-white picture, colour match off, or the engine down).
+  card-mod-root: |
+    {%- set a = state_attr('sensor.matchy', 'accent') %}
+    {%- if a is string and a | regex_match('^#[0-9a-f]{6}$') %}
+    :host {
+      --primary-color: {{ a }};
+      --accent-color: {{ a }};
+      --state-icon-active-color: {{ a }};
+      --slider-color: {{ a }};
+    }
+    {%- endif %}
+  card-mod-view: |
+    # ... the background rule from section 2
+```
+
+The `regex_match` guard keeps anything but a colour out of the stylesheet. `accent` is already a mid
+tone that reads on both light and dark, so it works as `--primary-color` as it is; the full `palette`
+is there if you want a background tint, say `palette[0]` at low opacity.
+
+**Lights.** An automation that tints the lights that are **already on** to the accent on every change,
+and never turns one on. One change per picture (the trigger is the sensor's state, the `version`);
+the optional time condition keeps the night quiet. `light.turn_on` with only `rgb_color` keeps each
+light's brightness. Give it only lights that take a colour; a white-only light ignores `rgb_color`.
+
+```yaml
+automation:
+  - alias: Matchy colour match for the lights
+    description: Tint the lights that are on to the picture's accent; never turn one on.
+    mode: single
+    max_exceeded: silent
+    triggers:
+      - trigger: state
+        entity_id: sensor.matchy
+        not_to: [unknown, unavailable]
+    conditions:
+      - condition: template
+        value_template: "{{ state_attr('sensor.matchy', 'accent') is string }}"
+      - condition: time             # optional: leave the lights alone at night
+        after: "07:00:00"
+        before: "23:00:00"
+    actions:
+      - variables:
+          lights: [light.desk_lamp, light.shelf_strip]   # the colour lights you want to follow
+          lit: "{{ lights | select('is_state', 'on') | list }}"
+          # The accent is vivid; blend it one third toward white for a softer light.
+          rgb: >-
+            {% set a = state_attr('sensor.matchy', 'accent') %}
+            {% set ns = namespace(c=[]) %}
+            {% for i in (1, 3, 5) %}{% set ns.c = ns.c + [((a[i:i + 2] | int(base=16)) * 2 + 255) // 3] %}{% endfor %}
+            {{ ns.c }}
+      - condition: template
+        value_template: "{{ lit | count > 0 }}"
+      - action: light.turn_on
+        target:
+          entity_id: "{{ lit }}"
+        data:
+          rgb_color: "{{ rgb }}"
+```
+
+The `select('is_state', 'on')` filter is what keeps a light that is off off, and the condition ends
+the run when none is on. A light behind a slow bridge (one write per connection) is better off in
+an automation of its own, with `mode: single` and a `delay` of a minute or so as the last action, so a
+quick *Next picture* cannot queue up writes to it.
 
 ## Checking
 

@@ -78,6 +78,32 @@ file it leaves the wallpaper as it is while off.
 Turning the machine off in Matchy and the local pause file are separate: the pause file stops the
 follower from asking at all, so Matchy stops seeing that machine.
 
+## Accent colour (optional, GNOME 47 and later)
+
+Matchy works out each picture's colours and names the nearest of GNOME's accent colours in
+`current.json` as `gnome_accent` (`blue`, `teal`, `green`, `yellow`, `orange`, `red`, `pink`,
+`purple` or `slate`; see *Colour match* in [DOCS.md](../../matchy/DOCS.md#colour-match)). The follower
+can set `org.gnome.desktop.interface accent-color` to it on every change, so window highlights, switches
+and selections match the wallpaper. **Off by default**, because it recolours every window; turn it on
+by uncommenting the line in the unit:
+
+```ini
+Environment=MATCHY_ACCENT=1
+```
+
+then `systemctl --user daemon-reload && systemctl --user restart wallpaper-follow`. With it on:
+
+- Before its first change it adds a `gsettings set org.gnome.desktop.interface accent-color '…'`
+  line with your own accent to `matchy-undo.txt`.
+- One write per picture, within a tick of the change, and only a name this GNOME's schema accepts
+  (read from the installed schema, so an older or newer GNOME is never sent a value it lacks).
+  `null` (colour match off in the add-on, or the colours not computed yet) changes nothing.
+- Your own accent comes back when the machine is **turned off** in Matchy's Screens list, when the
+  pause file appears, and when the service stops (`systemctl --user stop`, logout). The wallpaper
+  stays, as before. Turned back on, it saves the accent you picked meanwhile and follows again.
+
+On GNOME 46 or older the key does not exist: one journal line says so, and the wallpaper still follows.
+
 ## Notes
 
 - The engine's limits apply to the span: each monitor side 320–7680 px, canvas up to 12000x8000,

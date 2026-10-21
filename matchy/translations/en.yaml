@@ -178,6 +178,12 @@ configuration:
         name: Smallest picture
         description: >-
           Pixels on the long side. Works with a smaller image are skipped (default 2560).
+  palette_enabled:
+    name: Colour match
+    description: >-
+      Work out each picture's main colours and an accent, shown under the picture in the panel and
+      given to clients (a desktop accent colour, a dashboard theme, lights). Off: the colour fields
+      stay empty.
   remote_manifest_url:
     name: Remote folder
     description: >-
