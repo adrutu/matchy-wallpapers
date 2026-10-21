@@ -422,6 +422,131 @@ try:
 finally:
     ph.terminate(); ph.wait()
 
+# ---------------- M: Home Assistant entities over MQTT, against the fake broker ----------------
+import fakebroker  # noqa: E402
+M, MQ = BASE + 7, BASE + 9
+broker = fakebroker.Broker(MQ)
+pw_file = os.path.join(S, "mqtt.key"); open(pw_file, "w").write("s3cret\n")
+cfgM = {"port": M, "ingress_peers": ["127.0.0.0/8"], "captioners": [], "caption": {"enabled": False},
+        "mqtt": {"enabled": True, "host": "127.0.0.1", "port": MQ, "username": "matchy-user", "password_file": pw_file,
+                 "base_url": "http://127.0.0.1:%d/" % M}}
+D_ = "homeassistant"
+def cfg_topic(comp, obj): return "%s/%s/matchy/%s/config" % (D_, comp, obj)
+def mstate():
+    try: return json.loads(broker.retained.get("matchy/state", "null"))
+    except ValueError: return None
+pm = start("M", dict(cfgM))
+try:
+    broker.wait(lambda: cfg_topic("select", "rotation") in broker.retained and "matchy/picture" in broker.retained)
+    check("M connects with the user and the password from the file", ("matchy", "matchy-user", "s3cret") in broker.connects, broker.connects)
+    fixed = {("sensor", "title"), ("button", "next"), ("switch", "pause"), ("select", "rotation"), ("sensor", "caption_queue"), ("image", "picture")}
+    if hasattr(engine_mod.Engine, "love"): fixed.add(("button", "love"))
+    present = {k for k in fixed if cfg_topic(*k) in broker.retained}
+    check("M discovery configs for every fixed entity", present == fixed, fixed - present)
+    check("M no Love button without the favourites feature", (cfg_topic("button", "love") in broker.retained) == hasattr(engine_mod.Engine, "love"))
+    sel = json.loads(broker.retained[cfg_topic("select", "rotation")])
+    check("M select has the panel's stops plus the options", sel["options"] == [l for l, _m in engine_mod.PACE_STOPS] + ["Add-on options"], sel["options"])
+    check("M one device, availability, origin, unique ids", sel["device"]["identifiers"] == ["matchy"] and sel["device"]["name"] == "Matchy Wallpapers"
+          and sel["availability_topic"] == "matchy/status" and sel["unique_id"] == "matchy_rotation" and "support_url" in sel["origin"], sel)
+    img = json.loads(broker.retained[cfg_topic("image", "picture")])
+    check("M image entity reads a URL topic", img["url_topic"] == "matchy/picture" and img["content_type"] == "image/jpeg", img)
+    check("M status online, retained", broker.retained.get("matchy/status") == "online")
+    c = cur(M); st_ = mstate()
+    check("M state: title (the id while uncaptioned), attributes, paused, rotation, queue", st_ and st_["title"] == (c["title"] or c["id"]) and st_["attributes"]["id"] == c["id"]
+          and st_["attributes"]["blurb"] == c["blurb"] and st_["paused"] is False and st_["rotation"] == "Add-on options"
+          and st_["caption_queue"] == 0 and st_["screens_off"] == [], st_)
+    pic = broker.retained["matchy/picture"]
+    check("M picture URL is the labelled picture at the base address", pic == "http://127.0.0.1:%d/img/%s/%s/label/1920x1080.jpg" % (M, c["id"], c["rev"]), pic)
+    st, _, _, h = req(M, "GET", pic[len("http://127.0.0.1:%d" % M):]); check("M picture URL serves a JPEG", st == 200 and h.get("Content-Type") == "image/jpeg", (st, h))
+
+    # commands: Next, Pause, Rotation
+    broker.publish("matchy/cmd/next", "PRESS")
+    check("M Next rotates and the state follows", broker.wait(lambda: (mstate() or {}).get("attributes", {}).get("id") not in (None, c["id"]))
+          and cur(M)["id"] == mstate()["attributes"]["id"], (cur(M)["id"], mstate()))
+    cid = cur(M)["id"]
+    check("M picture URL follows", broker.wait(lambda: cid in broker.retained.get("matchy/picture", "")), broker.retained.get("matchy/picture"))
+    broker.publish("matchy/pause/set", "ON")
+    check("M Pause ON", broker.wait(lambda: (mstate() or {}).get("paused") is True) and cur(M)["paused"] is True, mstate())
+    broker.publish("matchy/pause/set", "OFF")
+    check("M Pause OFF", broker.wait(lambda: (mstate() or {}).get("paused") is False) and cur(M)["paused"] is False, mstate())
+    broker.publish("matchy/rotation/set", "Every hour")
+    check("M rotation: a stop", broker.wait(lambda: (mstate() or {}).get("rotation") == "Every hour") and lib(M)["rotation"]["min_minutes"] == 60
+          and lib(M)["rotation"]["source"] == "panel", (mstate(), lib(M)["rotation"]))
+    broker.publish("matchy/rotation/set", "Day & night")
+    check("M rotation: day & night", broker.wait(lambda: (mstate() or {}).get("rotation") == "Day & night") and lib(M)["rotation"]["mode"] == "daynight", lib(M)["rotation"])
+    broker.publish("matchy/rotation/set", "Every fortnight")
+    time.sleep(1); check("M rotation: unknown option ignored", mstate()["rotation"] == "Day & night" and lib(M)["rotation"]["mode"] == "daynight")
+    req(M, "POST", "/api/rotation", {"min_minutes": 7, "max_minutes": 9})
+    check("M rotation: a custom panel window reads as None (unknown)", broker.wait(lambda: (mstate() or {}).get("rotation") == "None"), mstate())
+    broker.publish("matchy/rotation/set", "Add-on options")
+    check("M rotation: back to the options", broker.wait(lambda: (mstate() or {}).get("rotation") == "Add-on options") and lib(M)["rotation"]["source"] == "options", lib(M)["rotation"])
+    broker.publish("matchy/cmd/love", "PRESS")
+    check("M Love is handled either way", broker.wait(lambda: "mqtt: Love" in open(os.path.join(S, "log-M.txt")).read()
+                                                      or (mstate() or {}).get("attributes", {}).get("loved") is True, 10))
+
+    # screens: a switch each, removed on Forget, OFF by command
+    for name in ("Hall Panel", "Zoë", "zoë"):
+        req(M, "GET", "/current.json?screen=" + urllib.parse.quote(name))
+    sw, key_z = cfg_topic("switch", "screen_hall_panel"), "screen_zo"
+    check("M a switch per screen appears", broker.wait(lambda: sw in broker.retained and broker.retained.get("matchy/screen/hall_panel/state") == "ON"), sorted(broker.retained))
+    swj = json.loads(broker.retained[sw])
+    check("M screen switch names the screen", swj["name"] == "Screen Hall Panel" and swj["unique_id"] == "matchy_screen_hall_panel"
+          and swj["command_topic"] == "matchy/screen/hall_panel/set", swj)
+    def zkeys(): return sorted(t.split("/")[3] for t in broker.retained if t.startswith(D_ + "/switch/matchy/screen_zo"))
+    broker.wait(lambda: len(zkeys()) == 2)
+    check("M two names with the same key: one plain, one hashed", len(zkeys()) == 2 and "screen_zo" in zkeys() and any(len(k) > len("screen_zo") for k in zkeys()), zkeys())
+    broker.publish("matchy/screen/hall_panel/set", "OFF")
+    check("M screen OFF by command", broker.wait(lambda: broker.retained.get("matchy/screen/hall_panel/state") == "OFF"
+                                                 and (mstate() or {}).get("screens_off") == ["Hall Panel"])
+          and req(M, "GET", "/current.json?screen=Hall%20Panel")[1]["follow"] is False, mstate())
+    req(M, "POST", "/api/screen", {"id": "Hall Panel", "follow": True})
+    check("M screen ON from the API reaches the switch", broker.wait(lambda: broker.retained.get("matchy/screen/hall_panel/state") == "ON"))
+    req(M, "POST", "/api/screen/forget", {"id": "Hall Panel"})
+    check("M Forget removes the switch and its state", broker.wait(lambda: sw not in broker.retained and "matchy/screen/hall_panel/state" not in broker.retained), sorted(broker.retained))
+    broker.publish("matchy/screen/hall_panel/set", "OFF"); time.sleep(0.5)
+    check("M a command for a forgotten screen is refused in the log", "refused: 'no screen hall_panel'" in open(os.path.join(S, "log-M.txt")).read())
+    time.sleep(0.5)  # the record is written after the publishes
+    rec = json.load(open(os.path.join(S, "data-M", "mqtt.json")))
+    check("M retained topics recorded for the clean-up", set(rec["topics"]) == {t for t in broker.retained if t.startswith(D_) or t.startswith("matchy/")}, (sorted(rec["topics"]), sorted(broker.retained)))
+
+    # the will, and the reconnect
+    broker.kick()
+    check("M dropped line: the will says offline", broker.wait(lambda: broker.retained.get("matchy/status") == "offline"))
+    check("M reconnects and republishes", broker.wait(lambda: broker.retained.get("matchy/status") == "online", 20)
+          and broker.wait(lambda: len(broker.connects) >= 2) and sw not in broker.retained, broker.connects)
+finally:
+    pm.terminate(); pm.wait()
+
+# wrong password: refused, says why, no entities touched
+broker.password = "s3cret"
+open(pw_file, "w").write("wrong")
+pm = start("M", dict(cfgM, _fresh=False))
+try:
+    check("M bad password: refused with the reason", broker.wait(lambda: "bad user name or password" in open(os.path.join(S, "log-M.txt")).read())
+          and broker.retained.get("matchy/status") == "offline")
+finally:
+    pm.terminate(); pm.wait()
+open(pw_file, "w").write("s3cret")
+
+# MQTT turned off: everything retained is taken out of the broker
+pm = start("M", dict(cfgM, _fresh=False, mqtt=dict(cfgM["mqtt"], enabled=False)))
+try:
+    check("M off: retained configs and state removed", broker.wait(lambda: not any(t.startswith(D_) or t.startswith("matchy/") for t in broker.retained), 20), sorted(broker.retained))
+    for _ in range(50):
+        if not os.path.exists(os.path.join(S, "data-M", "mqtt.json")): break
+        time.sleep(0.1)
+    check("M off: the record is gone and the engine serves", not os.path.exists(os.path.join(S, "data-M", "mqtt.json")) and cur(M))
+    check("M off: nothing else is connected", broker.wait(lambda: not broker.clients, 5))
+finally:
+    pm.terminate(); pm.wait()
+# off with no record and no host: never connects
+pm = start("M", dict(cfgM, _fresh=False, mqtt={"enabled": False}))
+try:
+    n = len(broker.connects); time.sleep(1.5)
+    check("M off and clean: no connection", len(broker.connects) == n and cur(M))
+finally:
+    pm.terminate(); pm.wait(); broker.close()
+
 print("\n%d passed, %d failed (logs in %s)" % (ok, fail, S))
 if not fail:
     shutil.rmtree(S, ignore_errors=True)

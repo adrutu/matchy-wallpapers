@@ -17,6 +17,14 @@ background is loaded by the **browser**, so if your dashboards are served over `
 must be `https://` too (put Matchy behind your reverse proxy), or the browser blocks it as mixed
 content.
 
+**Shortcut, if you run the Mosquitto broker add-on:** turn on `mqtt_enabled` in the add-on's options
+and Matchy creates the entities itself (an image, the title with its caption as attributes, Next,
+Pause, how often, and one switch per screen; see *Home Assistant entities* in
+[DOCS.md](../../matchy/DOCS.md#home-assistant-entities)). The package in section 1 and the switches
+in section 4 are then not needed; the theme (section 2) and the screensaver (section 3) still apply,
+with `image.matchy_wallpapers_now_showing` in place of `image.matchy_label` and the MQTT sensor's
+attributes in place of `sensor.matchy`'s.
+
 ## 1. Package: `packages/matchy.yaml`
 
 Needs `packages: !include_dir_named packages` under `homeassistant:` in `configuration.yaml`.

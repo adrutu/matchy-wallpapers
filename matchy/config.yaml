@@ -27,6 +27,12 @@ panel_title: Matchy Wallpapers
 # Day & night rotation can change at sunrise and sunset. Nothing else uses the API.
 homeassistant_api: true
 
+# With mqtt_enabled, run.sh asks the Supervisor for the MQTT broker (the Mosquitto add-on) and the
+# engine creates its Home Assistant entities by MQTT discovery. "want", not "need": the add-on
+# starts without a broker, it just has no entities then.
+services:
+  - mqtt:want
+
 # The container always listens on 8160; the user picks the host port in the UI.
 # Published to nobody by default (null), but offered, because the display clients
 # (desktops, tablets, Homepage) do not go through ingress.
@@ -68,6 +74,7 @@ options:
   caption_min_words: 30
   caption_max_words: 45
   captioners: []
+  mqtt_enabled: false
 
 schema:
   source_folders:
@@ -101,3 +108,5 @@ schema:
   remote_manifest_url: "url?"
   daily_json_url: "url?"
   daily_image_url: "url?"
+  mqtt_enabled: bool
+  mqtt_image_url: "url?"

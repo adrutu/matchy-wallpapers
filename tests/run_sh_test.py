@@ -22,6 +22,10 @@ bashio::config.has_value() {
     local v; v="$(jq -c "(.${1}) // null" "$OPTIONS")"
     [[ "$v" != "null" && "$v" != '""' && "$v" != "[]" ]]
 }
+bashio::addon.hostname() { printf '%s' "${ADDON_HOSTNAME:-local-matchy}"; }
+# The Supervisor's services API: MQTT_SERVICE is a JSON object (the Mosquitto add-on's answer) or unset.
+bashio::services.available() { [[ -n "${MQTT_SERVICE:-}" ]]; }
+bashio::services() { jq -r ".${2}" <<<"${MQTT_SERVICE}"; }
 bashio::log.info() { echo "INFO: $*" >&2; }
 bashio::log.warning() { echo "WARNING: $*" >&2; }
 bashio::log.error() { echo "ERROR: $*" >&2; }
@@ -132,6 +136,31 @@ check("location from Home Assistant", rc == 0 and cfg and cfg.get("location") ==
 rc, cfg, err, data, tmp = run(dict(base), fake_bin("exit 7")); temps.append(tmp)
 check("Home Assistant not answering: no location, still starts", rc == 0 and cfg and "location" not in cfg
       and "location is not known" in err, (rc, err[-300:]))
+
+# MQTT: the broker from the Supervisor's services API, the password to a 600 file, the picture address
+mq = {"host": "core-mosquitto", "port": 1883, "ssl": False, "username": "addons", "password": "br0ker-pw", "protocol": "3.1.1"}
+rc, cfg, err, data, tmp = run(dict(base)); temps.append(tmp)
+check("mqtt: off and no broker: enabled false only", rc == 0 and cfg and cfg.get("mqtt") == {"enabled": False}, (rc, cfg and cfg.get("mqtt")))
+rc, cfg, err, data, tmp = run(dict(base, mqtt_enabled=True)); temps.append(tmp)
+check("mqtt: on with no broker: a warning, enabled false", rc == 0 and cfg and cfg["mqtt"] == {"enabled": False}
+      and "no MQTT broker is set up" in err, (rc, cfg and cfg.get("mqtt"), err[-300:]))
+rc, cfg, err, data, tmp = run(dict(base, mqtt_enabled=True), {"MQTT_SERVICE": json.dumps(mq)}); temps.append(tmp)
+check("mqtt: on with a broker", rc == 0 and cfg and cfg["mqtt"] == {
+    "enabled": True, "host": "core-mosquitto", "port": 1883, "username": "addons", "ssl": False,
+    "password_file": os.path.join(data, "secrets", "mqtt.key"), "base_url": "http://local-matchy:8160"}, (rc, cfg and cfg.get("mqtt"), err[-300:]))
+if cfg:
+    kf = os.path.join(data, "secrets", "mqtt.key")
+    check("mqtt: password in a 600 file, not in the config or the log", os.path.exists(kf) and stat.S_IMODE(os.stat(kf).st_mode) == 0o600
+          and open(kf).read().strip() == "br0ker-pw" and "br0ker-pw" not in json.dumps(cfg) and "br0ker-pw" not in err)
+    check("mqtt: on in the start line", "MQTT entities true" in err, err[-300:])
+rc, cfg, err, data, tmp = run(dict(base, mqtt_enabled=True, mqtt_image_url="https://pictures.example/matchy/"),
+                              {"MQTT_SERVICE": json.dumps(dict(mq, port="odd", ssl=True)), "ADDON_HOSTNAME": "a1b2c3d4-matchy"}); temps.append(tmp)
+check("mqtt: the picture address given wins, an odd port falls back, ssl passed through", rc == 0 and cfg
+      and cfg["mqtt"]["base_url"] == "https://pictures.example/matchy" and cfg["mqtt"]["port"] == 1883 and cfg["mqtt"]["ssl"] is True,
+      (rc, cfg and cfg.get("mqtt"), err[-300:]))
+rc, cfg, err, data, tmp = run(dict(base, mqtt_enabled=False), {"MQTT_SERVICE": json.dumps(mq)}); temps.append(tmp)
+check("mqtt: off with a broker: details still passed for the clean-up", rc == 0 and cfg and cfg["mqtt"]["enabled"] is False
+      and cfg["mqtt"]["host"] == "core-mosquitto" and cfg["mqtt"]["password_file"], (rc, cfg and cfg.get("mqtt")))
 
 # no usable source at all: refuses to start
 rc, cfg, err, data, tmp = run(dict(base, source_folders=["/nonexistent/matchy"])); temps.append(tmp)

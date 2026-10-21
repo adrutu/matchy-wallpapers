@@ -26,6 +26,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from PIL import Image
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import hass  # noqa: E402
 import render  # noqa: E402
 from caption import Captioner  # noqa: E402
 from library import Library, log, open_image, read_json, rev_of, write_json  # noqa: E402
@@ -58,6 +59,12 @@ DEFAULTS = {
                   "::1/128", "fc00::/7", "fe80::/10"],
     "style": {},
     "size_limits": {"min": 320, "max": 7680, "span_w": 12000, "span_h": 8000},
+    # Home Assistant entities over MQTT discovery (hass.py). The add-on fills host, port, username,
+    # password_file and base_url from the Supervisor; base_url is where Home Assistant fetches the
+    # picture for the image entity. Off by default.
+    "mqtt": {"enabled": False, "host": "", "port": 1883, "username": "", "password": "", "password_file": "",
+             "ssl": False, "base_url": "", "discovery_prefix": "homeassistant", "topic_prefix": "matchy",
+             "image_size": [1920, 1080]},
 }
 
 
@@ -163,6 +170,11 @@ class Engine:
         self.screens = {k: v for k, v in screens.items() if isinstance(v, dict)} if isinstance(screens, dict) else {}
         self.screens_saved = 0.0
         self.screens_full_logged = False
+        self.changed_hooks = []  # called (no arguments, any thread) when what is on screen or a control changed
+
+    def touch(self):
+        for hook in self.changed_hooks:
+            hook()
 
     # ---------------- rotation ----------------
     def save_state(self):
@@ -244,6 +256,7 @@ class Engine:
         self.save_state()
         log("rotate (%s) -> %s, next at %s%s" % (reason, iid, iso(self.state["next_change"]),
                                                  " (rotation paused)" if self.state.get("paused") else ""))
+        self.touch()
 
     def rotate(self, reason):
         with self.lock:
@@ -290,6 +303,7 @@ class Engine:
             self.save_state()
         log("rotation %s" % ("paused" if paused else "resumed"))
         self.wake.set()
+        self.touch()
 
     def show_now(self, iid):
         self._need_item(iid)
@@ -365,6 +379,7 @@ class Engine:
             self.save_state()
         log("rotation window set in the panel: %s-%s minutes" % (lo, hi))
         self.wake.set()
+        self.touch()
 
     def reset_rotation(self):
         r = self.cfg["rotation"]
@@ -382,6 +397,7 @@ class Engine:
             self.save_state()
         log("rotation set in the panel: day & night, next change at %s (%s)" % (iso(at), name))
         self.wake.set()
+        self.touch()
 
     # ---------------- screens ----------------
     def save_screens(self):
@@ -417,6 +433,8 @@ class Engine:
                 s["image"] = image
             if new or now - self.screens_saved >= SCREEN_SAVE_S:
                 self.save_screens()
+        if new:
+            self.touch()
 
     def screen_follows(self, sid):
         return (self.screens.get(sid) or {}).get("follow", True) is not False
@@ -431,6 +449,7 @@ class Engine:
             self.screens[sid]["follow"] = follow
             self.save_screens()
         log("screen %s: %s" % (sid, "following" if follow else "off"))
+        self.touch()
 
     def forget_screen(self, sid):
         with self.lock:
@@ -439,6 +458,7 @@ class Engine:
             self.save_screens()
             self.screens_full_logged = False
         log("screen %s: forgotten" % sid)
+        self.touch()
 
     def screens_view(self):
         now = time.time()
@@ -1420,6 +1440,7 @@ def main():
     log("listening on %s:%d" % (cfg["bind"], cfg["port"]))
     for name, fn in (("scanner", eng.scanner), ("rotator", eng.rotator), ("captioner", eng.caption_worker)):
         threading.Thread(target=fn, name=name, daemon=True).start()
+    hass.setup(eng, PACE_STOPS)  # Home Assistant entities over MQTT, when turned on
     srv.serve_forever()
 
 
