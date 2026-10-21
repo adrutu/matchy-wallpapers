@@ -1048,6 +1048,114 @@ try:
 finally:
     pi.terminate(); pi.wait()
 
+# ---------------- K: kids captions (?label=kids) and "Guess where?" (?reveal=) ----------------
+K = BASE + 1
+KIDS_FLAG = FAIL_FLAG + ".kids"
+open(KIDS_FLAG, "w").close()  # kids captions fail at first, so the kids label has to fall back
+fk = subprocess.Popen([sys.executable, os.path.join(HERE, "fakecap.py"), str(BASE + 3), FAIL_FLAG])
+pk = start("K", {"port": K, "ingress_peers": ["127.0.0.0/8"], "rotation": {"min_minutes": 15, "max_minutes": 20},
+                 "captioners": [{"name": "fake", "url": "http://127.0.0.1:%d/v1/chat/completions" % (BASE + 3),
+                                 "model": "x", "timeout": 10}],
+                 # a failed kids caption is tried again after about 7 seconds
+                 "caption": {"enabled": True, "min_words": 30, "max_words": 45, "retry_failed_hours": 0.002,
+                             "kids": {"enabled": True}}})
+def img(port, path, etag=None):
+    c = http.client.HTTPConnection("127.0.0.1", port, timeout=20)
+    c.request("GET", path, headers={"If-None-Match": etag} if etag else {})
+    r = c.getresponse(); body = r.read(); h = dict(r.getheaders()); c.close()
+    return r.status, body, h
+def kids_items(port):
+    return {i["id"]: i for i in lib(port)["items"]}
+try:
+    for _ in range(60):  # the picture on screen is first in the kids queue
+        L = kids_items(K); on = cur(K)["id"]
+        if all(i["status"] == "captioned" for i in L.values()) and L[on]["kids_status"] == "failed": break
+        time.sleep(0.5)
+    check("K captions done, the kids caption on screen failed", all(i["status"] == "captioned" and i["kids_blurb"] == ""
+                                                                   for i in L.values()) and L[on]["kids_status"] == "failed",
+          [(i["status"], i["kids_status"]) for i in L.values()])
+    lines = [l.split(" ", 2)[2] for l in open(os.path.join(S, "log-K.txt")).read().splitlines() if l.count(" ") >= 2]
+    main_at = [n for n, l in enumerate(lines) if l.startswith("captioned ")]
+    kids_at = [n for n, l in enumerate(lines) if l.startswith("kids caption attempt")]
+    check("K kids captions queued behind every normal caption", len(main_at) == 4 and kids_at and kids_at[0] > main_at[-1],
+          (main_at, kids_at[:3]))
+    c0 = cur(K)
+    check("K current.json: kids_blurb empty before there is one", c0["kids_blurb"] == "" and "reveal_at" not in c0, c0)
+    st, kids_fb, _ = img(K, "/current/label/640x360.jpg?label=kids")
+    st2, big, _ = img(K, "/current/label/640x360.jpg?s=1.3")
+    st3, plain, _ = img(K, "/current/label/640x360.jpg")
+    check("K ?label=kids falls back to the normal label, bigger type", st == st2 == st3 == 200 and kids_fb == big
+          and kids_fb != plain, (st, st2, st3))
+    st, *_ = img(K, "/img/%s/%s/label/640x360.jpg?label=kids" % (c0["id"], c0["rev"])); check("K /img kids fallback 200", st == 200, st)
+    st, *_ = img(K, "/current/label/640x360.jpg?label=big"); check("K unknown label 400", st == 400, st)
+
+    os.remove(KIDS_FLAG)
+    for _ in range(120):  # after the failure the worker pauses 30 s, as it does after any failed caption
+        L = kids_items(K)
+        if all(i["kids_status"] == "captioned" for i in L.values()): break
+        time.sleep(0.5)
+    check("K kids captions written once the model answers", all(i["kids_status"] == "captioned"
+          and i["kids_blurb"].startswith("Look at") and not i["kids_edited"] for i in L.values()),
+          [(i["kids_status"], i["kids_blurb"][:20]) for i in L.values()])
+    c1 = cur(K)
+    check("K kids caption changes rev and version", c1["kids_blurb"].startswith("Look at") and c1["rev"] != c0["rev"]
+          and c1["version"] != c0["version"] and c1["blurb"] == c0["blurb"], (c0["version"], c1["version"]))
+    st, kids_lab, _ = img(K, "/current/label/640x360.jpg?label=kids")
+    check("K ?label=kids now carries the kids caption", st == 200 and kids_lab != img(K, "/current/label/640x360.jpg?s=1.3")[1])
+    st, *_ = img(K, "/img/%s/%s/label/640x360.jpg?label=kids" % (c0["id"], c0["rev"])); check("K stale rev 302 (kids)", st == 302, st)
+    st, *_ = img(K, "/img/%s/%s/span.jpg?layout=640x360+0+0p&label=kids" % (c1["id"], c1["rev"])); check("K span with kids 200", st == 200, st)
+
+    # the panel: hand edits win, an empty one brings a machine caption back
+    cid = c1["id"]
+    st, *_ = req(K, "POST", "/api/caption/kids", {"id": cid, "blurb": "A hand  written\nkids line."})
+    it = kids_items(K)[cid]
+    check("K kids hand edit", st == 200 and it["kids_blurb"] == "A hand written kids line." and it["kids_edited"], it)
+    st, *_ = req(K, "POST", "/api/caption/kids", {"id": cid, "blurb": "x" * 401}); check("K kids too long 400", st == 400, st)
+    st, *_ = req(K, "POST", "/api/caption/kids", {"id": cid, "blurb": 3}); check("K kids non-text 400", st == 400, st)
+    st, *_ = req(K, "POST", "/api/caption/kids", {"id": "nope", "blurb": "x"}); check("K kids unknown 404", st == 404, st)
+    req(K, "POST", "/api/caption", {"id": cid, "title": "T", "blurb": "Main by hand"})
+    it = kids_items(K)[cid]
+    check("K main hand edit keeps the kids caption", it["blurb"] == "Main by hand" and it["kids_blurb"].startswith("A hand"), it)
+    req(K, "POST", "/api/recaption", {"id": cid})
+    for _ in range(40):
+        it = kids_items(K)[cid]
+        if not it["recaption_queued"]: break
+        time.sleep(0.5)
+    check("K re-caption keeps the hand kids caption", it["blurb"].startswith("A field") and it["kids_blurb"].startswith("A hand")
+          and it["kids_edited"], it)
+    page = req(K, "GET", "/")[2]
+    check("K page: kids caption shown and editable", "Kids caption" in page and 'id="kids-editor"' in page
+          and "A hand written kids line." in page, "")
+    req(K, "POST", "/api/caption/kids", {"id": cid, "blurb": ""})
+    for _ in range(40):
+        it = kids_items(K)[cid]
+        if it["kids_status"] == "captioned": break
+        time.sleep(0.5)
+    check("K empty kids edit brings a machine one back", it["kids_blurb"].startswith("Look at") and not it["kids_edited"], it)
+
+    # Guess where?: the clean picture until since + reveal, then the label; the ETag changes at the reveal
+    req(K, "POST", "/api/show", {"id": cid}); t0 = time.time()
+    st, veiled, h1 = img(K, "/current/label/640x360.jpg?reveal=5")
+    clean = img(K, "/current/clean/640x360.jpg")[1]
+    cv = req(K, "GET", "/current.json?reveal=5")[1]
+    check("K reveal: clean before", st == 200 and veiled == clean and cv["revealed"] is False
+          and cv["version"] == cur(K)["version"] + ".veiled" and cv["reveal_at"], cv)
+    st, *_ = img(K, "/current/label/640x360.jpg?reveal=5", h1["ETag"]); check("K reveal: 304 before", st == 304, st)
+    time.sleep(max(0, t0 + 5.5 - time.time()))
+    st, shown, h2 = img(K, "/current/label/640x360.jpg?reveal=5", h1["ETag"])
+    cv = req(K, "GET", "/current.json?reveal=5")[1]
+    check("K reveal: label after, new ETag", st == 200 and shown == img(K, "/current/label/640x360.jpg")[1]
+          and h2["ETag"] != h1["ETag"], (st, h1.get("ETag"), h2.get("ETag")))
+    check("K reveal: version changes at the reveal", cv["revealed"] is True and cv["version"] == cur(K)["version"], cv)
+    st, kshown, _ = img(K, "/current/label/640x360.jpg?label=kids&reveal=5")
+    check("K reveal with the kids label", st == 200 and kshown == img(K, "/current/label/640x360.jpg?label=kids")[1], st)
+    st, zero, _ = img(K, "/current/label/640x360.jpg?reveal=0"); check("K reveal=0 is the label", st == 200 and zero == shown, st)
+    for bad in ("abc", "-1", "1.5", "86401"):
+        st, *_ = img(K, "/current/label/640x360.jpg?reveal=" + bad); check("K reveal=%s 400" % bad, st == 400, st)
+    check("K current.json bad reveal 400", req(K, "GET", "/current.json?reveal=x")[0] == 400)
+finally:
+    pk.terminate(); pk.wait(); fk.terminate()
+
 print("\n%d passed, %d failed (logs in %s)" % (ok, fail, S))
 if not fail:
     shutil.rmtree(S, ignore_errors=True)

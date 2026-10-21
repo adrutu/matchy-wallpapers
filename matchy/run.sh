@@ -57,6 +57,9 @@ readonly captions_on
 focus_auto="$(opt 'focus_auto' false)"
 [[ "${focus_auto}" == "true" ]] || focus_auto=false
 readonly focus_auto
+kids_on="$(opt 'caption_kids' false)"
+[[ "${kids_on}" == "true" ]] || kids_on=false
+readonly kids_on
 
 # ---------------------------------------------------------------- source folders
 folders='[]'
@@ -250,6 +253,7 @@ jq -n \
     --arg caption_spelling "$(opt 'caption_spelling' 'British')" \
     --argjson caption_min_words "$(int 'caption_min_words' 30)" \
     --argjson caption_max_words "$(int 'caption_max_words' 45)" \
+    --argjson caption_kids "${kids_on}" \
     --argjson location "${location}" \
     '{
         port: $port,
@@ -273,7 +277,8 @@ jq -n \
             language: $caption_language,
             spelling: $caption_spelling,
             min_words: $caption_min_words,
-            max_words: $caption_max_words
+            max_words: $caption_max_words,
+            kids: {enabled: $caption_kids}
         }
      } | del(..|nulls)' > "${CONFIG_FILE}.tmp"
 mv "${CONFIG_FILE}.tmp" "${CONFIG_FILE}"

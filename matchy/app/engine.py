@@ -60,7 +60,9 @@ DEFAULTS = {
     "captioners": [],
     "caption": {"enabled": True, "language": "English", "spelling": "", "min_words": 30, "max_words": 45,
                 "max_tokens": 300, "temperature": 0.4, "image_px": 1024, "retry_failed_hours": 6,
-                "forbidden_titles": []},
+                "forbidden_titles": [],
+                # A second, shorter blurb for children, written after every normal caption is done.
+                "kids": {"enabled": False, "min_words": 15, "max_words": 30}},
     "overrides": {},
     # Crop around the subject the captioner boxed, or else around the detail in the picture, instead of
     # the centre. A focus point set by hand in the panel is used either way.
@@ -122,6 +124,9 @@ class Refused(Exception):
 
 
 CAPTION_LIMITS = {"title": 100, "place": 120, "credit": 200, "blurb": 600}
+KIDS_LIMIT = 400  # characters of a hand-written kids blurb
+KIDS_DROP = ("kids_caption_failed_at", "kids_caption_error", "kids_caption_attempts", "kids_caption_note")
+MAX_REVEAL_S = 86400  # ?reveal= on /current/label: whole seconds, up to a day
 
 # The Screens list: a client names itself with ?screen=<name> on any GET. "Off" is advisory: the
 # engine keeps serving it, and the client reads "follow" from /current.json and stands down itself.
@@ -215,6 +220,7 @@ class Engine:
         self.lib = Library(cfg)
         self.renderer = render.Renderer(cfg.get("style"))
         self.captioner = Captioner(cfg) if cfg["captioners"] and cfg["caption"].get("enabled", True) else None
+        self.kids_on = bool(cfg["caption"]["kids"].get("enabled"))
         self.state_path = os.path.join(cfg["data_dir"], "state.json")
         self.state = read_json(self.state_path, {}) or {}
         self.state.setdefault("bag", [])
@@ -462,6 +468,22 @@ class Engine:
         log("caption edited by hand:", iid)
         self.wake.set()
 
+    def set_kids_caption(self, iid, blurb):
+        """The kids blurb written by hand (kids_edited: true keeps the captioner off it), or, empty,
+        cleared so the captioner writes a fresh one."""
+        it = self.lib.items.get(iid)
+        if not it:
+            raise Refused(404, "no picture with id %r" % iid)
+        if blurb:
+            self.lib.update_sidecar(iid, {"kids_blurb": blurb, "kids_edited": True, "kids_edited_at": iso(time.time()),
+                                          "kids_sha256": it["sha256"]}, drop=KIDS_DROP)
+            log("kids caption edited by hand:", iid)
+        else:
+            self.lib.update_sidecar(iid, {}, drop=KIDS_DROP + ("kids_blurb", "kids_edited", "kids_edited_at"))
+            log("kids caption cleared:", iid)
+            self.caption_wake.set()
+        self.wake.set()
+
     def recaption(self, iid):
         self._need_item(iid)
         if not self.captioner:
@@ -628,7 +650,9 @@ class Engine:
                      "ip": v.get("ip", ""), "agent": v.get("agent", ""), "image": v.get("image", "")}
                     for k, v in items]
 
-    def current(self, base=""):
+    def current(self, base="", reveal=None):
+        """reveal: seconds after `since` at which a "Guess where?" screen shows the label. Until then
+        `version` ends in ".veiled", so it changes at the reveal as well as on every rotation."""
         with self.lock:
             cur = self.state.get("current")
             if not cur or cur not in self.lib.items:
@@ -641,9 +665,10 @@ class Engine:
         q = self.quiet(time.time())
         quiet = bool(q and q["active"])
         rev = d["rev"]
-        return {
+        out = {
             "id": cur, "rev": rev, "version": "%s.%s.%d" % (cur, rev, int(since)),
             "title": d["title"], "place": d["place"], "credit": d["credit"], "blurb": d["blurb"],
+            "kids_blurb": d["kids_blurb"],
             # Held by quiet hours, the next change is a full interval after they end: not known yet.
             "since": iso(since), "next_change": None if paused or (quiet and q["hold"]) else iso(nxt),
             "paused": paused, "captioned": self.lib.status(cur) == "captioned",
@@ -660,13 +685,20 @@ class Engine:
                 "span": "%s/img/%s/%s/span.jpg?layout={layout}" % (base, cur, rev),
             },
         }
+        if reveal is not None:
+            out["reveal_at"] = iso(since + reveal)
+            out["revealed"] = time.time() >= since + reveal
+            if not out["revealed"]:
+                out["version"] += ".veiled"
+        return out
 
     def captioner_view(self):
         c, now = self.captioner, time.time()
         if not c:
             return {"configured": False, "enabled": bool(self.cfg["caption"].get("enabled", True)),
-                    "busy": None, "waiting": 0, "endpoints": []}
+                    "busy": None, "waiting": 0, "kids_waiting": 0, "endpoints": []}
         return {"configured": True, "enabled": True, "busy": self.caption_busy, "waiting": len(self.caption_queue()),
+                "kids_waiting": len(self.kids_queue()),
                 "endpoints": [{"name": ep["name"],
                                "skipped_until": iso(c.down_until[ep["name"]]) if c.down_until.get(ep["name"], 0) > now else None}
                               for ep in c.endpoints]}
@@ -684,6 +716,8 @@ class Engine:
                         "place": d["place"], "credit": d["credit"], "blurb": d["blurb"],
                         "caption_model": sc.get("caption_model", ""), "caption_at": sc.get("caption_at", ""),
                         "edited": bool(sc.get("edited")), "hidden": iid in hidden, "recaption_queued": iid in recap,
+                        "kids_blurb": d["kids_blurb"], "kids_status": lib.kids_status(iid),
+                        "kids_edited": bool(sc.get("kids_edited")),
                         "error": (lib.skipped[iid][1] if iid in lib.skipped
                                   else str(sc.get("caption_error") or "") if not d["blurb"] else "")})
         lo, hi, src = self.rotation_window()
@@ -694,7 +728,7 @@ class Engine:
             at, name = self.next_sun_change(time.time())
             rot["next_sun"] = {"at": iso(at), "event": name}
         return {"items": out, "current": self.state.get("current"), "paused": bool(self.state.get("paused")),
-                "rotation": rot,
+                "rotation": rot, "kids_captions": self.kids_on,
                 "captioning": self.caption_busy, "captioner": self.captioner_view()}
 
     # ---------------- background workers ----------------
@@ -779,6 +813,27 @@ class Engine:
         todo.sort()
         return recap + [t[-1] for t in todo]
 
+    def kids_queue(self):
+        """Pictures waiting for a kids caption: only once no normal caption waits (the vision model is
+        shared), only for pictures with a normal caption (the kids label keeps its title), the one on
+        screen first."""
+        if not self.captioner or not self.kids_on:
+            return []
+        lib = self.lib
+        retry = 3600 * float(self.cfg["caption"].get("retry_failed_hours", 6))
+        now, cur = time.time(), self.state.get("current")
+        todo = []
+        for iid, it in lib.items.items():
+            if iid in lib.skipped or lib.status(iid) != "captioned":
+                continue
+            stt = lib.kids_status(iid)
+            sc = lib.sidecars.get(iid) or {}
+            if stt == "captioned" or (stt == "failed" and now - sc.get("kids_caption_failed_at", 0) < retry):
+                continue
+            todo.append((iid != cur, it["order"], iid))
+        todo.sort()
+        return [t[-1] for t in todo]
+
     def _recaption_done(self, iid):
         with self.lock:
             if iid in self.state["recaption"]:
@@ -791,18 +846,25 @@ class Engine:
             return
         time.sleep(5)
         while True:
-            queue = self.caption_queue()
+            queue, kids = self.caption_queue(), False
+            if not queue:
+                queue, kids = self.kids_queue(), True
             if not queue:
                 self.caption_wake.wait(30)
                 self.caption_wake.clear()
                 continue
             iid = queue[0]
             it = self.lib.items.get(iid)
-            recap = iid in self.state["recaption"]
+            recap = not kids and iid in self.state["recaption"]
+            fail = (lambda err: self._mark_kids_failed(iid, it, err)) if kids else (
+                lambda err: self._mark_failed(iid, it, err, recap))
             gap = 30
             try:
                 master = self.lib.ensure_master(iid)
                 self.caption_busy = iid
+                if kids:
+                    gap = self._caption_kids(iid, it, master)
+                    continue
                 res, ep = self.captioner.caption(it["meta"], master)
                 gap = float(ep.get("gap_seconds", 0))
                 sc = {"id": iid, "source": it["path"], "sha256": it["sha256"], "title": res["title"],
@@ -815,6 +877,8 @@ class Engine:
                     sc["subject"] = res["subject"]
                 sc.update(art_fields(it))
                 with self.lib.lock:  # the focus is read and written back in one go
+                    # the kids caption has its own life in the same file: a new normal caption keeps it
+                    sc.update({k: v for k, v in (self.lib.sidecars.get(iid) or {}).items() if k.startswith("kids_")})
                     prev = self.lib.stored_focus(iid)
                     if prev and prev["source"] == "hand":  # never replaced, re-caption or not
                         sc["focus"] = prev
@@ -837,18 +901,46 @@ class Engine:
                 if "no caption endpoint available" in str(e) or not any(
                         ep for ep in self.captioner.available()):
                     gap = self.captioner.retry_in()
-                    log("caption", iid, "postponed %ds:" % gap, e)
+                    log("kids caption" if kids else "caption", iid, "postponed %ds:" % gap, e)
                 else:
-                    self._mark_failed(iid, it, str(e), recap)
+                    fail(str(e))
             except ValueError as e:
-                self._mark_failed(iid, it, str(e), recap)
+                fail(str(e))
             except Exception as e:
                 traceback.print_exc()
-                self._mark_failed(iid, it, repr(e), recap)
+                fail(repr(e))
             finally:
                 self.caption_busy = None
-            self.caption_wake.wait(gap)  # a re-caption asked for in the panel cuts the pause short
-            self.caption_wake.clear()
+                self.caption_wake.wait(gap)  # a re-caption asked for in the panel cuts the pause short
+                self.caption_wake.clear()
+
+    def _caption_kids(self, iid, it, master):
+        """Write the kids caption for iid; returns the endpoint's pause. Grounded like the normal one, with
+        the label's title as a known fact."""
+        title = self.lib.display(iid)["title"]
+        res, ep = self.captioner.caption(dict(it["meta"], title=title), master, kids=True)
+        fields = {"kids_blurb": res["blurb"], "kids_sha256": it["sha256"], "kids_edited": False,
+                  "kids_caption_model": "%s@%s" % (ep["model"], ep["name"]), "kids_caption_at": iso(time.time())}
+        if res.get("accepted_with"):
+            fields["kids_caption_note"] = "; ".join(res["accepted_with"])
+        with self.lib.lock:  # a hand edit made while the model was writing wins
+            if (self.lib.sidecars.get(iid) or {}).get("kids_edited"):
+                log("kids caption", iid, "was written by hand meanwhile; not overwritten")
+            else:
+                self.lib.update_sidecar(iid, fields, drop=tuple(k for k in KIDS_DROP if k not in fields))
+                log("kids captioned %s: %s" % (iid, res["blurb"]))
+        self.wake.set()
+        return float(ep.get("gap_seconds", 0))
+
+    def _mark_kids_failed(self, iid, it, err):
+        sc = self.lib.sidecars.get(iid) or {}
+        if sc.get("kids_edited"):
+            return
+        self.lib.update_sidecar(iid, {"kids_sha256": it["sha256"], "kids_caption_failed_at": time.time(),
+                                      "kids_caption_error": err[:300],
+                                      "kids_caption_attempts": sc.get("kids_caption_attempts", 0) + 1},
+                                drop=("kids_blurb",))
+        log("kids caption", iid, "failed:", err)
 
     def _mark_failed(self, iid, it, err, recap=False):
         if recap:  # the old caption stays; a failed re-caption is not retried on its own
@@ -968,13 +1060,17 @@ class Engine:
         f = self.lib.focus(iid)
         return (round(f["x"], 3), round(f["y"], 3)) if f else (0.5, 0.5)
 
-    def render_kind(self, iid, rev, kind, w, h, s=1.0, layout=None, pad=1.0, dim=0.0):
-        """dim (quiet hours, clean and label only) darkens the render and gets its own cache file."""
+    def render_kind(self, iid, rev, kind, w, h, s=1.0, layout=None, kids=False, pad=1.0, dim=0.0):
+        """kids: the kids label, which is the normal one until the kids caption exists. dim (quiet hours,
+        clean and label only) darkens the render and gets its own cache file."""
         disp = self.lib.display(iid)
         meta = {k: disp[k] for k in ("title", "place", "credit", "blurb")}
         f = self.lib.focus(iid)  # part of the rev, so it is part of the cache key too
         f = (f["x"], f["y"]) if f else None
-        sk = ("%.2f" % s).rstrip("0").rstrip(".")
+        kids = kids and bool(disp["kids_blurb"])
+        if kids:
+            meta["blurb"] = disp["kids_blurb"]
+        sk = ("%.2f" % s).rstrip("0").rstrip(".") + ("-kids" if kids else "")
         dk = ("-d%s" % dim_key(dim)) if dim else ""
         if pad != 1.0 and kind in ("clean", "label"):
             # The pan's focus names the file as well (a centred pan has no focus in the rev).
@@ -1002,6 +1098,10 @@ class Engine:
             mons = render.parse_layout(layout, **self.span_limits())
             prod = lambda: self.renderer.encode(self.renderer.span(self.master_image(iid), meta, mons, s, f))
         return self.cached(key, prod)
+
+    def kids_scale(self):
+        """The label scale `?label=kids` gets when the URL has no `s`: bigger type for young readers."""
+        return round(min(2.0, max(0.6, float(self.renderer.st.get("kids_scale", 1.3)))), 2)
 
     def span_limits(self):
         z = self.cfg["size_limits"]
@@ -1204,9 +1304,27 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
-    def parse_scale(self, q):
+    def parse_label(self, q):
+        """True for ?label=kids, the kids caption on the label."""
+        v = q.get("label", [""])[0]
+        if v not in ("", "kids"):
+            raise ValueError("label must be kids")
+        return v == "kids"
+
+    def parse_reveal(self, q):
+        """?reveal=<seconds> on /current/label ("Guess where?"), or None."""
+        v = q.get("reveal", [None])[0]
+        if v is None:
+            return None
+        if not v.isdigit() or int(v) > MAX_REVEAL_S:
+            raise ValueError("reveal must be whole seconds, 0-%d" % MAX_REVEAL_S)
+        return int(v)
+
+    def parse_scale(self, q, default=1.0):
+        if "s" not in q:
+            return default
         try:
-            s = float(q.get("s", ["1"])[0])
+            s = float(q["s"][0])
         except ValueError:
             raise ValueError("bad s")
         if not 0.6 <= s <= 2.0:
@@ -1249,7 +1367,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/healthz":
             return self.send(200, "ok\n", head=head, headers={"Cache-Control": "no-store"})
         if path == "/current.json":
-            cur = eng.current(self.ingress_base())
+            try:
+                reveal = self.parse_reveal(q)
+            except ValueError as e:
+                return self.send(400, "%s\n" % e, head=head)
+            cur = eng.current(self.ingress_base(), reveal)
             if cur:
                 cur["screens_off"] = eng.screens_off()
                 if screen:
@@ -1272,21 +1394,25 @@ class Handler(BaseHTTPRequestHandler):
             # /current/<kind>/<W>x<H>.jpg
             if len(parts) == 3 and parts[0] == "current" and parts[1] in ("clean", "label"):
                 size = self.parse_size(parts[2])
-                cur = eng.current()
+                labelled = parts[1] == "label"
+                kids = labelled and self.parse_label(q)
+                cur = eng.current(reveal=self.parse_reveal(q) if labelled else None)
                 if not size or not cur:
                     return self.send(404, "not found\n", head=head)
-                s = self.parse_scale(q) if parts[1] == "label" else 1.0
+                s = self.parse_scale(q, eng.kids_scale() if kids else 1.0) if labelled else 1.0
                 pad = self.parse_pad(q, size)
                 # Quiet hours dim /current/ only: /img/ URLs are cacheable for a year and keep their meaning.
                 dim = cur["quiet_window"]["dim"] if cur["quiet"] else 0.0
-                etag = '"%s-%s-%dx%d-%s%s"' % (cur["version"], parts[1], size[0], size[1], s,
-                                               ("-dim" + dim_key(dim)) if dim else "")
+                # The version ends in ".veiled" until a reveal, so the ETag changes when the label comes.
+                etag = '"%s-%s-%dx%d-%s%s%s"' % (cur["version"], parts[1], size[0], size[1], s, "-kids" if kids else "",
+                                                 ("-dim" + dim_key(dim)) if dim else "")
                 if pad != 1.0:  # the focus can move without a new version
                     etag = etag[:-1] + '-p%s-f%s,%s"' % ((pad,) + eng.focus(cur["id"]))
                 hdr = {"Cache-Control": "no-cache", "ETag": etag}
                 if self.headers.get("If-None-Match") == etag:
                     return self.send(304, headers=hdr, head=True)
-                data = eng.render_kind(cur["id"], cur["rev"], parts[1], size[0], size[1], s, pad=pad, dim=dim)
+                kind = "clean" if cur.get("revealed") is False else parts[1]  # Guess where?: clean until the reveal
+                data = eng.render_kind(cur["id"], cur["rev"], kind, size[0], size[1], s, kids=kids, pad=pad, dim=dim)
                 return self.send(200, data, "image/jpeg", hdr, head)
 
             if len(parts) >= 3 and parts[0] == "img" and parts[1] in eng.lib.items:
@@ -1306,21 +1432,25 @@ class Handler(BaseHTTPRequestHandler):
                     layout = q.get("layout", [""])[0]
                     if not layout:
                         return self.send(400, "layout required\n", head=head)
-                    data = eng.render_kind(iid, rev, "span", 0, 0, self.parse_scale(q), layout)
+                    kids = self.parse_label(q)
+                    data = eng.render_kind(iid, rev, "span", 0, 0, self.parse_scale(q, eng.kids_scale() if kids else 1.0),
+                                           layout, kids)
                     return self.send(200, data, "image/jpeg", immut, head)
                 if len(parts) == 5:
                     size = self.parse_size(parts[4])
                     if not size:
                         return self.send(400, "size must be <W>x<H>.jpg within limits\n", head=head)
-                    s = self.parse_scale(q) if kind == "label" else 1.0
+                    kids = kind == "label" and self.parse_label(q)
+                    s = self.parse_scale(q, eng.kids_scale() if kids else 1.0) if kind == "label" else 1.0
                     pad = self.parse_pad(q, size)
                     hdr = immut
                     if pad != 1.0:  # the focus can move under the same rev: revalidate, never immutable
-                        etag = '"%s-%s-%s-%dx%d-%s-p%s-f%s,%s"' % ((iid, rev, kind) + size + (s, pad) + eng.focus(iid))
+                        etag = '"%s-%s-%s-%dx%d-%s-p%s-f%s,%s%s"' % ((iid, rev, kind) + size + (s, pad) + eng.focus(iid)
+                                                                   + ("-kids" if kids else "",))
                         hdr = {"Cache-Control": "no-cache", "ETag": etag}
                         if self.headers.get("If-None-Match") == etag:
                             return self.send(304, headers=hdr, head=True)
-                    data = eng.render_kind(iid, rev, kind, size[0], size[1], s, pad=pad)
+                    data = eng.render_kind(iid, rev, kind, size[0], size[1], s, kids=kids, pad=pad)
                     return self.send(200, data, "image/jpeg", hdr, head)
         except ValueError as e:
             return self.send(400, "%s\n" % e, head=head)
@@ -1347,6 +1477,16 @@ def arg_caption(a):
     if not out["blurb"]:
         raise Refused(400, "blurb required")
     return out
+
+
+def arg_kids(a):
+    v = a.get("blurb", "")
+    if not isinstance(v, str):
+        raise Refused(400, "blurb must be text")
+    v = " ".join(v.split())
+    if len(v) > KIDS_LIMIT:
+        raise Refused(400, "blurb is longer than %d characters" % KIDS_LIMIT)
+    return v
 
 
 def arg_screen(a):
@@ -1402,6 +1542,7 @@ ACTIONS = {
     "/api/hide": ("panel", lambda eng, a: eng.hide(arg_id(a))),
     "/api/unhide": ("panel", lambda eng, a: eng.unhide(arg_id(a))),
     "/api/caption": ("panel", lambda eng, a: eng.set_caption(arg_id(a), arg_caption(a))),
+    "/api/caption/kids": ("panel", lambda eng, a: eng.set_kids_caption(arg_id(a), arg_kids(a))),
     "/api/recaption": ("panel", lambda eng, a: eng.recaption(arg_id(a))),
     "/api/focus": ("panel", focus_action),
     "/api/rotation": ("panel", rotation_action),
@@ -1424,6 +1565,8 @@ def gallery_html(eng, control, admin):
     no_ctl = "" if control else ' disabled title="Only from your own network"'
     no_admin = "" if admin else ' disabled title="Only in the Home Assistant sidebar panel"'
     no_recap = no_admin or ("" if cap["configured"] else ' disabled title="No captioner is configured"')
+    # Kids captions: shown and editable when the option is on, or when a picture already has one.
+    kids_on = lib["kids_captions"] or any(i["kids_blurb"] for i in items)
 
     def tags(it):
         out = []
@@ -1446,6 +1589,8 @@ def gallery_html(eng, control, admin):
         if (it.get("focus") or {}).get("source") == "hand":
             out.append('<button data-act="focus" data-body="%s"%s>Reset focus</button>' % (
                 esc(json.dumps({"id": it["id"], "reset": True}), quote=True), no_admin))
+        if kids_on:
+            out.append('<button data-act="kids-edit"%s>Kids caption</button>' % no_admin)
         if it["hidden"]:
             out.append('<button data-act="unhide"%s>Unhide</button>' % no_admin)
         else:
@@ -1472,6 +1617,13 @@ def gallery_html(eng, control, admin):
 
     pick = (' title="Click to set the focus point that crops keep in frame (Ctrl-click opens the labelled '
             'picture)"' if admin else "")
+    def kids_line(it):
+        if not kids_on:
+            return ""
+        st = {"captioned": "Kids: written by hand" if it["kids_edited"] else "Kids", "failed": "Kids: failed"}.get(
+            it["kids_status"], "Kids: waiting")
+        return '<p class="kids"><span class="tag kid">%s</span> %s</p>' % (esc(st), esc(it["kids_blurb"]))
+
     cards = []
     for it in items:
         cls = " is-current" if it["id"] == cur.get("id") else ""
@@ -1481,11 +1633,12 @@ def gallery_html(eng, control, admin):
         cards.append(
             '<figure class="card%s" data-id="%s"><a class="thumb%s" href="%s/label/2560x1440.jpg" target="_blank" '
             'rel="noopener" data-crop="%s"%s><img loading="lazy" src="%s/clean/640x360.jpg" alt="">%s</a><figcaption>'
-            '<div class="tags">%s</div><b>%s</b><small>%s%s</small><p>%s</p><div class="acts">%s</div>'
+            '<div class="tags">%s</div><b>%s</b><small>%s%s</small><p>%s</p>%s<div class="acts">%s</div>'
             '</figcaption></figure>' % (
                 cls, esc(it["id"]), " pick" if admin else "", esc(src), crop, pick, esc(src), dot, tags(it),
                 esc(it["title"] or it["id"]), esc(it["id"]),
-                (" · " + esc(it["place"])) if it["place"] else "", esc(it["blurb"] or it["error"]), buttons(it)))
+                (" · " + esc(it["place"])) if it["place"] else "", esc(it["blurb"] or it["error"]), kids_line(it),
+                buttons(it)))
 
     by_id = {i["id"]: i for i in items}
     if cur.get("id"):
@@ -1493,10 +1646,11 @@ def gallery_html(eng, control, admin):
         src = "img/%s/%s/label" % (cur["id"], cur["rev"])
         top = ('<section class="top" data-id="%s"><a class="shot" href="%s/2560x1440.jpg" target="_blank" '
                'rel="noopener"><img src="%s/1920x1080.jpg" alt="The wallpaper on screen now"></a><div class="meta">'
-               '<p class="kicker">On screen now</p><h1>%s</h1><p class="mut">%s</p><p>%s</p>'
+               '<p class="kicker">On screen now</p><h1>%s</h1><p class="mut">%s</p><p>%s</p>%s'
                '<div class="acts"><button class="primary" data-act="next"%s>Next picture</button>%s</div></div></section>') % (
             esc(cur["id"]), esc(src), esc(src), esc(cur["title"] or cur["id"]),
             esc(" · ".join(x for x in (cur["place"], cur["credit"]) if x)), esc(cur["blurb"]),
+            kids_line(by_id[cur["id"]]) if cur["id"] in by_id else "",
             no_ctl, buttons(by_id.get(cur["id"], {"hidden": False}), top=True))
     else:
         top = ('<section class="top empty"><div class="meta"><p class="kicker">On screen now</p><h1>Nothing yet</h1>'
@@ -1602,20 +1756,22 @@ def gallery_html(eng, control, admin):
             capline += "<br>Writing a caption for %s now." % esc(cap["busy"])
         if cap["waiting"]:
             capline += "<br>%d picture%s waiting for a caption." % (cap["waiting"], "" if cap["waiting"] == 1 else "s")
+        if cap["kids_waiting"]:
+            capline += "<br>%d waiting for a kids caption, after the others." % cap["kids_waiting"]
     n_cap = sum(1 for i in items if i["status"] == "captioned")
     n_hidden = sum(1 for i in items if i["hidden"])
     summary = "%d picture%s · %d captioned%s" % (len(items), "" if len(items) == 1 else "s", n_cap,
                                                  (" · %d hidden" % n_hidden) if n_hidden else "")
 
     data = {"version": cur.get("version"),
-            "items": [{k: i[k] for k in ("id", "title", "place", "credit", "blurb")} for i in items],
+            "items": [{k: i[k] for k in ("id", "title", "place", "credit", "blurb", "kids_blurb")} for i in items],
             "pace": [{"label": label, "body": {"min_minutes": m, "max_minutes": m} if m else {"mode": "daynight"}}
                      for label, m in PACE_STOPS]}
     return PAGE.substitute(
         top=top, state=state, toggle=toggle, window=window, screens=screens, capline=capline, summary=esc(summary),
         cards="\n".join(cards), data=json.dumps(data, ensure_ascii=False).replace("<", "\\u003c"),
         lim_title=CAPTION_LIMITS["title"], lim_place=CAPTION_LIMITS["place"],
-        lim_credit=CAPTION_LIMITS["credit"], lim_blurb=CAPTION_LIMITS["blurb"])
+        lim_credit=CAPTION_LIMITS["credit"], lim_blurb=CAPTION_LIMITS["blurb"], lim_kids=KIDS_LIMIT)
 
 
 # string.Template, so the CSS and JS need no escaping; the script avoids "$" for the same reason.
@@ -1655,11 +1811,12 @@ figcaption{padding:10px 12px;display:flex;flex-direction:column;flex:1}figcaptio
 figcaption p{margin:.4em 0 0;font-size:13px;color:#c9d0cc;flex:1}
 .tags{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px}.tag{font-size:11px;border-radius:6px;padding:1px 7px;background:#333}
 .tag.captioned{background:#24402d}.tag.failed{background:#5a2a2a}.tag.pending{background:#40391f}
+.tag.kid{background:#2d3550}figcaption p.kids,.meta p.kids{font-size:13px;color:#c9d0cc;flex:0}
 .tag.on{background:var(--acc);color:#0b120e}.tag.hid{background:#3a3f55}.tag.off{background:#5a2a2a}.tag.stale{background:#40391f}
 dialog{background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:12px;width:min(640px,calc(100vw - 32px));padding:18px}
 dialog::backdrop{background:#000a}dialog label{display:block;margin:10px 0 0;font-size:13px;color:var(--mut)}
 dialog input,dialog textarea{display:block;width:100%;margin-top:4px;font:15px/1.4 system-ui,sans-serif;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:6px 8px}
-dialog menu{display:flex;justify-content:flex-end;gap:8px;padding:0;margin:16px 0 0}#ed-msg{color:var(--bad);min-height:1.2em;margin:8px 0 0}
+dialog menu{display:flex;justify-content:flex-end;gap:8px;padding:0;margin:16px 0 0}#ed-msg,#kd-msg{color:var(--bad);min-height:1.2em;margin:8px 0 0}
 .foot{margin-top:24px;font-size:13px}.foot a{color:var(--acc)}
 @media(max-width:800px){.top{grid-template-columns:1fr}}
 </style></head><body><main>
@@ -1683,6 +1840,14 @@ $top
 <label>Blurb <textarea name="blurb" rows="5" maxlength="$lim_blurb" required></textarea></label>
 <p id="ed-msg" role="status"></p>
 <menu><button value="cancel" formnovalidate>Cancel</button><button class="primary" value="save">Save caption</button></menu>
+</form></dialog>
+<dialog id="kids-editor"><form method="dialog" id="kids-form">
+<h2>Kids caption: <span id="kd-id"></span></h2>
+<p class="mut small">For <code>?label=kids</code>: 15 to 30 simple words and one fun fact, for ages 5 to 9. Written here, it
+is never overwritten. Save it empty and the captioner writes a new one.</p>
+<label>Kids blurb <textarea name="blurb" rows="4" maxlength="$lim_kids"></textarea></label>
+<p id="kd-msg" role="status"></p>
+<menu><button value="cancel" formnovalidate>Cancel</button><button class="primary" value="save">Save kids caption</button></menu>
 </form></dialog>
 <script type="application/json" id="lib">$data</script>
 <script>
@@ -1720,11 +1885,29 @@ form.addEventListener('submit', async e => {
   FIELDS.forEach(k => { body[k] = form.elements[k].value; });
   try { await post('caption', body); location.reload(); } catch (err) { edMsg.textContent = err.message; }
 });
+const kdlg = document.getElementById('kids-editor'), kform = document.getElementById('kids-form');
+const kdMsg = document.getElementById('kd-msg');
+function kidsEdit(id) {
+  const it = byId[id];
+  if (!it) return;
+  kform.dataset.id = id;
+  kdMsg.textContent = '';
+  document.getElementById('kd-id').textContent = it.title || id;
+  kform.elements.blurb.value = it.kids_blurb || '';
+  kdlg.showModal();
+}
+kform.addEventListener('submit', async e => {
+  if (e.submitter && e.submitter.value === 'cancel') return;
+  e.preventDefault();
+  try { await post('caption/kids', {id: kform.dataset.id, blurb: kform.elements.blurb.value}); location.reload(); }
+  catch (err) { kdMsg.textContent = err.message; }
+});
 document.addEventListener('click', e => {
   const b = e.target.closest('button[data-act]');
   if (!b || b.disabled) return;
   const holder = b.closest('[data-id]'), id = holder ? holder.dataset.id : null;
   if (b.dataset.act === 'edit') return edit(id);
+  if (b.dataset.act === 'kids-edit') return kidsEdit(id);
   run(b, b.dataset.act, b.dataset.body ? JSON.parse(b.dataset.body) : (id ? {id: id} : {}));
 });
 // Focus point: a click on a thumbnail is a point on the picture (the thumbnail is a crop of it, data-crop).
@@ -1753,7 +1936,7 @@ win.addEventListener('submit', e => {
 });
 // Follow the rotation: reload when the picture on screen changes, but never under an open editor.
 setInterval(async () => {
-  if (dlg.open || document.hidden) return;
+  if (dlg.open || kdlg.open || document.hidden) return;
   try {
     const c = await (await fetch('current.json', {cache: 'no-store'})).json();
     if (c.version && c.version !== data.version) location.reload();

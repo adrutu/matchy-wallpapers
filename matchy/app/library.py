@@ -225,8 +225,36 @@ class Library:
             return "failed"
         return "pending"
 
+    def kids_status(self, iid):
+        """The kids caption, kept in the same sidecar under kids_*: written for this file (or by hand),
+        failed for this file, or pending."""
+        it = self.items.get(iid)
+        if not it:
+            return "missing"
+        sc = self.sidecars.get(iid) or {}
+        if sc.get("kids_blurb") and (sc.get("kids_edited") or sc.get("kids_sha256") == it["sha256"]):
+            return "captioned"
+        if sc.get("kids_caption_failed_at") and sc.get("kids_sha256") == it["sha256"]:
+            return "failed"
+        return "pending"
+
+    def update_sidecar(self, iid, fields, drop=()):
+        """Merge fields into the sidecar (and remove the keys in drop), whatever its edited flag: for the
+        kids_* fields, which a hand edit of the main caption does not cover."""
+        with self.lock:
+            sc = dict(self.sidecars.get(iid) or {})
+            for k in drop:
+                sc.pop(k, None)
+            sc.update(fields)
+            p = self.sidecar_path(iid)
+            write_json(p, sc)
+            self.sidecars[iid] = sc
+            self._sc_mtime[iid] = os.stat(p).st_mtime
+        self.changed.set()
+
     def display(self, iid):
-        """Text shown on the label: the sidecar if captioned, else the known metadata."""
+        """Text shown on the label: the sidecar if captioned, else the known metadata. kids_blurb is
+        the kids caption, or "" until there is one."""
         it = self.items.get(iid, {})
         meta = it.get("meta", {})
         sc = self.sidecars.get(iid) or {}
@@ -236,6 +264,9 @@ class Library:
             d = {"title": meta.get("title") or meta.get("collection") or "", "place": meta.get("place", ""),
                  "credit": meta.get("credit", ""), "blurb": ""}
         d["rev"] = rev_of(d, os.path.basename(self.master_path(iid)) if it else "", self.focus(iid))
+        d["kids_blurb"] = (sc.get("kids_blurb") or "") if self.kids_status(iid) == "captioned" else ""
+        if d["kids_blurb"]:  # only then, so a library without kids captions keeps its URLs
+            d["rev"] = hashlib.sha256((d["rev"] + "|kids|" + d["kids_blurb"]).encode()).hexdigest()[:6]
         return d
 
     # ---------- focus points ----------

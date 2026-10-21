@@ -69,6 +69,7 @@ options:
   caption_spelling: British
   caption_min_words: 30
   caption_max_words: 45
+  caption_kids: false
   captioners: []
   art_institute_chicago:
     enabled: false
@@ -112,6 +113,7 @@ schema:
   caption_spelling: "list(British|American)"
   caption_min_words: int(5,200)
   caption_max_words: int(5,200)
+  caption_kids: bool
   captioners:
     - name: str
       url: url
