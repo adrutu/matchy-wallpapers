@@ -2,7 +2,7 @@
 API answer is a fixture from tests/fixtures/art/ and every image is generated here.
 
 Part 1 runs the adapters and Library.sync_art against a fake HTTP client. Part 2 starts the real
-engine against a local server that answers like the three APIs, with the fake captioner, and checks
+engine against a local server that answers like the two APIs, with the fake captioner, and checks
 a fresh install fills its library with credited works, writes their facts into the sidecars, and
 keeps to the day's budget after a restart.
 
@@ -47,10 +47,8 @@ def jpeg(w, h, colour=(120, 90, 60)):
     return buf.getvalue()
 
 
-# Image sizes the fake servers hand out, by a piece of the path. The Saint George image claims
-# 2000x3200 in the API (1686x2698 at the width asked for) but is served smaller: the decoded size wins.
-IMAGES = {"fx-aic-childs-bath": (1686, 2584), "fx-aic-saint-george": (843, 1349), "fx-aic-water-lilies": (1686, 1613),
-          "DT1567": (3000, 2400), "3840px-Misty_valley": (3840, 2560)}
+# Image sizes the fake servers hand out, by a piece of the path.
+IMAGES = {"DT1567": (3000, 2400), "3840px-Misty_valley": (3840, 2560)}
 
 
 def image_for(path):
@@ -63,8 +61,6 @@ def image_for(path):
 def answer(method, path, base):
     """(status, body bytes, content type) for a request to the fake APIs; shared by both parts."""
     u = urllib.parse.urlparse(path)
-    if method == "POST" and u.path == "/api/v1/search":
-        return 200, json.dumps(fixture("aic-search.json", base)).encode(), "application/json"
     if u.path == "/met/v1.1/search":
         return 200, json.dumps(fixture("met-search.json", base)).encode(), "application/json"
     m = re.match(r"^/met/v1/objects/(\d+)$", u.path)
@@ -75,7 +71,7 @@ def answer(method, path, base):
         return 200, json.dumps(fixture(os.path.basename(f), base)).encode(), "application/json"
     if u.path == "/w/api.php":
         return 200, json.dumps(fixture("potd.json", base)).encode(), "application/json"
-    if u.path.startswith(("/iiif/", "/met/images/", "/upload/")):
+    if u.path.startswith(("/met/images/", "/upload/")):
         data = image_for(u.path)
         if data:
             return 200, data, "image/jpeg"
@@ -104,8 +100,7 @@ class FakeClient(artsources.Client):
 
 
 B = FakeClient.BASE_URL
-CFG = {"aic": {"enabled": True, "per_day": 3, "min_px": 2560, "batch": 20, "base_url": B + "/api/v1"},
-       "met": {"enabled": True, "per_day": 3, "min_px": 2560, "lookups": 15, "search": {"isHighlight": "true"},
+CFG = {"met": {"enabled": True, "per_day": 3, "min_px": 2560, "lookups": 15, "search": {"isHighlight": "true"},
                "base_url": B + "/met"},
        "potd": {"enabled": True, "per_day": 1, "min_px": 2560, "days_back": 7, "language": "en",
                 "api_url": B + "/w/api.php"}}
@@ -114,28 +109,6 @@ CFG = {"aic": {"enabled": True, "per_day": 3, "min_px": 2560, "batch": 20, "base
 cl = FakeClient(contact="maintainer@example.org")
 check("UA names the project and the contact", artsources.PROJECT_URL in cl.ua and "maintainer@example.org" in cl.ua
       and cl.ua.startswith("MatchyWallpapers") and "bot" in cl.ua, cl.ua)
-
-out = list(artsources.aic(CFG["aic"], cl, random.Random(1), set()))
-works = [w for w in out if not w.get("skip")]
-ids = [w["id"] for w in works]
-check("AIC: public-domain works with an image only", ids == ["aic-16568", "aic-111642", "aic-15468"], ids)
-check("AIC: the rest marked to skip, with why", [(w["id"], w["skip"]) for w in out if w.get("skip")]
-      == [("aic-111628", "not public domain"), ("aic-4575", "no usable image")], out)
-url, body, hdr = cl.calls[0]
-q = json.loads(body)
-check("AIC: the docs' random public-domain query", url == B + "/api/v1/search" and q["resources"] == "artworks"
-      and {"term": {"is_public_domain": True}} in q["query"]["function_score"]["query"]["bool"]["filter"]
-      and "random_score" in q["query"]["function_score"] and q["limit"] == 20, q)
-check("AIC: AIC-User-Agent header", hdr.get("AIC-User-Agent", "").startswith("matchy-wallpapers (")
-      and hdr.get("Content-Type") == "application/json", hdr)
-bath = works[1]
-check("AIC: IIIF at 1686 wide from config.iiif_url", bath["image_url"] == B + "/iiif/2/fx-aic-childs-bath/full/1686,/0/default.jpg"
-      and bath["size"] == (1686, 2584), bath)
-check("AIC: facts, label line and credit", bath["facts"] == {"artist": "Mary Cassatt", "date": "1893", "medium": "Oil on canvas",
-      "place": "United States"} and bath["place"] == "Mary Cassatt · 1893" and bath["credit"] == "The Art Institute of Chicago · CC0"
-      and bath["title"] == "The Child's Bath" and bath["source_url"] == "https://www.artic.edu/artworks/111642", bath)
-check("AIC: seen ids are not offered again", [w["id"] for w in artsources.aic(CFG["aic"], cl, random.Random(1), {
-      "aic-16568", "aic-111628", "aic-4575"})] == ["aic-111642", "aic-15468"])
 
 cl = FakeClient()
 out = list(artsources.met(CFG["met"], cl, random.Random(2), set()))
@@ -196,15 +169,12 @@ try:
     new = lib.sync_art(random.Random(4))
 finally:
     artsources.Client = orig_client
-check("sync: one per source passes 2560 px", sorted(new) == sorted(["aic-111642", "met-436535", "potd-" + time.strftime(
+check("sync: one per source passes 2560 px", sorted(new) == sorted(["met-436535", "potd-" + time.strftime(
       "%Y%m%d", time.gmtime())]), new)
-skipped = lib.art_skipped
-check("sync: too small by the API's numbers, no download", "under 2560" in skipped.get("aic-16568", {}).get("reason", ""), skipped)
-check("sync: too small once decoded (843x1349)", "843x1349" in skipped.get("aic-15468", {}).get("reason", ""), skipped)
-r = lib.remote["aic-111642"]
-check("sync: remote.json keeps facts, credit, collection, size", r["kind"] == "aic" and r["facts"]["artist"] == "Mary Cassatt"
-      and r["credit"] == "The Art Institute of Chicago · CC0" and r["collection"] == "Art Institute of Chicago"
-      and r["size"] == "1686x2584" and os.path.exists(os.path.join(data, "originals", "aic-111642.jpg")), r)
+r = lib.remote["met-436535"]
+check("sync: remote.json keeps facts, credit, collection, size", r["kind"] == "met" and r["facts"]["artist"] == "Vincent van Gogh"
+      and r["credit"] == "The Metropolitan Museum of Art · metmuseum.org · CC0" and r["collection"] == "The Metropolitan Museum of Art"
+      and r["size"] == "3000x2400" and os.path.exists(os.path.join(data, "originals", "met-436535.jpg")), r)
 check("sync: POTD keeps its licence", lib.remote[[i for i in new if i.startswith("potd")][0]].get("licence") == "CC BY-SA 4.0")
 items = lib.remote_items()
 check("sync: items carry facts and the source page", items["met-436535"]["meta"]["facts"]["date"] == "1889"
@@ -216,10 +186,10 @@ try:
     again = lib2.sync_art(random.Random(4))
 finally:
     artsources.Client = orig_client
-check("sync: skipped works remembered across restarts", {"aic-16568", "aic-111628", "met-437133", "met-1"} <= set(lib2.art_skipped),
+check("sync: skipped works remembered across restarts", {"met-437133", "met-45734", "met-1"} <= set(lib2.art_skipped),
       sorted(lib2.art_skipped))
-check("sync: AIC and Met (1 of 3) search again but skip what they know; POTD (1 of 1) asks nothing",
-      again == [] and [c[0].split("?")[0] for c in fc.calls] == [B + "/api/v1/search", B + "/met/v1.1/search"], (again, fc.calls))
+check("sync: Met (1 of 3) searches again but asks about nothing it knows; POTD (1 of 1) asks nothing",
+      again == [] and [c[0].split("?")[0] for c in fc.calls] == [B + "/met/v1.1/search"], (again, fc.calls))
 lib3 = Library({"data_dir": data, "folders": [], "art_sources": {k: dict(v, per_day=1) for k, v in CFG.items()}})
 fc = FakeClient()
 artsources.Client = lambda *a, **k: fc
@@ -228,6 +198,23 @@ try:
 finally:
     artsources.Client = orig_client
 check("sync: no request at all once every source has its day's budget", fc.calls == [], fc.calls)
+
+# min_px over what the works have: POTD says 3840x2560 up front (no download), the Met image is
+# only measured once downloaded (3000x2400)
+fc = FakeClient()
+artsources.Client = lambda *a, **k: fc
+try:
+    lib5 = Library({"data_dir": os.path.join(S, "lib5"), "folders": [],
+                    "art_sources": {k: dict(v, min_px=4000) for k, v in CFG.items()}})
+    got = lib5.sync_art(random.Random(4))
+finally:
+    artsources.Client = orig_client
+today_potd = "potd-" + time.strftime("%Y%m%d", time.gmtime())
+check("sync: too small by the API's numbers, no download", got == [] and "3840x2560 is under 4000"
+      in lib5.art_skipped.get(today_potd, {}).get("reason", "") and not any("/upload/" in c[0] for c in fc.calls), lib5.art_skipped)
+check("sync: too small once decoded", "3000x2400 is under 4000" in lib5.art_skipped.get("met-436535", {}).get("reason", "")
+      and any("/met/images/" in c[0] for c in fc.calls), lib5.art_skipped)
+
 
 class Throttled(FakeClient):
     def get(self, url, data=None, headers=None, max_bytes=60_000_000):
@@ -249,15 +236,16 @@ check("sync: a 429 on an image stops that source, nothing remembered as unusable
 
 # ---------------------------------------------------------------- 1c. the captioner is told the facts
 cap = Captioner({"caption": {"min_words": 5, "max_words": 60, "forbidden_titles": []}, "captioners": []})
-meta = items["aic-111642"]["meta"]
+meta = items["met-436535"]["meta"]
 p = cap.prompt(meta)
-check("prompt: artist, date, medium, place of origin; no 'Place:' line", "Artist: Mary Cassatt" in p and "Date: 1893" in p
-      and "Medium: Oil on canvas" in p and "Place of origin: United States" in p and "- Place:" not in p
-      and "work of art" in p, p)
-problems, _ = cap.check(meta, meta["title"], "Cassatt paints a quiet interior in soft light, the Oil on canvas texture plain to see.")
-check("grounding: facts allow the artist and a derived adjective", problems == [], problems)
-problems, _ = cap.check(meta, meta["title"], "Cassatt painted this in Paris after meeting Degas there.")
-check("grounding: names not in the facts are still caught", problems and "Degas" in problems[0] and "Paris" in problems[0], problems)
+check("prompt: artist, date, medium; no 'Place:' line", "Artist: Vincent van Gogh" in p and "Date: 1889" in p
+      and "Medium: Oil on canvas" in p and "Place of origin" not in p and "- Place:" not in p and "work of art" in p, p)
+p = cap.prompt(dict(meta, facts=dict(meta["facts"], place="France")))
+check("prompt: place of origin when the source gives one", "Place of origin: France" in p, p)
+problems, _ = cap.check(meta, meta["title"], "In this field, Gogh lays the Oil on canvas thick under a restless sky full of light.")
+check("grounding: facts allow the artist", problems == [], problems)
+problems, _ = cap.check(meta, meta["title"], "Gogh painted this in Paris after meeting Gauguin there.")
+check("grounding: names not in the facts are still caught", problems and "Gauguin" in problems[0] and "Paris" in problems[0], problems)
 
 # ---------------------------------------------------------------- 2. the engine, fresh install, one local "internet"
 requests_seen = []
@@ -270,7 +258,7 @@ class API(BaseHTTPRequestHandler):
         n = int(self.headers.get("Content-Length") or 0)
         if n:
             self.rfile.read(n)
-        requests_seen.append((method, self.path, self.headers.get("User-Agent", ""), self.headers.get("AIC-User-Agent", "")))
+        requests_seen.append((method, self.path, self.headers.get("User-Agent", "")))
         st, body, ctype = answer(method, self.path, "http://127.0.0.1:%d" % SERVER_PORT)
         self.send_response(st); self.send_header("Content-Type", ctype); self.send_header("Content-Length", str(len(body)))
         self.end_headers(); self.wfile.write(body)
@@ -288,7 +276,6 @@ cfg = {"port": ENGINE_PORT, "bind": "127.0.0.1", "data_dir": os.path.join(S, "da
        "captioners": [{"name": "fake", "url": "http://127.0.0.1:%d/v1/chat/completions" % CAP_PORT, "model": "x", "timeout": 10}],
        "caption": {"enabled": True, "min_words": 30, "max_words": 45, "spelling": "British"},
        "art_sources": {"pause_seconds": 0, "contact": "maintainer@example.org",
-                       "aic": {"enabled": True, "per_day": 1, "base_url": local + "/api/v1"},
                        "met": {"enabled": True, "per_day": 1, "base_url": local + "/met"},
                        "potd": {"enabled": True, "api_url": local + "/w/api.php"}}}
 cfg_path = os.path.join(S, "cfg.json")
@@ -320,7 +307,7 @@ def start_engine():
 
 
 today = "potd-" + time.strftime("%Y%m%d", time.gmtime())
-want = {"aic-111642", "met-436535", today}
+want = {"met-436535", today}
 pe = start_engine()
 try:
     L = {}
@@ -329,31 +316,25 @@ try:
         if want <= set(L) and all(L[i]["status"] == "captioned" for i in want):
             break
         time.sleep(1)
-    check("engine: fresh install fills the library from all three", want == set(L), sorted(L))
+    check("engine: fresh install fills the library from both", want == set(L), sorted(L))
     check("engine: each captioned", all(L.get(i, {}).get("status") == "captioned" for i in want),
           {i: L.get(i, {}).get("status") for i in want})
-    a, m, p = L.get("aic-111642", {}), L.get("met-436535", {}), L.get(today, {})
-    check("engine: AIC label fields", a.get("title") == "The Child's Bath" and a.get("place") == "Mary Cassatt · 1893"
-          and a.get("credit") == "The Art Institute of Chicago · CC0", a)
-    check("engine: Met label fields", m.get("title") == "Wheat Field with Cypresses" and m.get("credit", "").startswith(
-          "The Metropolitan Museum of Art"), m)
+    m, p = L.get("met-436535", {}), L.get(today, {})
+    check("engine: Met label fields", m.get("title") == "Wheat Field with Cypresses" and m.get("place") == "Vincent van Gogh · 1889"
+          and m.get("credit") == "The Metropolitan Museum of Art · metmuseum.org · CC0", m)
     check("engine: POTD label fields", p.get("title") == "Misty valley at dawn"
           and p.get("credit") == "Example Photographer · CC BY-SA 4.0 · Wikimedia Commons", p)
-    sc = json.load(open(os.path.join(cfg["data_dir"], "library", "aic-111642.json")))
+    sc = json.load(open(os.path.join(cfg["data_dir"], "library", "met-436535.json")))
     check("engine: sidecar has the facts and the source page", sc.get("facts", {}).get("medium") == "Oil on canvas"
-          and sc["facts"]["artist"] == "Mary Cassatt" and sc.get("source_url", "").endswith("/111642") and sc.get("blurb"), sc)
+          and sc["facts"]["artist"] == "Vincent van Gogh" and sc.get("source_url", "").endswith("/436535") and sc.get("blurb"), sc)
     st, body = req("GET", "/img/met-436535/original.jpg")
-    st2, _ = req("GET", "/img/%s/%s/label/1280x720.jpg" % ("aic-111642", a.get("rev")))
+    st2, _ = req("GET", "/img/%s/%s/label/1280x720.jpg" % ("met-436535", m.get("rev")))
     check("engine: original and label render", st == 200 and st2 == 200, (st, st2))
     uas = {r[2] for r in requests_seen}
     check("engine: every request carries the project User-Agent with the contact",
           uas and all(artsources.PROJECT_URL in u and "maintainer@example.org" in u for u in uas), uas)
-    aic_reqs = [r for r in requests_seen if r[1].startswith(("/api/v1/", "/iiif/"))]
-    check("engine: AIC requests carry AIC-User-Agent", aic_reqs and all(r[3].startswith("matchy-wallpapers (") for r in aic_reqs),
-          aic_reqs)
     check("engine: works without a usable image never downloaded or added",
-          not any("water-lilies" in r[1] for r in requests_seen) and "aic-16568" not in L and "aic-15468" not in L
-          and "met-45734" not in L, sorted(L))
+          "met-45734" not in L and "met-437133" not in L and "met-1" not in L, sorted(L))
 finally:
     pe.terminate(); pe.wait()
 

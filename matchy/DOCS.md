@@ -61,8 +61,7 @@ port>`. Leave it empty and only the sidebar panel works.
 | `caption_max_words` | int, 5–200 | 45 | Longest blurb asked for. After a second try, a blurb within three words of the range is kept. |
 | `caption_kids` | bool | false | Also write a **kids caption** for each picture: 15 to 30 simple words for ages 5 to 9, with one fun fact and nothing scary, checked by the same grounding rules. It waits until no normal caption is waiting, because the vision model may be busy with other work. Screens show it with `?label=kids` (see *Kids labels*). |
 | `captioners` | list of objects | `[]` | OpenAI-compatible vision endpoints, tried in order. Fields: `name` (required), `url` (required, the full `/v1/chat/completions` URL), `model` (required), `api_key` (optional), `timeout` (seconds, 5–600, default 120). |
-| `art_institute_chicago` | object | off | Public-domain works from the Art Institute of Chicago. Fields: `enabled` (false), `per_day` (1–50, default 3, new works a day), `min_px` (640–7680, default 2560, the smallest long side kept). See [Open-access art](#open-access-art). |
-| `the_met` | object | off | Public-domain highlights from The Metropolitan Museum of Art. Same fields and defaults. |
+| `the_met` | object | off | Public-domain highlights from The Metropolitan Museum of Art. Fields: `enabled` (false), `per_day` (1–50, default 3, new works a day), `min_px` (640–7680, default 2560, the smallest long side kept). See [Open-access art](#open-access-art). |
 | `wikimedia_picture_of_the_day` | object | off | Wikimedia Commons' Picture of the Day. Same fields; `per_day` is 1–7, default 1 (today's picture; more fills in the days before). |
 | `palette_enabled` | bool | true | Colour match: work out each picture's main colours, an accent and the nearest GNOME accent name (see [Colour match](#colour-match)). Off: `palette` is `[]` and `accent` and `gnome_accent` are `null` everywhere, and nothing is computed. |
 | `mood` | `off`, `light` or `strong` | off | Mood-aware picks (see below). `off` is a plain shuffle, exactly as before the option existed. `light` pulls a picture whose tags fit the moment forward about 3 shuffles in 4, `strong` about 19 in 20; every picture still comes up once per shuffle. |
@@ -77,9 +76,9 @@ Only options you set are written to the engine's config; everything else keeps t
 
 ### Open-access art
 
-Three built-in sources of art with real metadata, each off until you turn it on. Once an hour Matchy
+Two built-in sources of art with real metadata, each off until you turn it on. Once an hour Matchy
 checks each source that is on and, until it has added `per_day` new works that day, asks for more.
-A work joins the library only if it is public domain (the two museums) and its image is at least
+A work joins the library only if it is public domain (The Met) and its image is at least
 `min_px` on its long side; works without a usable image are skipped and remembered, so they are not
 asked about again.
 
@@ -94,7 +93,6 @@ What each one adds, and how the label credits it:
 
 | Source | Picks | Label (title / second line / credit) | Id |
 | :--- | :--- | :--- | :--- |
-| Art Institute of Chicago | A random page of public-domain works with an image. | Title / artist · date / *The Art Institute of Chicago · CC0* | `aic-<id>` |
 | The Met | A random page of the collection's highlights with images; each object is checked for public domain. | Title / artist · date / *The Metropolitan Museum of Art · metmuseum.org · CC0* | `met-<id>` |
 | Wikimedia Commons Picture of the Day | Today's picture (UTC), then earlier days if `per_day` asks for more. | Title / – / *author · licence · Wikimedia Commons* | `potd-YYYYMMDD` |
 
@@ -104,9 +102,6 @@ and the grounding check accepts it. Wikimedia's description of the picture is gi
 
 Things to know:
 
-- **The Art Institute of Chicago serves public-domain images at most 1686 pixels wide** (its API
-  documentation lists 843, 1200 and 1686). With the default `min_px` of 2560 only tall works pass;
-  lower `min_px` to 1686 to take landscapes too, at a resolution that is soft on a 4K screen.
 - **Picture of the Day is not only public domain.** Most pictures are photographs under Creative
   Commons licences (CC BY, CC BY-SA); the label always carries the author and the licence, which
   is what those licences ask for.
@@ -114,14 +109,12 @@ Things to know:
   one at a time, at least a second apart. A source that refuses or fails is logged
   (`art source met failed: …`) and asked again at the next hourly check.
 - Turning a source off keeps what it already added. To drop those pictures too, leave them out with
-  `exclude` (`aic-*`, `met-*`, `potd-*`).
+  `exclude` (`met-*`, `potd-*`).
 - Images are stored in the add-on's data (`originals/`) like other downloaded pictures, so they are
-  in backups. The museums' images of public-domain works are CC0; Commons pictures keep their own
+  in backups. The Met's images of public-domain works are CC0; Commons pictures keep their own
   licence.
 
-These are the terms each source states, as read in October 2026: the Art Institute of Chicago asks
-for at most one request a second, an `AIC-User-Agent` header with a contact, and public-domain images
-only; The Met asks for no more than 80 requests a second, gives public-domain images and data under
+These are the terms each source states, as read in October 2026: The Met asks for no more than 80 requests a second, gives public-domain images and data under
 CC0, and asks that its name not be used to imply endorsement; Wikimedia asks for a User-Agent with
 contact details, serial requests, and the thumbnail sizes its API hands out.
 
@@ -732,8 +725,7 @@ generates, with its defaults:
   "palette": {"enabled": true},
   "static_manifest": {"enabled": false},
   "daily": {"enabled": false},
-  "art_sources": {"aic": {"enabled": false, "per_day": 3, "min_px": 2560},
-                  "met": {"enabled": false, "per_day": 3, "min_px": 2560},
+  "art_sources": {"met": {"enabled": false, "per_day": 3, "min_px": 2560},
                   "potd": {"enabled": false, "per_day": 1, "min_px": 2560}},
   "mqtt": {"enabled": false, "host": "<broker>", "port": 1883, "username": "", "password": "",
            "base_url": "http://<matchy-host>:8160"}
@@ -763,9 +755,7 @@ Keys the engine understands but the add-on does not expose:
   `kids.max_words` (15 and 30);
 - under `art_sources`: `contact` (an e-mail address or URL added to the User-Agent; the project page
   is always there), `check_minutes` (60), `pause_seconds` (1, between two requests to one source);
-  per source `base_url` (`api_url` for `potd`); `aic.batch` (20 works per search) and
-  `aic.extra_filters` (Elasticsearch filters added to the search, e.g.
-  `[{"term": {"is_on_view": true}}]`); `met.search` (extra search parameters,
+  per source `base_url` (`api_url` for `potd`); `met.search` (extra search parameters,
   default `{"isHighlight": "true"}`; `""` drops one) and `met.lookups` (15 objects per check at
   most); `potd.days_back` (7) and `potd.language` (`en`, for the description);
 - under `mood`: `api_url`, `api_token` (above) and `refresh_minutes` (10, how often the weather
@@ -787,7 +777,7 @@ counts as the panel, so give it only to one you would hand the controls to.
 ## Licensing and credits
 
 No images ship with this add-on. Images you point it at stay yours, and their licences are your
-responsibility. The open-access art sources download public-domain works (CC0) from the two museums
+responsibility. The open-access art sources download public-domain works (CC0) from The Met
 and freely licensed pictures from Wikimedia Commons, each credited on its label; a Commons picture
 keeps its own licence. The bundled fonts are Noto, under the SIL Open Font Licence 1.1; their copyright file
 travels with the image at `/fonts/COPYRIGHT-fonts-noto-core`. The code licence is in the repository's

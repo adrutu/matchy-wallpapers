@@ -56,8 +56,6 @@ DEFAULTS = {
     # Open-access art (artsources.py): each source off until enabled; `per_day` new works a day, each at
     # least `min_px` on its long side. `contact` goes into the User-Agent next to the project URL.
     "art_sources": {"check_minutes": 60, "pause_seconds": 1.0, "contact": "",
-                    "aic": {"enabled": False, "per_day": 3, "min_px": 2560, "batch": 20,
-                            "base_url": "https://api.artic.edu/api/v1"},
                     "met": {"enabled": False, "per_day": 3, "min_px": 2560, "lookups": 15,
                             "search": {"isHighlight": "true"},
                             "base_url": "https://collectionapi.metmuseum.org/public/collection"},
