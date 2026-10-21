@@ -292,6 +292,59 @@ One thing to know: the screensaver's picture is fetched by Home Assistant, not b
 tablet that spends the day in its screensaver shows an old *last seen* in `/screens.json` while it
 still follows Matchy.
 
+## 5. Love it: a one-tap heart for the picture on screen
+
+A loved picture comes up `love_weight` times as often (see [DOCS.md](../../matchy/DOCS.md#loved-pictures)).
+`POST /api/love` and `/api/unlove` are on the Network tier, so a tablet tile can call them. Add `id`
+and `loved` to the feed, a `rest_command`, and a template switch; a tile card on that switch then
+reads *Love it* with the state under it, and one tap toggles the heart. Merge each block into the
+matching top-level key of the package from section 1.
+
+```yaml
+rest:
+  - resource: <matchy-url>/current.json
+    sensor:
+      - name: Matchy feed
+        json_attributes:
+          # ... the list from section 1 (it already has id), plus:
+          - loved
+
+template:
+  - sensor:
+      - name: Matchy
+        attributes:
+          # ... as in section 1, plus:
+          loved: "{{ state_attr('sensor.matchy_feed', 'loved') | bool(false) }}"
+  - switch:
+      - name: Love it
+        unique_id: matchy_love
+        icon: "{{ 'mdi:heart' if is_state_attr('sensor.matchy', 'loved', true) else 'mdi:heart-outline' }}"
+        state: "{{ is_state_attr('sensor.matchy', 'loved', true) }}"
+        availability: "{{ has_value('sensor.matchy') }}"
+        turn_on:
+          - action: rest_command.matchy_love
+            data: {love: true, id: "{{ state_attr('sensor.matchy', 'id') }}"}
+          - action: homeassistant.update_entity
+            target: {entity_id: sensor.matchy_feed}
+        turn_off:
+          - action: rest_command.matchy_love
+            data: {love: false, id: "{{ state_attr('sensor.matchy', 'id') }}"}
+          - action: homeassistant.update_entity
+            target: {entity_id: sensor.matchy_feed}
+
+rest_command:
+  matchy_love:
+    url: "<matchy-url>/api/{{ 'love' if love else 'unlove' }}"
+    method: POST
+    content_type: application/json
+    payload: '{"id": {{ id | to_json }}}'
+    timeout: 15
+```
+
+The switch follows the picture: when the rotation moves on, it shows whether the new picture is
+loved. The id is read at the moment of the tap, so a tap just as the picture changes hearts the one
+that was on screen when `sensor.matchy_feed` last polled (up to `scan_interval` seconds earlier).
+
 ## Checking
 
 - Developer tools → States: `sensor.matchy` should show the version string with `title`, `blurb`,

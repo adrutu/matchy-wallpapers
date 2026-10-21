@@ -194,6 +194,7 @@ jq -n \
     --argjson scan_minutes "$(int 'folder_scan_minutes' 10)" \
     --argjson rot_min "$(int 'rotation_min_minutes' 15)" \
     --argjson rot_max "$(int 'rotation_max_minutes' 20)" \
+    --argjson love_weight "$(int 'love_weight' 3)" \
     --argjson folders "${folders}" \
     --argjson sets "${sets}" \
     --argjson exclude "${exclude}" \
@@ -213,7 +214,7 @@ jq -n \
         cache_max_mb: $cache_max_mb,
         render_threads: $render_threads,
         folder_scan_minutes: $scan_minutes,
-        rotation: {min_minutes: $rot_min, max_minutes: $rot_max},
+        rotation: {min_minutes: $rot_min, max_minutes: $rot_max, love_weight: $love_weight},
         location: $location,
         folders: ($folders | map(. + {sets: $sets})),
         exclude: $exclude,

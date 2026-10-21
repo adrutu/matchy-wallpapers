@@ -58,6 +58,7 @@ options:
   sets: []
   rotation_min_minutes: 15
   rotation_max_minutes: 20
+  love_weight: 3
   folder_scan_minutes: 10
   master_max_px: 3840
   cache_max_mb: 2048
@@ -83,6 +84,7 @@ schema:
       abstract: "bool?"
   rotation_min_minutes: int(1,1440)
   rotation_max_minutes: int(1,1440)
+  love_weight: int(1,10)
   folder_scan_minutes: int(1,1440)
   master_max_px: int(1280,7680)
   cache_max_mb: int(128,65536)
