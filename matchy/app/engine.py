@@ -142,6 +142,7 @@ class Engine:
         self.state.setdefault("history", [])
         self.state.setdefault("hidden", [])     # ids kept out of rotation from the panel
         self.state.setdefault("recaption", [])  # ids queued for a fresh machine caption
+        self.state.setdefault("loved", [])      # ids marked loved ("I love this wallpaper"); a mark, nothing more
         # A window set in the panel lasts until the add-on options change: whichever was set last wins.
         ov, r = self.state.get("rotation_override"), cfg["rotation"]
         if ov and ov.get("options") != [r["min_minutes"], r["max_minutes"]]:
@@ -322,6 +323,26 @@ class Engine:
                 self.save_state()
                 log("back in rotation:", iid)
 
+    def love(self, iid, loved=True):
+        """Mark a picture loved, or take the mark off. iid None means the picture on screen (a voice
+        command says "this wallpaper"). The mark shows in the panel and the JSON; it changes nothing
+        about the rotation."""
+        with self.lock:
+            if iid is None:
+                iid = self.state.get("current")
+                if not iid:
+                    raise Refused(409, "nothing is on screen yet")
+            self._need_item(iid)
+            marked = iid in self.state["loved"]
+            if loved and not marked:
+                self.state["loved"].append(iid)
+            elif marked and not loved:
+                self.state["loved"].remove(iid)
+            else:
+                return
+            self.save_state()
+        log("loved:" if loved else "no longer loved:", iid)
+
     def set_caption(self, iid, fields):
         """A caption written by hand. edited: true keeps the captioner off it until a re-caption."""
         it = self.lib.items.get(iid)  # one lookup: a rescan can drop the item at any moment
@@ -460,12 +481,13 @@ class Engine:
             since = self.state.get("since") or time.time()
             nxt = self.state.get("next_change") or since
             paused = bool(self.state.get("paused"))
+            loved = cur in self.state["loved"]
         rev = d["rev"]
         return {
             "id": cur, "rev": rev, "version": "%s.%s.%d" % (cur, rev, int(since)),
             "title": d["title"], "place": d["place"], "credit": d["credit"], "blurb": d["blurb"],
             "since": iso(since), "next_change": None if paused else iso(nxt), "paused": paused,
-            "captioned": self.lib.status(cur) == "captioned",
+            "captioned": self.lib.status(cur) == "captioned", "loved": loved,
             # Root-absolute by default, so a direct-port client can use them as-is. Behind Home
             # Assistant ingress the handler passes the ingress prefix, because the page lives
             # under /api/hassio_ingress/<token>/ there.
@@ -489,7 +511,7 @@ class Engine:
 
     def library_view(self):
         lib = self.lib
-        hidden, recap = set(self.state["hidden"]), set(self.state["recaption"])
+        hidden, recap, loved = set(self.state["hidden"]), set(self.state["recaption"]), set(self.state["loved"])
         out = []
         for iid in sorted(lib.items, key=lambda i: lib.items[i]["order"]):
             d = lib.display(iid)
@@ -498,6 +520,7 @@ class Engine:
                         "place": d["place"], "credit": d["credit"], "blurb": d["blurb"],
                         "caption_model": sc.get("caption_model", ""), "caption_at": sc.get("caption_at", ""),
                         "edited": bool(sc.get("edited")), "hidden": iid in hidden, "recaption_queued": iid in recap,
+                        "loved": iid in loved,
                         "error": (lib.skipped[iid][1] if iid in lib.skipped
                                   else sc.get("caption_error", "") if not d["blurb"] else "")})
         lo, hi, src = self.rotation_window()
@@ -1049,6 +1072,11 @@ def arg_id(a):
     return iid
 
 
+def arg_id_or_current(a):
+    """`id` as arg_id, or None when the body has no id: the picture on screen."""
+    return arg_id(a) if "id" in a else None
+
+
 def arg_caption(a):
     out = {}
     for k, cap in CAPTION_LIMITS.items():
@@ -1106,6 +1134,8 @@ ACTIONS = {
     "/api/show": ("lan", lambda eng, a: eng.show_now(arg_id(a))),
     "/api/hide": ("panel", lambda eng, a: eng.hide(arg_id(a))),
     "/api/unhide": ("panel", lambda eng, a: eng.unhide(arg_id(a))),
+    "/api/love": ("lan", lambda eng, a: eng.love(arg_id_or_current(a), True)),
+    "/api/unlove": ("lan", lambda eng, a: eng.love(arg_id_or_current(a), False)),
     "/api/caption": ("panel", lambda eng, a: eng.set_caption(arg_id(a), arg_caption(a))),
     "/api/recaption": ("panel", lambda eng, a: eng.recaption(arg_id(a))),
     "/api/rotation": ("panel", rotation_action),
@@ -1135,6 +1165,8 @@ def gallery_html(eng, control, admin):
             out.append('<span class="tag on">On screen now</span>')
         if it["hidden"]:
             out.append('<span class="tag hid">Hidden from rotation</span>')
+        if it.get("loved"):
+            out.append('<span class="tag love">Loved</span>')
         if it["recaption_queued"]:
             st = "Caption: re-caption queued"
         else:
@@ -1147,6 +1179,8 @@ def gallery_html(eng, control, admin):
         out = [] if top else ['<button data-act="show"%s>Show now</button>' % no_ctl]
         out.append('<button data-act="edit"%s>Edit caption</button>' % no_admin)
         out.append('<button data-act="recaption"%s>Re-caption</button>' % no_recap)
+        out.append('<button data-act="%s"%s>%s</button>' % (
+            ("unlove", no_ctl, "Unlove") if it.get("loved") else ("love", no_ctl, "Love")))
         if it["hidden"]:
             out.append('<button data-act="unhide"%s>Unhide</button>' % no_admin)
         else:
@@ -1264,8 +1298,10 @@ def gallery_html(eng, control, admin):
             capline += "<br>%d picture%s waiting for a caption." % (cap["waiting"], "" if cap["waiting"] == 1 else "s")
     n_cap = sum(1 for i in items if i["status"] == "captioned")
     n_hidden = sum(1 for i in items if i["hidden"])
-    summary = "%d picture%s · %d captioned%s" % (len(items), "" if len(items) == 1 else "s", n_cap,
-                                                 (" · %d hidden" % n_hidden) if n_hidden else "")
+    n_loved = sum(1 for i in items if i["loved"])
+    summary = "%d picture%s · %d captioned%s%s" % (len(items), "" if len(items) == 1 else "s", n_cap,
+                                                   (" · %d hidden" % n_hidden) if n_hidden else "",
+                                                   (" · %d loved" % n_loved) if n_loved else "")
 
     data = {"version": cur.get("version"),
             "items": [{k: i[k] for k in ("id", "title", "place", "credit", "blurb")} for i in items],
@@ -1314,6 +1350,7 @@ figcaption p{margin:.4em 0 0;font-size:13px;color:#c9d0cc;flex:1}
 .tags{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px}.tag{font-size:11px;border-radius:6px;padding:1px 7px;background:#333}
 .tag.captioned{background:#24402d}.tag.failed{background:#5a2a2a}.tag.pending{background:#40391f}
 .tag.on{background:var(--acc);color:#0b120e}.tag.hid{background:#3a3f55}.tag.off{background:#5a2a2a}.tag.stale{background:#40391f}
+.tag.love{background:#5a2a45}
 dialog{background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:12px;width:min(640px,calc(100vw - 32px));padding:18px}
 dialog::backdrop{background:#000a}dialog label{display:block;margin:10px 0 0;font-size:13px;color:var(--mut)}
 dialog input,dialog textarea{display:block;width:100%;margin-top:4px;font:15px/1.4 system-ui,sans-serif;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:6px 8px}

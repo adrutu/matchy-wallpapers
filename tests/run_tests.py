@@ -112,6 +112,24 @@ try:
     st, *_ = req(A, "POST", "/api/show", {"id": "nope"}); check("A show unknown 404", st == 404)
     st, *_ = req(A, "POST", "/api/show", {}); check("A show no id 400", st == 400)
 
+    # loved: a mark on a picture, {} meaning the one on screen
+    c0 = cur(A); check("A current has loved=false", c0["loved"] is False, c0)
+    st, j, *_ = req(A, "POST", "/api/love", {}); check("A love the one on screen", st == 200 and j["current"]["loved"] is True, j)
+    check("A library shows loved", [i["loved"] for i in lib(A)["items"] if i["id"] == c0["id"]] == [True])
+    page = req(A, "GET", "/")[2]
+    check("A page: loved tag and Unlove button", 'class="tag love">Loved' in page and 'data-act="unlove"' in page
+          and "1 loved" in page, page[:1500])
+    st, j, *_ = req(A, "POST", "/api/love", {}); check("A love twice is fine", st == 200 and j["current"]["loved"] is True)
+    other = [i for i in ids if i != c0["id"]][0]
+    st, j, *_ = req(A, "POST", "/api/love", {"id": other}); check("A love by id leaves the screen alone", st == 200 and j["current"]["id"] == c0["id"])
+    check("A two loved", sum(i["loved"] for i in lib(A)["items"]) == 2)
+    st, *_ = req(A, "POST", "/api/love", {"id": "nope"}); check("A love unknown 404", st == 404, st)
+    st, *_ = req(A, "POST", "/api/love", {"id": 5}); check("A love non-text id 400", st == 400, st)
+    st, j, *_ = req(A, "POST", "/api/unlove", {}); check("A unlove the one on screen", st == 200 and j["current"]["loved"] is False, j)
+    st, *_ = req(A, "POST", "/api/unlove", {"id": other}); check("A unlove by id", st == 200 and not any(i["loved"] for i in lib(A)["items"]))
+    st, *_ = req(A, "POST", "/api/unlove", {"id": other}); check("A unlove again is fine", st == 200)
+    req(A, "POST", "/api/love", {"id": other})  # stays loved across the restart below
+
     # caption edit
     old_rev = cur(A)["rev"]
     st, j, txt, _ = req(A, "POST", "/api/caption", {"id": target, "title": "My Title", "place": "Cork", "credit": "me",
@@ -185,6 +203,8 @@ finally:
 pa = start("A", dict(cfgA, _fresh=False))
 try:
     L = lib(A); check("A restart keeps panel window", L["rotation"]["source"] == "panel" and L["rotation"]["max_minutes"] == 3, L["rotation"])
+    check("A restart keeps loved", [i["id"] for i in L["items"] if i["loved"]] == [other], [i["id"] for i in L["items"] if i["loved"]])
+    req(A, "POST", "/api/unlove", {"id": other})
 finally:
     pa.terminate(); pa.wait()
 # restart A with changed options: options win
@@ -277,6 +297,9 @@ try:
     check("B page: captioner off line", "Captioner: <b>off</b>" in txt)
     st, *_ = req(B, "POST", "/api/pause", {}); check("B pause from LAN ok", st == 200)
     st, *_ = req(B, "POST", "/api/resume", {}); check("B resume from LAN ok", st == 200)
+    st, *_ = req(B, "POST", "/api/love", {}); check("B love from LAN ok", st == 200 and cur(B)["loved"] is True, st)
+    st, *_ = req(B, "POST", "/api/unlove", {}); check("B unlove from LAN ok", st == 200 and cur(B)["loved"] is False, st)
+    check("B page: Love button enabled off-panel", 'data-act="love">' in req(B, "GET", "/")[2])
     for path, body in (("/api/hide", {"id": first}), ("/api/caption", {"id": first, "blurb": "x"}),
                        ("/api/recaption", {"id": first}), ("/api/rotation", {"reset": True}), ("/api/unhide", {"id": first})):
         st, *_ = req(B, "POST", path, body); check("B %s refused off-panel 403" % path, st == 403, st)

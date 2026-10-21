@@ -17,7 +17,7 @@ curl -s $MATCHY/current.json
  "id": "art-great-wave", "rev": "73bdfe", "version": "art-great-wave.73bdfe.1760000000",
  "title": "The Great Wave off Kanagawa", "place": "", "credit": "Katsushika Hokusai",
  "blurb": "…", "since": "2026-10-15T10:12:30+01:00", "next_change": "2026-10-15T10:29:48+01:00",
- "paused": false, "captioned": true,
+ "paused": false, "captioned": true, "loved": false,
  "urls": {
   "original": "/img/art-great-wave/original.jpg",
   "clean": "/img/art-great-wave/73bdfe/clean/{w}x{h}.jpg",
@@ -89,6 +89,10 @@ curl -s -X POST -H 'Content-Type: application/json' -d '{}' $MATCHY/api/resume
 
 # put one picture on screen (ids from library.json)
 curl -s -X POST -H 'Content-Type: application/json' -d '{"id": "art-great-wave"}' $MATCHY/api/show
+
+# mark the picture on screen loved (a tag in the panel, "loved": true in current.json), or one by id
+curl -s -X POST -H 'Content-Type: application/json' -d '{}' $MATCHY/api/love
+curl -s -X POST -H 'Content-Type: application/json' -d '{"id": "art-great-wave"}' $MATCHY/api/unlove
 ```
 
 Hide, unhide, edit caption, re-caption and the rotation window work only from the Home Assistant
