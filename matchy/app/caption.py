@@ -33,6 +33,9 @@ UK_SPELLING = {
 
 SENT_START = re.compile(r"(^|[.!?]\s+|[—:;]\s*|\"\s*)$")
 
+MAX_REPLY_BYTES = 4_000_000  # a chat-completions reply is a few KB; anything near this is not a caption
+MAX_TITLE_CHARS = 120        # the word counts bound the blurb, but a "word" could be anything: cap the characters too
+
 
 def to_uk(text):
     def fix(m):
@@ -265,8 +268,10 @@ class Captioner:
             headers["Authorization"] = "Bearer " + ep["_key"]
         req = urllib.request.Request(ep["url"], data=data, headers=headers, method="POST")
         with urllib.request.urlopen(req, timeout=ep.get("timeout", 120)) as r:
-            resp = json.loads(r.read())
-        return reply_text(resp)
+            raw = r.read(MAX_REPLY_BYTES + 1)
+        if len(raw) > MAX_REPLY_BYTES:
+            raise ValueError("reply too large (over %d MB)" % (MAX_REPLY_BYTES // 1_000_000))
+        return reply_text(json.loads(raw))
 
     @staticmethod
     def parse(text):
@@ -284,10 +289,12 @@ class Captioner:
         words = len(blurb.split())
         if words < c["min_words"] or words > c["max_words"]:
             problems.append("blurb has %d words, it must have %d to %d" % (words, c["min_words"], c["max_words"]))
+        elif len(blurb) > 12 * c["max_words"] + 100:  # the hand-edit limit is 600 characters for 45 words
+            problems.append("blurb is too long (%d characters)" % len(blurb))
         if not meta.get("title"):
             tl = title.lower()
             bad_titles = [t.lower() for t in c.get("forbidden_titles", [])]
-            if not title or len(title.split()) > 7 or tl in bad_titles or any(
+            if not title or len(title.split()) > 7 or len(title) > MAX_TITLE_CHARS or tl in bad_titles or any(
                     w in tl for w in ("wallpaper", "image", "untitled")):
                 problems.append("the title must be 2 to 5 words naming what is visible")
         allowed = " ".join(str(meta.get(k, "")) for k in ("title", "place", "context", "collection", "credit"))

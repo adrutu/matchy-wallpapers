@@ -75,7 +75,15 @@ def title_case(text):
     return " ".join(out)
 
 
+def num(v, default=0.0):
+    """A JSON number, or `default` for anything else (a hand-edited sidecar may hold any type)."""
+    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else default
+
+
 def http_get(url, timeout=30, max_bytes=60_000_000):
+    # urllib would also open file:, data: and ftp: URLs; a remote source is a web server.
+    if urllib.parse.urlsplit(url).scheme not in ("http", "https"):
+        raise ValueError("only http(s) URLs are fetched: %r" % url)
     req = urllib.request.Request(url, headers={"User-Agent": "wallpaper-engine/1"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         data = r.read(max_bytes + 1)
@@ -85,7 +93,13 @@ def http_get(url, timeout=30, max_bytes=60_000_000):
 
 
 def display_fields(sc):
-    return {k: sc.get(k, "") or "" for k in ("title", "place", "credit", "blurb")}
+    """The four label fields as text. A hand-edited sidecar may hold a number or a list there; the
+    label, the page and the JSON views all expect strings, so anything else is shown as its text."""
+    out = {}
+    for k in ("title", "place", "credit", "blurb"):
+        v = sc.get(k) or ""
+        out[k] = v if isinstance(v, str) else str(v)
+    return out
 
 
 def rev_of(sc, picture=""):

@@ -46,6 +46,20 @@ Bug fixes from a review of the add-on; each has a test in `tests/run_tests.py`.
 - Docs: `caption_enabled: false` stops the captioner; it does not hide blurbs already written or
   written in the panel, as DOCS.md, the option's description and the panel said.
 
+Robustness review of the engine's edges (`tests/security_test.py`, also in CI):
+
+- `X-Ingress-Path` is honoured only from the Supervisor's address, and only as one plain absolute
+  path; a direct request's header no longer reaches `Location` or the `urls` in `current.json`.
+- Every response carries `X-Content-Type-Options: nosniff`.
+- A hand-edited sidecar with the wrong type in a field (a number for `title`, text for
+  `caption_failed_at`) degrades to text or is ignored instead of failing the page, the label, the
+  library JSON or the caption worker.
+- A captioner's reply is read up to 4 MB, and a title or blurb far longer than its word count allows
+  is rejected like any other bad answer.
+- Remote sources (`remote_manifest_url`, `daily_json_url`, `daily_image_url`) are fetched over
+  `http(s)` only.
+- `run.sh` drops the Supervisor token from the engine's environment: the engine never uses it.
+
 ## 0.4.0 (2026-10-17)
 
 First public release.

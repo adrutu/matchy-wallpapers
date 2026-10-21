@@ -47,7 +47,8 @@ def run(options, env=None):
     script = open(RUN_SH).read()
     script = script.replace("readonly DATA_DIR=/data", "readonly DATA_DIR=%s" % data)
     assert "exec python3 /app/engine.py" in script
-    script = script.replace("exec python3 /app/engine.py", "exit 0")
+    # The engine itself is not started: what it would have inherited is written out instead.
+    script = script.replace("exec python3 /app/engine.py", 'env > "${DATA_DIR}/engine-env.txt"; exit 0')
     open(os.path.join(tmp, "run.sh"), "w").write(script)
     open(os.path.join(tmp, "stub.sh"), "w").write(STUB)
     json.dump(options, open(os.path.join(tmp, "options.json"), "w"))
@@ -148,6 +149,9 @@ rc, cfg, err, data, tmp = run(dict(base), fake_bin(
 temps.append(tmp)
 check("location from Home Assistant", rc == 0 and cfg and cfg.get("location") == {"latitude": 51.8985, "longitude": -8.4756},
       (rc, cfg and cfg.get("location"), err[-300:]))
+env_txt = open(os.path.join(data, "engine-env.txt")).read() if os.path.exists(os.path.join(data, "engine-env.txt")) else ""
+check("the engine does not inherit the Supervisor token", env_txt and "SUPERVISOR_TOKEN" not in env_txt
+      and "WE_CONFIG=" in env_txt, env_txt[:300])
 rc, cfg, err, data, tmp = run(dict(base), fake_bin("exit 7")); temps.append(tmp)
 check("Home Assistant not answering: no location, still starts", rc == 0 and cfg and "location" not in cfg
       and "location is not known" in err, (rc, err[-300:]))

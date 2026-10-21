@@ -62,6 +62,9 @@ jobs:
       - name: Install Pillow
         run: python -m pip install --disable-pip-version-check "pillow>=11,<12"
 
+      - name: tests/security_test.py (headers, concurrent masters, replaced pictures, sidecar types, captioner replies)
+        run: python tests/security_test.py
+
       - name: tests/run_tests.py
         run: python tests/run_tests.py
 
