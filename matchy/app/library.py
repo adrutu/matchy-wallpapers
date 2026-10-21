@@ -721,7 +721,7 @@ class Library:
                 continue
             meta = {k: w[k] for k in ("title", "place", "credit", "context", "facts", "artwork", "source_url",
                                       "licence") if w.get(k) not in (None, "")}
-            meta.update(collection={"aic": "Art Institute of Chicago", "met": "The Metropolitan Museum of Art",
+            meta.update(collection={"met": "The Metropolitan Museum of Art",
                                     "potd": "Wikimedia Commons Picture of the Day"}[name], size="%dx%d" % size)
             self._store_remote(iid, name, data, meta)
             log("added", iid, "%dx%d:" % size, meta.get("title", ""), "|", meta.get("credit", ""))

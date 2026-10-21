@@ -1,4 +1,4 @@
-"""Open-access art sources: the Art Institute of Chicago, The Met, Wikimedia Commons' Picture of the Day.
+"""Open-access art sources: The Met and Wikimedia Commons' Picture of the Day.
 
 Each adapter turns one source's API into candidate works, lazily, one request at a time:
 {id, title, place, credit, context, facts{artist, date, medium, place}, source_url, artwork, image_url,
@@ -8,8 +8,6 @@ size (w, h) or None when the API does not say}, or {id, skip: reason} for a work
 The terms each one follows, as read in October 2026 (DOCS.md, "Open-access art"):
 - every source: serial requests at least `pause_seconds` apart, a User-Agent naming the project and a
   contact, nothing retried in a loop (a refusal waits for the next check);
-- Art Institute of Chicago: public-domain works only, the AIC-User-Agent header, images at the IIIF
-  widths its docs allow for public-domain works (1686 px at most), credited "The Art Institute of Chicago";
 - The Met: the v1.1 search (v1 answers 410 since 2026-10-01), isPublicDomain checked on every object
   because search ignores it, credited "The Metropolitan Museum of Art" with no logo and no endorsement;
 - Wikimedia Commons: the Action API with maxlag, only the thumbnail URL the API returns (standard
@@ -26,12 +24,8 @@ import urllib.parse
 import urllib.request
 
 PROJECT_URL = "https://github.com/adrutu/matchy-wallpapers"
-SOURCES = ("aic", "met", "potd")  # the order they are synced in
+SOURCES = ("met", "potd")  # the order they are synced in
 
-AIC_FIELDS = ["id", "title", "artist_title", "date_display", "medium_display", "place_of_origin",
-              "image_id", "thumbnail", "is_public_domain"]
-AIC_WIDTHS = (1686, 1200, 843)  # the IIIF widths the AIC docs list for public-domain works, largest first
-AIC_CREDIT = "The Art Institute of Chicago · CC0"
 MET_CREDIT = "The Metropolitan Museum of Art · metmuseum.org · CC0"
 MET_SEARCH_LIMIT = 500    # the most v1.1 hands out per page
 MET_SEARCH_WINDOW = 10000  # nothing past offset + limit = 10000 is served
@@ -59,7 +53,6 @@ class Client:
     def __init__(self, contact="", pause=1.0, timeout=60):
         who = PROJECT_URL + ("; " + contact if contact else "")
         self.ua = "MatchyWallpapers (bot; %s) Python-urllib/%d.%d" % (who, *sys.version_info[:2])
-        self.aic_ua = "matchy-wallpapers (%s)" % who
         self.pause, self.timeout, self.last = float(pause), timeout, 0.0
         self.requests = 0
 
@@ -89,39 +82,6 @@ class Client:
             data = json.dumps(body).encode()
             h["Content-Type"] = "application/json"
         return json.loads(self.get(url, data, h, max_bytes=20_000_000))
-
-
-# ---------------------------------------------------------------- Art Institute of Chicago
-def aic(cfg, client, rng, seen):
-    """A random page of public-domain works with an image (the docs' own random-sample query)."""
-    filters = [{"term": {"is_public_domain": True}}, {"exists": {"field": "image_id"}},
-               {"exists": {"field": "thumbnail.width"}}, {"exists": {"field": "thumbnail.height"}}]
-    filters += cfg.get("extra_filters") or []
-    body = {"resources": "artworks", "fields": AIC_FIELDS, "boost": False, "limit": int(cfg.get("batch", 20)),
-            "query": {"function_score": {"query": {"bool": {"filter": filters}}, "boost_mode": "replace",
-                                         "random_score": {"field": "id", "seed": rng.randrange(1, 2 ** 31)}}}}
-    hdr = {"AIC-User-Agent": client.aic_ua}
-    j = client.json(cfg["base_url"].rstrip("/") + "/search", body, hdr)
-    iiif = str((j.get("config") or {}).get("iiif_url") or "").rstrip("/")
-    for w in j.get("data") or []:
-        iid = "aic-%s" % w.get("id")
-        thumb = w.get("thumbnail") or {}
-        tw, th = thumb.get("width") or 0, thumb.get("height") or 0
-        if iid in seen:
-            continue
-        if w.get("is_public_domain") is not True:
-            yield {"id": iid, "skip": "not public domain"}
-            continue
-        width = next((x for x in AIC_WIDTHS if x <= tw), 0)
-        if not w.get("image_id") or not th or not width:
-            yield {"id": iid, "skip": "no usable image"}
-            continue
-        facts = {"artist": clean(w.get("artist_title")), "date": clean(w.get("date_display")),
-                 "medium": clean(w.get("medium_display")), "place": clean(w.get("place_of_origin"))}
-        yield {"id": iid, "title": clean(w.get("title")), "place": label_line(facts), "credit": AIC_CREDIT,
-               "facts": facts, "artwork": True, "source_url": "https://www.artic.edu/artworks/%s" % w.get("id"),
-               "image_url": "%s/%s/full/%d,/0/default.jpg" % (iiif, urllib.parse.quote(w["image_id"]), width),
-               "image_headers": hdr, "size": (width, round(th * width / tw))}
 
 
 # ---------------------------------------------------------------- The Met
@@ -203,4 +163,4 @@ def potd(cfg, client, rng, seen, today=None):
                "size": size if all(size) else None}
 
 
-ADAPTERS = {"aic": aic, "met": met, "potd": potd}
+ADAPTERS = {"met": met, "potd": potd}

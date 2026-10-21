@@ -80,10 +80,6 @@ options:
   caption_max_words: 45
   caption_kids: false
   captioners: []
-  art_institute_chicago:
-    enabled: false
-    per_day: 3
-    min_px: 2560
   the_met:
     enabled: false
     per_day: 3
@@ -133,10 +129,6 @@ schema:
       model: str
       api_key: "password?"
       timeout: "int(5,600)?"
-  art_institute_chicago:
-    enabled: bool
-    per_day: int(1,50)
-    min_px: int(640,7680)
   the_met:
     enabled: bool
     per_day: int(1,50)

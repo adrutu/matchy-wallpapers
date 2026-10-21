@@ -194,7 +194,7 @@ fi
 # Open-access art: each source is an option object {enabled, per_day, min_px}, off by default.
 art_sources='{}'
 art_enabled=0
-for source in aic:art_institute_chicago:3 met:the_met:3 potd:wikimedia_picture_of_the_day:1; do
+for source in met:the_met:3 potd:wikimedia_picture_of_the_day:1; do
     IFS=: read -r key option per_day_default <<<"${source}"
     on="$(opt "${option}.enabled" false)"
     [[ "${on}" == "true" ]] || on=false
