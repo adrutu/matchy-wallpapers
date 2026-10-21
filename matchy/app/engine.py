@@ -28,7 +28,7 @@ from PIL import Image
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import render  # noqa: E402
 from caption import Captioner  # noqa: E402
-from library import Library, log, open_image, read_json, rev_of, write_json  # noqa: E402
+from library import Library, log, num, open_image, read_json, rev_of, write_json  # noqa: E402
 
 DEFAULTS = {
     "port": 8160,
@@ -499,7 +499,7 @@ class Engine:
                         "caption_model": sc.get("caption_model", ""), "caption_at": sc.get("caption_at", ""),
                         "edited": bool(sc.get("edited")), "hidden": iid in hidden, "recaption_queued": iid in recap,
                         "error": (lib.skipped[iid][1] if iid in lib.skipped
-                                  else sc.get("caption_error", "") if not d["blurb"] else "")})
+                                  else str(sc.get("caption_error") or "") if not d["blurb"] else "")})
         lo, hi, src = self.rotation_window()
         r = self.cfg["rotation"]
         rot = {"min_minutes": lo, "max_minutes": hi, "source": src, "mode": self.rotation_mode(),
@@ -577,7 +577,7 @@ class Engine:
             sc = lib.sidecars.get(iid) or {}
             if sc.get("edited"):
                 continue
-            if stt == "failed" and now - sc.get("caption_failed_at", 0) < retry:
+            if stt == "failed" and now - num(sc.get("caption_failed_at")) < retry:
                 continue
             rank = (0, prio.index(iid)) if iid in prio else (1, 0) if it["kind"] == "daily" else (2, 0)
             todo.append((rank, it["kind"] != "daily", it["meta"].get("date", "") and -int(it["meta"]["date"]) or 0, it["order"], iid))
@@ -654,7 +654,7 @@ class Engine:
             return
         sc.update({"id": iid, "source": it["path"], "sha256": it["sha256"], "edited": False,
                    "caption_failed_at": time.time(), "caption_error": err[:300],
-                   "caption_attempts": sc.get("caption_attempts", 0) + 1})
+                   "caption_attempts": int(num(sc.get("caption_attempts"))) + 1})
         sc.pop("blurb", None)
         self.lib.save_sidecar(iid, sc)
         log("caption", iid, "failed:", err)
@@ -774,6 +774,7 @@ class Engine:
 
 # ======================================================================
 SIZE_RE = re.compile(r"^(\d{3,4})x(\d{3,4})\.jpg$")
+INGRESS_PATH_RE = re.compile(r"^/[A-Za-z0-9_.~%-][A-Za-z0-9_./~%-]*$")  # /api/hassio_ingress/<token>: one absolute path
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -793,6 +794,7 @@ class Handler(BaseHTTPRequestHandler):
         if cors:
             self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Access-Control-Expose-Headers", "ETag")
+        self.send_header("X-Content-Type-Options", "nosniff")  # a source file is served as what it claims to be
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         for k, v in (headers or {}).items():
@@ -808,8 +810,14 @@ class Handler(BaseHTTPRequestHandler):
                   cors)
 
     def ingress_base(self):
-        """The path Home Assistant serves this page under, or "" for a direct request."""
-        return (self.headers.get("X-Ingress-Path") or "").rstrip("/")
+        """The path Home Assistant serves this page under, or "" for a direct request.
+        Only the Supervisor may say so, and only with a plain absolute path: the value goes into
+        Location headers and current.json, so a made-up one (another host, or a folded header line)
+        is dropped rather than echoed."""
+        base = (self.headers.get("X-Ingress-Path") or "").rstrip("/")
+        if not base or not self.client_is_ingress() or not INGRESS_PATH_RE.match(base):
+            return ""
+        return base
 
     def client_is_ingress(self):
         """True for a request proxied by the Supervisor, which only forwards authenticated sessions."""

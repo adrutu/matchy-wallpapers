@@ -288,7 +288,8 @@ The gallery page draws the buttons a viewer may not use as disabled, with the re
   the log. Like every add-on option it is also in Home Assistant's own `options.json` for the add-on.
 - The engine runs as **root inside its container**, as official add-ons do; the Supervisor offers no
   option to change that, and Matchy does not drop privileges itself. `/media` and `/share` are
-  mounted read-only.
+  mounted read-only, and the engine process is started without the Supervisor token (the start
+  script uses it once, to read the location, and then drops it).
 
 ## Where things live
 

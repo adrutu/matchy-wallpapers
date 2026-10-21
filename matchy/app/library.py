@@ -70,7 +70,15 @@ def title_case(text):
     return " ".join(out)
 
 
+def num(v, default=0.0):
+    """A JSON number, or `default` for anything else (a hand-edited sidecar may hold any type)."""
+    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else default
+
+
 def http_get(url, timeout=30, max_bytes=60_000_000):
+    # urllib would also open file:, data: and ftp: URLs; a remote source is a web server.
+    if urllib.parse.urlsplit(url).scheme not in ("http", "https"):
+        raise ValueError("only http(s) URLs are fetched: %r" % url)
     req = urllib.request.Request(url, headers={"User-Agent": "wallpaper-engine/1"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         data = r.read(max_bytes + 1)
@@ -80,11 +88,19 @@ def http_get(url, timeout=30, max_bytes=60_000_000):
 
 
 def display_fields(sc):
-    return {k: sc.get(k, "") or "" for k in ("title", "place", "credit", "blurb")}
+    """The four label fields as text. A hand-edited sidecar may hold a number or a list there; the
+    label, the page and the JSON views all expect strings, so anything else is shown as its text."""
+    out = {}
+    for k in ("title", "place", "credit", "blurb"):
+        v = sc.get(k) or ""
+        out[k] = v if isinstance(v, str) else str(v)
+    return out
 
 
-def rev_of(sc):
-    blob = json.dumps(display_fields(sc), sort_keys=True, ensure_ascii=False).encode()
+def rev_of(sc, content=""):
+    """Six hex digits that change when the label text changes, or `content` (the picture's hash): a
+    picture replaced in place keeps its id, and its render URLs are cached as immutable."""
+    blob = json.dumps([display_fields(sc), content], sort_keys=True, ensure_ascii=False).encode()
     return hashlib.sha256(blob).hexdigest()[:6]
 
 
@@ -106,6 +122,7 @@ class Library:
         self.hash_cache_path = os.path.join(self.data, "hash-cache.json")
         self.hash_cache = read_json(self.hash_cache_path, {}) or {}
         self.scan_lock = threading.Lock()
+        self.master_locks = {}  # id -> Lock: the scanner, the captioner and a render may all want one master
         self.skipped = {}  # id -> (sha256, reason) for sources that cannot be decoded (too large)
         self.changed = threading.Event()
 
@@ -187,7 +204,7 @@ class Library:
         else:
             d = {"title": meta.get("title") or meta.get("collection") or "", "place": meta.get("place", ""),
                  "credit": meta.get("credit", ""), "blurb": ""}
-        d["rev"] = rev_of(d)
+        d["rev"] = rev_of(d, it.get("sha256", ""))
         return d
 
     # ---------- scanning ----------
@@ -428,6 +445,14 @@ class Library:
         p = self.master_path(iid)
         if os.path.exists(p):
             return p
+        with self.lock:
+            lk = self.master_locks.setdefault(iid, threading.Lock())
+        with lk:  # one decode per picture: the others wait for it instead of each decoding (and writing) too
+            if os.path.exists(p):
+                return p
+            return self._build_master(iid, p)
+
+    def _build_master(self, iid, p):
         it = self.items[iid]
         if iid in self.skipped:  # reported once already; it stays in the library so the gallery can say why
             raise ValueError(self.skipped[iid][1])

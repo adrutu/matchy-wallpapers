@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+Robustness review of the engine's edges (`tests/security_test.py`, also in CI):
+
+- `X-Ingress-Path` is honoured only from the Supervisor's address, and only as one plain absolute
+  path; a direct request's header no longer reaches `Location` or the `urls` in `current.json`.
+- Every response carries `X-Content-Type-Options: nosniff`.
+- A picture's master copy is decoded once, however many threads ask for it at the same time (the
+  scanner, the captioner and a render could each decode the same file on a cold start, and two
+  could trip over the shared temporary file).
+- A picture replaced in place under the same name gets a new `rev`, so its render URLs (cached as
+  immutable) and the render cache move on with it.
+- A hand-edited sidecar with the wrong type in a field (a number for `title`, text for
+  `caption_failed_at`) degrades to text or is ignored instead of failing the page, the label, the
+  library JSON or the caption worker.
+- A captioner's reply is read up to 4 MB, and a title or blurb far longer than its word count allows
+  is rejected like any other bad answer.
+- Remote sources (`remote_manifest_url`, `daily_json_url`, `daily_image_url`) are fetched over
+  `http(s)` only.
+- `run.sh` drops the Supervisor token from the engine's environment: the engine never uses it.
+
 ## 0.4.0 (2026-10-17)
 
 First public release.

@@ -238,4 +238,7 @@ if [[ "${captions_on}" == "true" ]] && [[ "${captioner_count}" -eq 0 ]]; then
     bashio::log.warning "Captions are on but no captioner is configured: wallpapers will rotate without gallery labels. Add a captioner, or set caption_enabled to false. See DOCS.md."
 fi
 
+# The engine needs nothing from the Supervisor (the location was read above), so it does not get
+# the token: a bug in an image decoder then cannot reach the Home Assistant API with it.
+unset SUPERVISOR_TOKEN
 exec python3 /app/engine.py
