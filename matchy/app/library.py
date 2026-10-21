@@ -1,17 +1,24 @@
-"""Image library: sources (folders, a static-file manifest, a daily-photo JSON), ids, sidecars, masters."""
+"""Image library: sources (folders, a static-file manifest, a daily-photo JSON, open-access art), ids,
+sidecars, masters."""
 import fnmatch
 import hashlib
+import io
 import json
 import os
+import random
 import re
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
 from PIL import Image, ImageOps
 
+import artsources
+
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp"}
+ART_SKIPPED_MAX = 5000  # remembered works that had no usable image, newest kept
 HASH_SAVE_SECS = 10  # a long cold scan checkpoints hash-cache.json this often
 # Bump when masters are made differently, so the ones on disk are rebuilt (2: EXIF orientation, 16-bit greyscale).
 MASTER_FORMAT = 2
@@ -143,6 +150,8 @@ class Library:
         self.remote = read_json(self.remote_path, {}) or {}
         self.hash_cache_path = os.path.join(self.data, "hash-cache.json")
         self.hash_cache = read_json(self.hash_cache_path, {}) or {}
+        self.art_skipped_path = os.path.join(self.data, "art-skipped.json")
+        self.art_skipped = read_json(self.art_skipped_path, {}) or {}
         self.scan_lock = threading.Lock()
         self.master_locks = {}  # id -> lock while its master is built: two builds would share one .tmp file
         self.skipped = {}  # id -> (sha256, reason) for sources that cannot be decoded (too large, or broken)
@@ -399,6 +408,8 @@ class Library:
                 items[iid] = {"id": iid, "kind": r["kind"], "path": path, "sha256": r["sha256"],
                               "order": (1 if r["kind"] == "ha" else 2, 0, iid),
                               "meta": {k: r.get(k, "") for k in ("title", "place", "credit", "context", "collection")}}
+                # open-access art: the facts the captioner may state, and where the work came from
+                items[iid]["meta"].update({k: r[k] for k in ("facts", "artwork", "source_url") if r.get(k)})
         return items
 
     def rescan(self):
@@ -528,6 +539,83 @@ class Library:
         self._store_remote(iid, "daily", data, meta)
         log("added daily", iid, meta["title"])
         return iid
+
+    def sync_art(self, rng=None):
+        """Open-access art (artsources.py): up to `per_day` new works a day from each enabled source,
+        each at least `min_px` on its long side. Returns the new ids; a failing source is logged and
+        waits for the next check."""
+        a = self.cfg.get("art_sources") or {}
+        rng = rng or random.Random()
+        new = []
+        for name in artsources.SOURCES:
+            c = a.get(name) or {}
+            if not c.get("enabled"):
+                continue
+            client = artsources.Client(a.get("contact", ""), a.get("pause_seconds", 1.0))
+            try:
+                new += self._sync_art_source(name, c, client, rng)
+            except Exception as e:
+                log("art source", name, "failed:", str(e)[:300])
+        return new
+
+    def _sync_art_source(self, name, c, client, rng):
+        today = time.strftime("%Y-%m-%d")
+        got = sum(1 for r in self.remote.values() if r.get("kind") == name
+                  and time.strftime("%Y-%m-%d", time.localtime(r.get("fetched_at", 0))) == today)
+        want = int(c.get("per_day", 1)) - got
+        if want <= 0:
+            return []
+        min_px = int(c.get("min_px", 2560))
+        seen = set(self.remote) | set(self.art_skipped)
+        new = []
+        for w in artsources.ADAPTERS[name](c, client, rng, seen):
+            iid = w["id"]
+            if iid in seen:
+                continue
+            seen.add(iid)
+            if w.get("skip"):
+                self._art_skip(iid, w["skip"])
+                continue
+            if w.get("size") and max(w["size"]) < min_px:  # the API says how big it is: no download
+                self._art_skip(iid, "%dx%d is under %d px" % (*w["size"], min_px))
+                continue
+            try:
+                data = client.get(w["image_url"], headers=w.get("image_headers"))
+            except urllib.error.HTTPError as e:
+                if e.code in (403, 429):  # refused or throttled: stop asking this source until the next check
+                    raise
+                log("art", iid, "image download failed:", e)
+                continue
+            except Exception as e:  # a network error may pass: not remembered, tried again later
+                log("art", iid, "image download failed:", str(e)[:200])
+                continue
+            try:
+                with open_image(io.BytesIO(data)) as im:
+                    size = im.size
+            except (ValueError, OSError) as e:
+                self._art_skip(iid, "no usable image (%s)" % str(e)[:120])
+                continue
+            if max(size) < min_px:
+                self._art_skip(iid, "%dx%d is under %d px" % (*size, min_px))
+                continue
+            meta = {k: w[k] for k in ("title", "place", "credit", "context", "facts", "artwork", "source_url",
+                                      "licence") if w.get(k) not in (None, "")}
+            meta.update(collection={"aic": "Art Institute of Chicago", "met": "The Metropolitan Museum of Art",
+                                    "potd": "Wikimedia Commons Picture of the Day"}[name], size="%dx%d" % size)
+            self._store_remote(iid, name, data, meta)
+            log("added", iid, "%dx%d:" % size, meta.get("title", ""), "|", meta.get("credit", ""))
+            new.append(iid)
+            if len(new) >= want:
+                break
+        return new
+
+    def _art_skip(self, iid, reason):
+        log("art", iid, "skipped:", reason)
+        self.art_skipped[iid] = {"reason": reason, "at": int(time.time())}
+        if len(self.art_skipped) > ART_SKIPPED_MAX:  # the oldest go first
+            keep = sorted(self.art_skipped.items(), key=lambda kv: (kv[1] or {}).get("at", 0))[-ART_SKIPPED_MAX:]
+            self.art_skipped = dict(keep)
+        write_json(self.art_skipped_path, self.art_skipped)
 
     # ---------- masters ----------
     def master_path(self, iid):

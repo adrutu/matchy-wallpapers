@@ -74,6 +74,9 @@ jobs:
       - name: tests/caption_test.py (grounding check for the blurbs)
         run: python tests/caption_test.py
 
+      - name: tests/art_sources_test.py (open-access art sources, against recorded fixtures, no network)
+        run: python tests/art_sources_test.py
+
       - name: tests/render_test.py (crops for every picture shape and client size)
         run: python tests/render_test.py
 

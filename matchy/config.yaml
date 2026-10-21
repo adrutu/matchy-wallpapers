@@ -70,6 +70,18 @@ options:
   caption_min_words: 30
   caption_max_words: 45
   captioners: []
+  art_institute_chicago:
+    enabled: false
+    per_day: 3
+    min_px: 2560
+  the_met:
+    enabled: false
+    per_day: 3
+    min_px: 2560
+  wikimedia_picture_of_the_day:
+    enabled: false
+    per_day: 1
+    min_px: 2560
 
 schema:
   source_folders:
@@ -106,6 +118,18 @@ schema:
       model: str
       api_key: "password?"
       timeout: "int(5,600)?"
+  art_institute_chicago:
+    enabled: bool
+    per_day: int(1,50)
+    min_px: int(640,7680)
+  the_met:
+    enabled: bool
+    per_day: int(1,50)
+    min_px: int(640,7680)
+  wikimedia_picture_of_the_day:
+    enabled: bool
+    per_day: int(1,7)
+    min_px: int(640,7680)
   remote_manifest_url: "url?"
   daily_json_url: "url?"
   daily_image_url: "url?"

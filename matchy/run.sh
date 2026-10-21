@@ -183,11 +183,27 @@ elif bashio::config.has_value 'daily_json_url' || bashio::config.has_value 'dail
     bashio::log.warning "Daily image needs BOTH daily_json_url and daily_image_url; ignoring."
 fi
 
+# Open-access art: each source is an option object {enabled, per_day, min_px}, off by default.
+art_sources='{}'
+art_enabled=0
+for source in aic:art_institute_chicago:3 met:the_met:3 potd:wikimedia_picture_of_the_day:1; do
+    IFS=: read -r key option per_day_default <<<"${source}"
+    on="$(opt "${option}.enabled" false)"
+    [[ "${on}" == "true" ]] || on=false
+    [[ "${on}" == "false" ]] || art_enabled=$((art_enabled + 1))
+    art_sources="$(jq -c --arg k "${key}" --argjson on "${on}" \
+        --argjson n "$(int "${option}.per_day" "${per_day_default}")" \
+        --argjson px "$(int "${option}.min_px" 2560)" \
+        '.[$k] = {enabled: $on, per_day: $n, min_px: $px}' <<<"${art_sources}")"
+done
+readonly art_enabled
+
 if [[ "${usable_folders}" -eq 0 ]] \
    && [[ "$(jq -r '.enabled' <<<"${static_manifest}")" != "true" ]] \
-   && [[ "$(jq -r '.enabled' <<<"${daily}")" != "true" ]]; then
+   && [[ "$(jq -r '.enabled' <<<"${daily}")" != "true" ]] \
+   && [[ "${art_enabled}" -eq 0 ]]; then
     bashio::exit.nok \
-        "No image source. Add at least one existing folder to 'source_folders' (for example /media/wallpapers or /share/wallpapers), or set a remote manifest or daily image URL."
+        "No image source. Add at least one existing folder to 'source_folders' (for example /media/wallpapers or /share/wallpapers), set a remote manifest or daily image URL, or turn on an open-access art source."
 fi
 
 # --------------------------------------------------------------------- location
@@ -228,6 +244,7 @@ jq -n \
     --argjson captioners "${captioners}" \
     --argjson static_manifest "${static_manifest}" \
     --argjson daily "${daily}" \
+    --argjson art_sources "${art_sources}" \
     --argjson caption_enabled "${captions_on}" \
     --arg caption_language "$(opt 'caption_language' 'English')" \
     --arg caption_spelling "$(opt 'caption_spelling' 'British')" \
@@ -250,6 +267,7 @@ jq -n \
         captioners: $captioners,
         static_manifest: $static_manifest,
         daily: $daily,
+        art_sources: $art_sources,
         caption: {
             enabled: $caption_enabled,
             language: $caption_language,
@@ -263,7 +281,7 @@ mv "${CONFIG_FILE}.tmp" "${CONFIG_FILE}"
 export WE_CONFIG="${CONFIG_FILE}"
 export WE_DATA_DIR="${DATA_DIR}"
 
-bashio::log.info "Matchy Wallpapers: port ${PORT}, ${usable_folders} source folder(s), captions ${captions_on}, ${captioner_count} captioner(s)."
+bashio::log.info "Matchy Wallpapers: port ${PORT}, ${usable_folders} source folder(s), ${art_enabled} art source(s), captions ${captions_on}, ${captioner_count} captioner(s)."
 if [[ "${captions_on}" == "true" ]] && [[ "${captioner_count}" -eq 0 ]]; then
     bashio::log.warning "Captions are on but no captioner is configured: wallpapers will rotate without gallery labels. Add a captioner, or set caption_enabled to false. See DOCS.md."
 fi

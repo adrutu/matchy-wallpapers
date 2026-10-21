@@ -31,6 +31,9 @@ UK_SPELLING = {
     "travelers": "travellers", "kilometers": "kilometres", "glowing": "glowing", "textured": "textured",
 }
 
+# Facts an open-access art source gives (artsources.py), as the prompt names them.
+FACT_NAMES = (("artist", "Artist"), ("date", "Date"), ("medium", "Medium"), ("place", "Place of origin"))
+
 SENT_START = re.compile(r"(^|[.!?]\s+|[—:;]\s*|\"\s*)$")
 
 MAX_REPLY_BYTES = 4_000_000  # a chat-completions reply is a few KB; anything near this is not a caption
@@ -182,12 +185,18 @@ class Captioner:
         facts = []
         if meta.get("title"):
             facts.append('Title: "%s"' % meta["title"])
-        if meta.get("place"):
+        work = meta.get("facts") or {}  # an open-access work: its label line is artist and date, not a place
+        if meta.get("place") and not work:
             facts.append("Place: %s" % meta["place"])
+        for key, name in FACT_NAMES:
+            if work.get(key):
+                facts.append("%s: %s" % (name, work[key]))
         if meta.get("context"):
             facts.append("Source description: %s" % meta["context"])
         if meta.get("collection"):
             facts.append("Collection: %s" % meta["collection"])
+        if meta.get("artwork"):
+            facts.append("This is a work of art from a museum collection: describe it as the artwork it is.")
         if meta.get("abstract"):
             facts.append("This is digital/illustrated desktop art, not a photograph of a real place.")
         facts_txt = "\n".join("- " + f for f in facts) or "- (no metadata: describe only what is visible)"
@@ -326,6 +335,7 @@ class Captioner:
                     w in tl for w in ("wallpaper", "image", "untitled")):
                 problems.append("the title must be 2 to 5 words naming what is visible")
         allowed = " ".join(str(meta.get(k, "")) for k in ("title", "place", "context", "collection", "credit"))
+        allowed += " " + " ".join(str(v) for v in (meta.get("facts") or {}).values())
         allowed += " " + title if not meta.get("title") else ""
         nouns = proper_nouns(blurb, allowed)
         if nouns:

@@ -1,0 +1,36 @@
+{
+ "preference": null,
+ "pagination": {"total": 5, "limit": 5, "offset": 0, "total_pages": 1, "current_page": 1},
+ "data": [
+  {"_score": 0.93, "id": 16568, "title": "Water Lilies", "artist_title": "Claude Monet", "date_display": "1906",
+   "medium_display": "Oil on canvas", "place_of_origin": "France", "image_id": "fx-aic-water-lilies",
+   "thumbnail": {"lqip": "data:image/gif;base64,R0lGODlhBQAFAPQAAA==", "width": 3000, "height": 2870,
+                 "alt_text": "Painting of a pond seen from above, its surface filled with lily pads."},
+   "is_public_domain": true},
+  {"_score": 0.91, "id": 111642, "title": "The Child's Bath", "artist_title": "Mary Cassatt", "date_display": "1893",
+   "medium_display": "Oil on canvas", "place_of_origin": "United States", "image_id": "fx-aic-childs-bath",
+   "thumbnail": {"lqip": "data:image/gif;base64,R0lGODlhBQAFAPQAAA==", "width": 2000, "height": 3065,
+                 "alt_text": "A woman washes a small child's feet in a basin."},
+   "is_public_domain": true},
+  {"_score": 0.88, "id": 111628, "title": "Nighthawks", "artist_title": "Edward Hopper", "date_display": "1942",
+   "medium_display": "Oil on canvas", "place_of_origin": "United States", "image_id": "fx-aic-nighthawks",
+   "thumbnail": {"lqip": "data:image/gif;base64,R0lGODlhBQAFAPQAAA==", "width": 3000, "height": 1640,
+                 "alt_text": "Night scene of a diner seen through its corner window."},
+   "is_public_domain": false},
+  {"_score": 0.85, "id": 15468, "title": "Saint George Killing the Dragon", "artist_title": "Bernat Martorell",
+   "date_display": "1434/35", "medium_display": "Tempera on panel", "place_of_origin": "Spain",
+   "image_id": "fx-aic-saint-george",
+   "thumbnail": {"lqip": "data:image/gif;base64,R0lGODlhBQAFAPQAAA==", "width": 2000, "height": 3200,
+                 "alt_text": "A knight on a white horse spears a dragon."},
+   "is_public_domain": true},
+  {"_score": 0.80, "id": 4575, "title": "Untitled sketch", "artist_title": null, "date_display": "c. 1900",
+   "medium_display": "Graphite on paper", "place_of_origin": "France", "image_id": null,
+   "thumbnail": null, "is_public_domain": true}
+ ],
+ "info": {
+  "license_text": "The `description` field in this response is licensed under a Creative Commons Attribution 4.0 Generic License (CC-By) and the Terms and Conditions of artic.edu. All other data in this response is licensed under a Creative Commons Zero (CC0) 1.0 designation and the Terms and Conditions of artic.edu.",
+  "license_links": ["https://creativecommons.org/publicdomain/zero/1.0/", "https://www.artic.edu/terms"],
+  "version": "1.13"
+ },
+ "config": {"iiif_url": "{BASE}/iiif/2", "website_url": "http://www.artic.edu"}
+}
