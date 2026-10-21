@@ -86,7 +86,7 @@ jobs:
       - name: tests/render_test.py (crops for every picture shape and client size)
         run: python tests/render_test.py
 
-      - name: tests/palette_test.py (colour match: palette, accent, GNOME accent names)
+      - name: "tests/palette_test.py (colour match: palette, accent, GNOME accent names)"
         run: python tests/palette_test.py
 
   build:
