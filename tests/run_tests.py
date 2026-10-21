@@ -817,7 +817,9 @@ try:
     check("B page: no swatches", 'class="swatches"' not in req(B, "GET", "/")[2])
     st, _, txt, _ = req(B, "GET", "/")
     check("B page: admin buttons disabled", 'data-act="hide" disabled' in txt and 'data-act="pause">' in txt, "")
-    check("B page: captioner off line", "Captioner: <b>off</b>" in txt)
+    check("B page: no captioner note when captions are off on purpose", 'class="note"' not in txt)
+    check("B page: big Next in Rotation, no Captions box", '<h2>Rotation</h2><button class="primary big" data-act="next">' in txt
+          and "<h2>Captions" not in txt, txt[txt.find("<h2>Rotation"):][:300])
     st, *_ = req(B, "POST", "/api/pause", {}); check("B pause from LAN ok", st == 200)
     st, *_ = req(B, "POST", "/api/resume", {}); check("B resume from LAN ok", st == 200)
     st, j, *_ = req(B, "POST", "/api/love", {"id": first})
@@ -848,7 +850,7 @@ pc = start("C", {"port": C, "ingress_peers": ["127.0.0.0/8"], "captioners": [], 
 try:
     i0 = lib(C)["items"][0]["id"]
     st, _, txt, _ = req(C, "POST", "/api/recaption", {"id": i0}); check("C recaption without captioner 409", st == 409, txt)
-    check("C page: not set up line", "Captioner: <b>not set up</b>" in req(C, "GET", "/")[2])
+    check("C page: not set up note", '<p class="note">No captioner is set up' in req(C, "GET", "/")[2])
     # show an uncaptioned one by hand, after hand-captioning another: no placeholder swap
     ids = [i["id"] for i in lib(C)["items"]]
     req(C, "POST", "/api/caption", {"id": ids[0], "title": "T", "blurb": "hand written"})

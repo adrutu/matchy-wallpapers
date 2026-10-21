@@ -217,7 +217,10 @@ So: usable almost immediately, fully captioned after a while.
 
 Open **Matchy Wallpapers** from the sidebar (or **Open Web UI** on the add-on's page). This route is
 authenticated by Home Assistant. The
-page reloads itself when the picture changes (it checks every 30 seconds). From there you can:
+page reloads itself when the picture changes (it checks every 30 seconds). The picture on screen is at the
+top; under it are three columns: **Rotation** (with a big **Next picture** button), **On screen now** (what
+the picture is, its colours and why it was picked) and **Screens**, then the library. The captioner only
+shows up there when it needs you: none set up, or one that stopped answering. From there you can:
 
 - **Next picture**, **Pause rotation** / **Resume rotation**. Paused holds whatever is on screen;
   Next and Show now still work while paused, and Resume starts a full interval from then.
@@ -650,7 +653,7 @@ reason, then that picture is retried six hours later; the panel card shows the l
 **The picks do not follow the weather.** The Rotation box's Mood line says what the weather entity
 last said, or why it could not be read (`cannot read weather.… (HTTP 404: …)` in the log means the
 entity id is wrong; `HTTP 401` that the add-on has no API access). Pictures only match once they have
-tags: the Captions box counts the ones still waiting for them, and a card's tags are under its blurb.
+tags: `tagging` in `/library.json` counts the ones still waiting for them, and a card's tags are under its blurb.
 With `mood: light` about one pick in four is deliberately not a match, and once every matching picture
 has had its turn in the current shuffle, the rest follow until the next shuffle.
 

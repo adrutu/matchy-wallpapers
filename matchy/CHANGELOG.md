@@ -31,6 +31,11 @@ New features, all documented in DOCS.md; the client recipes are in `docs/clients
 Fix found on trial: the `image` entity was refused by Home Assistant (`content_type` cannot be used
 together with `url_topic`), so there was no *Now showing* entity.
 
+Panel, from the trial: the picture on screen goes across the top, with a big **Next picture** button in
+Rotation and *On screen now* between Rotation and Screens; each screen is one row; bigger type throughout.
+The Captions box is gone: the captioner only speaks up when it is not set up or stopped answering, and
+the Library summary counts pictures waiting for a caption.
+
 Bug fixes from a review of the add-on; each has a test in `tests/run_tests.py`.
 
 - A file named like a picture that Pillow cannot decode (not really an image, or cut short by an

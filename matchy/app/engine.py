@@ -2042,19 +2042,21 @@ def gallery_html(eng, control, admin):
     if cur.get("id"):
         # Relative, not current()["urls"] (root-absolute): this resolves at / and under ingress.
         src = "img/%s/%s/label" % (cur["id"], cur["rev"])
-        top = ('<section class="top" data-id="%s"><a class="shot" href="%s/2560x1440.jpg" target="_blank" '
-               'rel="noopener"><img src="%s/1920x1080.jpg" alt="The wallpaper on screen now"></a><div class="meta">'
-               '<p class="kicker">On screen now</p><h1>%s</h1><p class="mut">%s</p><p>%s</p>%s%s%s'
-               '<div class="acts"><button class="primary" data-act="next"%s>Next picture</button>%s</div></div></section>') % (
-            esc(cur["id"]), esc(src), esc(src), esc(cur["title"] or cur["id"]),
+        # The picture across the page; what it is goes in the middle column, between Rotation and Screens.
+        shot = ('<a class="shot" href="%s/2560x1440.jpg" target="_blank" rel="noopener"><img src="%s/1920x1080.jpg" '
+                'alt="The wallpaper on screen now"></a>') % (esc(src), esc(src))
+        now = ('<div class="box meta" data-id="%s"><p class="kicker">On screen now</p><h1>%s</h1><p class="mut">%s</p>'
+               '<p class="blurb">%s</p>%s%s%s<div class="acts">%s</div></div>') % (
+            esc(cur["id"]), esc(cur["title"] or cur["id"]),
             esc(" · ".join(x for x in (cur["place"], cur["credit"]) if x)), esc(cur["blurb"]),
             kids_line(by_id[cur["id"]]) if cur["id"] in by_id else "",
             swatches_html(cur), why_html(cur, bool(eng.state.get("picked")), lib["mood"]),
-            no_ctl, buttons(by_id.get(cur["id"], {"hidden": False, "loved": False}), top=True))
+            buttons(by_id.get(cur["id"], {"hidden": False, "loved": False}), top=True))
     else:
-        top = ('<section class="top empty"><div class="meta"><p class="kicker">On screen now</p><h1>Nothing yet</h1>'
+        shot = ""
+        now = ('<div class="box meta"><p class="kicker">On screen now</p><h1>Nothing yet</h1>'
                '<p class="mut">No pictures found so far. Check <code>source_folders</code> in the add-on options; '
-               'the log names any folder it could not read.</p></div></section>')
+               'the log names any folder it could not read.</p></div>')
 
     qw = cur.get("quiet_window")
     if cur.get("quiet"):
@@ -2081,6 +2083,9 @@ def gallery_html(eng, control, admin):
         toggle = '<button data-act="pause"%s>Pause rotation</button>' % no_ctl
     if quiet:
         state += "<br>" + quiet
+    # The one button most people come here for: big, at the top of Rotation.
+    nextbtn = ('<button class="primary big" data-act="next"%s>Next picture &#8250;</button>' % no_ctl
+               if cur.get("id") else "")
     opt = rot["options"]
     if rot["source"] == "panel":
         source = ('Set here. The add-on options say %s to %s minutes; changing them there takes over again. '
@@ -2125,7 +2130,7 @@ def gallery_html(eng, control, admin):
             tag = '<span class="tag on">Following</span>'
         # Just the name and the state: last seen and the address are in /screens.json (network only).
         rows.append(
-            '<li><b>%s</b> %s<div class="acts">'
+            '<li><span class="who"><b>%s</b> %s</span><div class="acts">'
             '<button data-act="screen" data-body="%s"%s>%s</button>'
             '<button data-act="screen/forget" data-body="%s"%s>Forget</button></div></li>' % (
                 esc(sc["id"]), tag,
@@ -2139,33 +2144,24 @@ def gallery_html(eng, control, admin):
         screens = ('<p class="mut">No screens yet. A screen shows up here the first time it asks for a picture '
                    'with <code>?screen=&lt;name&gt;</code> on the address.</p>')
 
+    # The captioner only speaks up when something needs doing: a working one is not news. The queue
+    # sizes are in the Library summary; the full state is in /library.json and the log.
     if not cap["enabled"]:
-        capline = ('Captioner: <b>off</b>. <code>caption_enabled</code> is false, so no blurbs are written; a picture '
-                   'without one carries its title only.')
+        capnote = ""  # turned off on purpose
     elif not cap["configured"]:
-        capline = ('Captioner: <b>not set up</b>. Add one under <code>captioners</code> in the add-on options '
-                   'to get written blurbs.')
+        capnote = ('No captioner is set up, so pictures carry their titles only. Add one under '
+                   '<code>captioners</code> in the add-on options to get written blurbs.')
     else:
-        eps = []
-        for ep in cap["endpoints"]:
-            eps.append("%s <b>%s</b>" % (esc(ep["name"]), ("skipped until %s, it did not answer" % esc(hhmm(ep["skipped_until"])))
-                                         if ep["skipped_until"] else "ready"))
-        capline = "Captioner: %s." % "; ".join(eps)
-        if cap["busy"]:
-            capline += "<br>Writing a caption for %s now." % esc(cap["busy"])
-        if cap["waiting"]:
-            capline += "<br>%d picture%s waiting for a caption." % (cap["waiting"], "" if cap["waiting"] == 1 else "s")
-        if cap["kids_waiting"]:
-            capline += "<br>%d waiting for a kids caption, after the others." % cap["kids_waiting"]
-        if cap["tagging"]:
-            capline += "<br>%d picture%s captioned before tags existed, waiting for tags." % (
-                cap["tagging"], "" if cap["tagging"] == 1 else "s")
+        capnote = " ".join("Captioner %s did not answer; trying it again at %s." % (
+            esc(ep["name"]), esc(hhmm(ep["skipped_until"]))) for ep in cap["endpoints"] if ep["skipped_until"])
     n_cap = sum(1 for i in items if i["status"] == "captioned")
     n_hidden = sum(1 for i in items if i["hidden"])
     n_loved = sum(1 for i in items if i["loved"])
-    summary = "%d picture%s · %d captioned%s%s" % (len(items), "" if len(items) == 1 else "s", n_cap,
-                                                   (" · %d loved" % n_loved) if n_loved else "",
-                                                   (" · %d hidden" % n_hidden) if n_hidden else "")
+    n_wait = cap["waiting"] if cap["enabled"] and cap["configured"] else 0
+    summary = "%d picture%s · %d captioned%s%s%s" % (len(items), "" if len(items) == 1 else "s", n_cap,
+                                                     (" · %d waiting for a caption" % n_wait) if n_wait else "",
+                                                     (" · %d loved" % n_loved) if n_loved else "",
+                                                     (" · %d hidden" % n_hidden) if n_hidden else "")
     w = rot["love_weight"]
     loved_help = ("A loved picture comes up about %d times as often as the others." % w if w > 1
                   else "Hearts are kept but change nothing: love_weight is 1 in the add-on options.")
@@ -2179,7 +2175,8 @@ def gallery_html(eng, control, admin):
             '<label class="tagbox"><input type="checkbox" name="tags" value="%s"> %s</label>' % (t, t) for t in words))
         for group, words in mood.TAG_GROUPS.items())
     return PAGE.substitute(
-        top=top, state=state, toggle=toggle, window=window, screens=screens, capline=capline, summary=esc(summary),
+        shot=shot, now=now, state=state, nextbtn=nextbtn, toggle=toggle, window=window, screens=screens,
+        capnote=('<p class="note">%s</p>' % capnote) if capnote else "", summary=esc(summary),
         loved_help=esc(loved_help),
         moodline=mood_html(lib["mood"]), tagboxes=tagboxes,
         cards="\n".join(cards), data=json.dumps(data, ensure_ascii=False).replace("<", "\\u003c"),
@@ -2192,66 +2189,69 @@ PAGE = string.Template("""<!doctype html><html lang="en"><head><meta charset="ut
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>Matchy Wallpapers</title>
 <style>
 :root{color-scheme:dark;--bg:#111413;--card:#1b201e;--line:#2c3430;--fg:#e8ece9;--mut:#9aa59f;--acc:#7fb38f;--bad:#e08a7f;--love:#e38aa6}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,sans-serif}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.5 system-ui,sans-serif}
 main{max-width:1500px;margin:auto;padding:20px 16px 40px}
 header{display:flex;gap:16px;align-items:baseline;margin-bottom:14px}.brand{font:italic 600 20px Georgia,serif;color:var(--acc)}
 #msg{color:var(--bad)}code{font-size:.92em;color:#cfe3d5}
-h1{font:italic 600 28px/1.2 Georgia,serif;margin:0 0 4px}h2{font-size:15px;margin:0 0 8px;letter-spacing:.02em}
-.mut{color:var(--mut)}.small{font-size:13px}.kicker{margin:0 0 6px;color:var(--acc);font-size:12px;text-transform:uppercase;letter-spacing:.08em}
-.top{display:grid;grid-template-columns:minmax(0,3fr) minmax(260px,1fr);gap:20px;align-items:start}
-.top img{width:100%;border-radius:10px;display:block}.meta p{margin:.4em 0}
-.swatches{display:flex;align-items:center;gap:8px;margin:8px 0}.sw{width:26px;height:26px;border-radius:7px;border:1px solid #fff3;flex:none}
-.sw.acc{width:18px;height:18px;border-radius:50%;outline:2px solid var(--fg);outline-offset:2px;margin-right:4px}
-.panels{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px;margin-top:20px}
-.box{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px}.box p{margin:.3em 0 .6em}
-button{font:inherit;font-size:13px;background:transparent;color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:6px 12px;cursor:pointer}
+h1{font:italic 600 36px/1.15 Georgia,serif;margin:0 0 6px}h2{font-size:19px;margin:0 0 10px;letter-spacing:.02em}
+.mut{color:var(--mut)}.small{font-size:15px}.kicker{margin:0 0 6px;color:var(--acc);font-size:14px;text-transform:uppercase;letter-spacing:.08em}
+.shot{display:block}.shot img{display:block;margin:0 auto;max-width:100%;max-height:62vh;width:auto;height:auto;border-radius:12px}
+.meta p{margin:.4em 0}.meta .blurb{font-size:19px;line-height:1.55}
+.swatches{display:flex;align-items:center;gap:8px;margin:8px 0}.sw{width:38px;height:38px;border-radius:9px;border:1px solid #fff3;flex:none}
+.sw.acc{width:24px;height:24px;border-radius:50%;outline:2px solid var(--fg);outline-offset:2px;margin-right:4px}
+.panels{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.45fr) minmax(0,1fr);gap:16px;margin-top:18px}
+.box{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px 20px}.box p{margin:.3em 0 .6em}
+button{font:inherit;font-size:15px;background:transparent;color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:8px 14px;cursor:pointer}
 button:hover:not(:disabled){border-color:var(--acc)}button:disabled{opacity:.45;cursor:not-allowed}
 button.primary{background:var(--acc);border-color:var(--acc);color:#0b120e;font-weight:600}
+button.big{display:block;width:100%;font-size:24px;padding:18px;border-radius:12px;margin:2px 0 14px}
 button.link{border:0;padding:0;color:var(--acc);text-decoration:underline;font-size:inherit}
 .acts{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
 .window input{width:4.5em;font:inherit;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:4px 6px}
 .pace{display:grid;grid-template-columns:auto 1fr;gap:6px 12px;align-items:center;margin:10px 0 4px}
 .pace input{width:100%;accent-color:var(--acc)}.pace output{grid-column:1/-1;font-weight:600}
-details.custom{margin-top:8px}details.custom summary{cursor:pointer;color:var(--mut);font-size:13px}
-.screens{list-style:none;margin:0;padding:0}.screens li{padding:8px 0;border-top:1px solid var(--line)}
-.screens li:first-child{border-top:0}.screens .acts{margin-top:6px}
+details.custom{margin-top:8px}details.custom summary{cursor:pointer;color:var(--mut);font-size:15px}
+.screens{list-style:none;margin:0;padding:0}.screens li{padding:10px 0;border-top:1px solid var(--line);display:flex;
+flex-wrap:wrap;align-items:center;justify-content:space-between;gap:6px 10px}.screens .who{overflow-wrap:anywhere}
+.screens li:first-child{border-top:0}.screens .acts{margin-top:0}
 .lib{margin:28px 0 0}.lib small{color:var(--mut);font-weight:400;margin-left:8px}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:14px;margin-top:12px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px;margin-top:12px}
 .card{margin:0;background:var(--card);border-radius:10px;overflow:hidden;display:flex;flex-direction:column}
 .card img{width:100%;aspect-ratio:16/9;display:block;object-fit:cover}.thumb{display:block;position:relative}
 .thumb.pick{cursor:crosshair}.dot{position:absolute;width:12px;height:12px;margin:-6px 0 0 -6px;border-radius:50%;
 border:2px solid #fff;box-shadow:0 0 0 1px #000a,0 0 6px #000a;pointer-events:none}.dot.hand{background:var(--acc)}
 .card.is-current{outline:2px solid var(--acc)}.card.is-hidden .thumb,.card.is-hidden b,.card.is-hidden p{opacity:.45}
 figcaption{padding:10px 12px;display:flex;flex-direction:column;flex:1}figcaption small{display:block;color:var(--mut)}
-figcaption p{margin:.4em 0 0;font-size:13px;color:#c9d0cc;flex:1}
-.tags{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px}.tag{font-size:11px;border-radius:6px;padding:1px 7px;background:#333}
+figcaption p{margin:.4em 0 0;font-size:15px;color:#c9d0cc;flex:1}
+.tags{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px}.tag{font-size:13px;border-radius:6px;padding:2px 8px;background:#333}
 .tag.captioned{background:#24402d}.tag.failed{background:#5a2a2a}.tag.pending{background:#40391f}
-.tag.kid{background:#2d3550}figcaption p.kids,.meta p.kids{font-size:13px;color:#c9d0cc;flex:0}
+.tag.kid{background:#2d3550}figcaption p.kids,.meta p.kids{font-size:15px;color:#c9d0cc;flex:0}
 .tag.on{background:var(--acc);color:#0b120e}.tag.hid{background:#3a3f55}.tag.off{background:#5a2a2a}.tag.stale{background:#40391f}
 button.heart.on{border-color:var(--love);color:var(--love)}button.heart:hover:not(:disabled){border-color:var(--love)}
-.filter{font-size:13px;font-weight:400;color:var(--mut);margin-left:12px;cursor:pointer;white-space:nowrap}.filter input{accent-color:var(--love);vertical-align:-2px}
+.filter{font-size:15px;font-weight:400;color:var(--mut);margin-left:12px;cursor:pointer;white-space:nowrap}.filter input{accent-color:var(--love);vertical-align:-2px}
 .grid.only-loved .card:not(.is-loved){display:none}#no-loved{margin:12px 0 0}
 .tag.love{background:#5a2a45}
 .words{margin-top:6px;font-style:italic}.why{margin-top:8px}
-.taggroup{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:center;margin-top:6px}.taggroup>span{color:var(--mut);font-size:12px;min-width:7em}
-.tagbox{font-size:13px;white-space:nowrap}.tagbox input{accent-color:var(--acc);vertical-align:-2px}
+.taggroup{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:center;margin-top:6px}.taggroup>span{color:var(--mut);font-size:14px;min-width:7em}
+.tagbox{font-size:15px;white-space:nowrap}.tagbox input{accent-color:var(--acc);vertical-align:-2px}
 dialog{background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:12px;width:min(640px,calc(100vw - 32px));padding:18px}
-dialog::backdrop{background:#000a}dialog label{display:block;margin:10px 0 0;font-size:13px;color:var(--mut)}
+dialog::backdrop{background:#000a}dialog label{display:block;margin:10px 0 0;font-size:15px;color:var(--mut)}
 dialog input,dialog textarea{display:block;width:100%;margin-top:4px;font:15px/1.4 system-ui,sans-serif;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:6px 8px}
 dialog menu{display:flex;justify-content:flex-end;gap:8px;padding:0;margin:16px 0 0}#ed-msg,#kd-msg{color:var(--bad);min-height:1.2em;margin:8px 0 0}
 .tagset{border:1px solid var(--line);border-radius:8px;margin:12px 0 0;padding:6px 10px 10px}.tagset legend{padding:0 4px}
-.foot{margin-top:24px;font-size:13px}.foot a{color:var(--acc)}
-@media(max-width:800px){.top{grid-template-columns:1fr}}
+.foot{margin-top:24px;font-size:15px}.note{margin:8px 0 0;color:#e6c97a}.foot a{color:var(--acc)}
+@media(max-width:1100px){.panels{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.panels .meta{grid-column:1/-1;order:-1}}
+@media(max-width:700px){.panels{grid-template-columns:minmax(0,1fr)}}
 </style></head><body><main>
 <header><span class="brand">Matchy Wallpapers</span><span id="msg" role="status"></span></header>
-$top
+$shot
 <section class="panels">
-<div class="box"><h2>Rotation</h2><p>$state</p><div class="acts">$toggle</div>$window<p class="mut small">$moodline</p></div>
-<div class="box"><h2>Captions</h2><p>$capline</p></div>
+<div class="box"><h2>Rotation</h2>$nextbtn<p>$state</p><div class="acts">$toggle</div>$window<p class="mut small">$moodline</p></div>
+$now
 <div class="box"><h2>Screens</h2>$screens</div>
 </section>
 <h2 class="lib">Library <small>$summary</small><label class="filter"><input type="checkbox" id="loved-only"> Loved only</label></h2>
-<p class="mut small">$loved_help</p>
+<p class="mut small">$loved_help</p>$capnote
 <div class="grid" id="grid">$cards</div>
 <p id="no-loved" class="mut" hidden>No loved pictures yet. Tap &#9825; Love it on a picture and it comes up more often.</p>
 <p class="foot mut"><a href="current.json">current.json</a> · <a href="library.json">library.json</a></p>

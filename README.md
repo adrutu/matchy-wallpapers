@@ -82,7 +82,7 @@ Short recipes, not separate programs, under [docs/clients/](docs/clients/):
 - **Anything else**: `curl` examples for the API. [curl.md](docs/clients/curl.md)
 - **Any browser on your network**: the gallery page itself.
 
-![The sidebar panel: the picture on screen, rotation, captioner status, screens and the library](docs/images/panel.jpg)
+![The sidebar panel: the picture on screen, then rotation with a big Next button, what is on screen, the screens, and the library](docs/images/panel.jpg)
 
 ## Requirements
 
