@@ -271,6 +271,26 @@ background URL, so each tablet's Home Assistant user becomes a screen, and leave
 a user listed in `screens_off`. A tablet that spends the day in a screensaver fed by Home Assistant
 (not by the tablet's browser) shows an old *last seen* while it still follows.
 
+### Gentle motion
+
+A dashboard or a screensaver can drift slowly over the picture (a pan and zoom over a minute or two)
+and fade from one picture to the next. The browser does the moving with CSS transforms, so it costs
+next to nothing; Matchy only supplies a picture with room to move: add `?pad=1.2` (1.0 to 1.3) to a
+clean or labelled picture and it comes back that many times larger, `WxH` times the pad, showing the
+same view as without it. The client shows it at screen size and zooms in by up to the pad, which is
+where the room to pan comes from; at full zoom it is 1:1, never upscaled.
+
+- The padded picture is centred on the picture's **focus point** (the `focus` field of its sidecar,
+  `{"x": 0-1, "y": 0-1}` from the top-left), as far as the picture allows; without one, on the centre.
+- The **label** is sized for the `WxH` screen and kept inside the part of the padded picture that
+  every screen-sized view of it shows. Whatever the client does, as long as it never shows past the
+  picture's edge and never zooms in beyond 1:1 (more than the pad), the label stays whole on screen.
+- `pad=1.0`, or no `pad`, is the usual picture. The padded size must stay within 7680 pixels a side.
+- Nothing in the add-on options turns this on: each client asks for it. Recipes for Home Assistant
+  dashboards, the Wallpanel screensaver and Homepage are in the repository's `docs/clients`; they
+  stop drifting when the browser reports `prefers-reduced-motion` (on most tablets, the system's
+  *Remove animations* or *Reduce motion* setting). GNOME does not animate wallpapers, so its client is unchanged.
+
 ### HTTP API
 
 Read endpoints:
@@ -281,15 +301,16 @@ Read endpoints:
 | `GET /library.json` | Every picture with its status, caption, `hidden` and `recaption_queued` flags, the focus point crops use (`focus` = `{"x", "y", "source"}`, `source` being `hand`, `model` or `auto`; null for a centred crop), plus the rotation (`mode` = `minutes` or `daynight`, the window, and `next_sun` = `{"at", "event"}` in Day & night, `event` being `sunrise`/`sunset`, or `morning`/`evening` without a location) and captioner state. |
 | `GET /screens.json` | The Screens list (see Screens). Network tier only, and without CORS, because it carries addresses. |
 | `GET /` (also `/index.html`) | The gallery page. |
-| `GET /current/clean/WxH.jpg` | The current picture at any size, without the label. Sends an `ETag`; `If-None-Match` gets a `304` until the picture changes or quiet hours start or end. Dimmed during quiet hours. |
-| `GET /current/label/WxH.jpg[?s=]` | The same with the label. `s` scales the label, 0.6–2.0 (wall tablets look right at about 1.35). Dimmed during quiet hours. |
-| `GET /img/<id>/<rev>/clean/WxH.jpg` | One specific picture; cacheable for a year, so never dimmed. |
-| `GET /img/<id>/<rev>/label/WxH.jpg[?s=]` | The same with the label. |
+| `GET /current/clean/WxH.jpg[?pad=]` | The current picture at any size, without the label. Sends an `ETag`; `If-None-Match` gets a `304` until the picture changes or quiet hours start or end. Dimmed during quiet hours. `pad` (1.0–1.3) makes it that many times larger for a client that pans over it (see Gentle motion). |
+| `GET /current/label/WxH.jpg[?s=][&pad=]` | The same with the label. `s` scales the label, 0.6–2.0 (wall tablets look right at about 1.35). Dimmed during quiet hours. |
+| `GET /img/<id>/<rev>/clean/WxH.jpg[?pad=]` | One specific picture; cacheable for a year, so never dimmed. With a `pad` other than 1.0 it is sent with an `ETag` and `no-cache` instead, because the focus point can move under the same `<rev>`. |
+| `GET /img/<id>/<rev>/label/WxH.jpg[?s=][&pad=]` | The same with the label. |
 | `GET /img/<id>/<rev>/span.jpg?layout=WxH+X+Y[p],...[&s=]` | One picture composed across a multi-monitor layout: each monitor as `width x height + x + y`, `p` marks the primary, which gets the label (the largest screen if none is marked). Gaps are black. |
 | `GET /img/<id>/original.jpg` | The original: PNG and WebP pictures from your folders are re-encoded as JPEG; pictures downloaded from a remote manifest or the daily URL are served as downloaded. |
 | `GET /healthz` | Liveness; answers `ok` even before the first scan. |
 
-Sizes: width and height 320–7680 (outside that, `/img/...` answers `400` and `/current/...` `404`); a
+Sizes: width and height 320–7680 (outside that, `/img/...` answers `400` and `/current/...` `404`;
+a `pad` outside 1.0–1.3, or one that takes a side past 7680, answers `400` on both); a
 span canvas up to 12000x8000 with at most 8 monitors and one primary. A `<rev>` that is no longer current (the caption or the focus point changed) answers `302` to the current
 URL. `HEAD` works everywhere `GET` does. Every read response carries
 `Access-Control-Allow-Origin: *`, except the gallery page and `/screens.json`, which name the screens (and the latter their addresses).

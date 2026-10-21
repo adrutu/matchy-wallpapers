@@ -993,6 +993,61 @@ try:
 finally:
     ph.terminate(); ph.wait()
 
+# ---------------- I: ?pad= for gentle motion, around the sidecar's focus point ----------------
+I = BASE + 7
+dataI = os.path.join(S, "data-I")
+shutil.rmtree(dataI, ignore_errors=True)
+os.makedirs(os.path.join(dataI, "library"))
+json.dump({"id": "test-0", "focus": {"x": 0.25, "y": 0.75, "source": "hand"}},
+          open(os.path.join(dataI, "library", "test-0.json"), "w"))
+pi = start("I", {"port": I, "captioners": [], "caption": {"enabled": False}, "_fresh": False})
+try:
+    # Masters first: a request racing the scanner's first master build can 500 (ensure_master shares
+    # one .tmp file), which is not what this section tests.
+    for _ in range(100):
+        ms = os.listdir(os.path.join(dataI, "masters"))
+        if len([m for m in ms if m.endswith(".jpg")]) == 4 and not any(m.endswith(".tmp") for m in ms): break
+        time.sleep(0.2)
+    from PIL import Image as _Image
+    import io as _io
+
+    def jpeg_size(path):
+        c = http.client.HTTPConnection("127.0.0.1", I, timeout=30); c.request("GET", path)
+        r = c.getresponse(); data = r.read(); h = dict(r.getheaders()); c.close()
+        return r.status, (_Image.open(_io.BytesIO(data)).size if r.status == 200 else None), data, h
+
+    st, size, _, h = jpeg_size("/current/clean/640x360.jpg?pad=1.2")
+    check("I clean pad=1.2 is 1.2 times larger", st == 200 and size == (768, 432), (st, size))
+    st, size, _, h2 = jpeg_size("/current/label/640x400.jpg?pad=1.3&s=1.35")
+    check("I label pad=1.3 is 1.3 times larger", st == 200 and size == (832, 520), (st, size))
+    _, _, plain, hp = jpeg_size("/current/clean/640x360.jpg")
+    _, _, one, h1 = jpeg_size("/current/clean/640x360.jpg?pad=1.0")
+    check("I pad=1.0 is today's picture, same ETag", plain == one and hp["ETag"] == h1["ETag"], (hp, h1))
+    check("I padded ETag differs and names the pad", h["ETag"] != hp["ETag"] and "-p1.2-" in h["ETag"], h["ETag"])
+    c = http.client.HTTPConnection("127.0.0.1", I, timeout=10)
+    c.request("GET", "/current/clean/640x360.jpg?pad=1.2", headers={"If-None-Match": h["ETag"]})
+    r = c.getresponse(); r.read(); c.close()
+    check("I padded If-None-Match 304", r.status == 304, r.status)
+    for bad in ("0.9", "1.31", "abc", "nan", "inf"):
+        st, _, txt, _ = req(I, "GET", "/current/clean/640x360.jpg?pad=" + bad)
+        check("I pad=%s refused 400" % bad, st == 400 and "pad" in txt, (st, txt))
+    st, _, txt, _ = req(I, "GET", "/current/clean/7000x4000.jpg?pad=1.2")
+    check("I pad past the size limit 400", st == 400 and "larger than 7680" in txt, (st, txt))
+    st, _, txt, _ = req(I, "GET", "/current/clean/6000x3000.jpg?pad=1.28")
+    check("I pad up to the size limit ok", st == 200, (st, txt[:80]))
+    items = {i["id"]: i for i in lib(I)["items"]}
+    st, size, _, hf = jpeg_size("/img/test-0/%s/clean/640x360.jpg?pad=1.2" % items["test-0"]["rev"])
+    check("I /img padded: focus from the sidecar, revalidated not immutable",
+          st == 200 and size == (768, 432) and "-f0.25,0.75" in hf["ETag"] and hf["Cache-Control"] == "no-cache", hf)
+    st, _, _, hc = jpeg_size("/img/test-1/%s/label/640x360.jpg?pad=1.2" % items["test-1"]["rev"])
+    check("I /img padded: no focus is the centre", st == 200 and "-f0.5,0.5" in hc["ETag"], hc)
+    st, _, _, hi = jpeg_size("/img/test-1/%s/clean/640x360.jpg" % items["test-1"]["rev"])
+    check("I /img unpadded stays immutable", "immutable" in hi["Cache-Control"] and "ETag" not in hi, hi)
+    names = os.listdir(os.path.join(dataI, "cache", "test-0", items["test-0"]["rev"]))
+    check("I padded cache file names the pad and focus", "clean-640x360-p1.2-f0.25,0.75.jpg" in names, names)
+finally:
+    pi.terminate(); pi.wait()
+
 print("\n%d passed, %d failed (logs in %s)" % (ok, fail, S))
 if not fail:
     shutil.rmtree(S, ignore_errors=True)

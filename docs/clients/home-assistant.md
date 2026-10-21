@@ -1,6 +1,7 @@
 # Home Assistant dashboards and wall tablets
 
-Three pieces, each optional, and a fourth for the Screens list (section 4):
+Three pieces, each optional, a fourth for the Screens list (section 4) and a fifth for gentle motion
+(section 5):
 
 1. A **package** that turns `current.json` into entities: a sensor with the picture's title, blurb
    and image URLs, an `image` entity with the labelled render, and a *Next wallpaper* script.
@@ -291,6 +292,150 @@ if the fallback file is replaced in place.
 One thing to know: the screensaver's picture is fetched by Home Assistant, not by the tablet, so a
 tablet that spends the day in its screensaver shows an old *last seen* in `/screens.json` while it
 still follows Matchy.
+
+## 5. Gentle motion: a slow drift and a crossfade
+
+The background and the screensaver can drift slowly over the picture and fade into the next one.
+Only CSS transforms and opacity move, which the browser hands to the graphics chip, so a wall tablet
+does no more work than showing a still picture. Both stop drifting (and hold the usual framing) when
+the tablet asks for reduced motion: the browser's `prefers-reduced-motion`, which most tablets
+switch on with the system's *Remove animations* or *Reduce motion* setting. The fades stay.
+
+The pictures are asked for with `?pad=1.2` (see *Gentle motion* in
+[DOCS.md](../../matchy/DOCS.md#gentle-motion)): 1.2 times larger than the screen, so there is room
+to move without ever showing an edge, and the label stays in frame whatever the drift does.
+
+**The drift, and why it is safe.** Both recipes use the same keyframes. The picture is shown at
+screen size and zoomed between 1.04 and 1.18 times while it slides a few percent: below the pad (1.2),
+so it never zooms past 1:1 and the label stays whole, and the slide is always less than the zoom
+leaves spare, so no edge shows. To use another pad, scale the numbers with it: zoom at most to the
+pad, and keep each translate (in percent) under `(zoom - 1) / (2 * zoom) * 100` at that end.
+
+```css
+@keyframes matchy-drift {
+  from { transform: scale(1.04) translate(1.5%, 1%); }
+  to   { transform: scale(1.18) translate(-6%, -4%); }
+}
+```
+
+90 seconds each way (`alternate`) is calm on a wall; anything from 60 to 120 reads as still at a
+glance.
+
+**Package.** Add a `previous_background_url` attribute to `sensor.matchy` (section 1), next to
+`background_url`: it remembers the picture before the current one, which the theme fades from. It
+must build the URL the same way as `background_url`.
+
+```yaml
+          # The picture before this one, for the crossfade. `this` is the sensor before this update.
+          previous_background_url: >-
+            {% set u = state_attr('sensor.matchy_feed', 'urls') %}
+            {% set new = '<matchy-url>' ~ (u.clean | replace('{w}', '2560') | replace('{h}', '1600'))
+                         if u is mapping and u.clean is defined else none %}
+            {% set old = this.attributes.background_url | default(none) %}
+            {{ old if old and old != new else this.attributes.previous_background_url | default(none) }}
+```
+
+**Theme.** This `card-mod-view` rule replaces the one from section 2 (or section 4: it keeps the
+screen names and the switch). The previous picture sits underneath, the new one fades in on top of it,
+and the whole background drifts. The fade's name changes with every picture, which is what makes the
+browser play it again.
+
+```yaml
+Matchy Background:
+  card-mod-theme: Matchy Background
+  card-mod-view: |
+    {%- set u = state_attr('sensor.matchy', 'background_url') %}
+    {%- set p = state_attr('sensor.matchy', 'previous_background_url') or u %}
+    {%- set off = state_attr('sensor.matchy', 'screens_off') or [] %}
+    {%- set personal = ['Alex', 'Sam'] %}
+    {%- set q = '?pad=1.2' ~ ('' if user in personal else '&screen=' ~ (user | urlencode)) %}
+    {%- set fade = 'matchy-in-' ~ (states('sensor.matchy') | regex_replace('[^A-Za-z0-9_-]', '-')) %}
+    {%- if u and states('sensor.matchy') not in ['unknown', 'unavailable'] and user not in off %}
+    hui-view-background {
+      position: fixed;
+      --view-background: center / cover no-repeat url('/local/fallback.jpg') !important;
+      animation: matchy-drift 90s ease-in-out infinite alternate;
+      will-change: transform;
+    }
+    hui-view-background::before,
+    hui-view-background::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background: linear-gradient(rgba(0, 0, 0, 0.22), rgba(0, 0, 0, 0.22)),
+                  center / cover no-repeat url('{{ p }}{{ q }}');
+    }
+    hui-view-background::after {
+      background-image: linear-gradient(rgba(0, 0, 0, 0.22), rgba(0, 0, 0, 0.22)), url('{{ u }}{{ q }}');
+      animation: {{ fade }} 3s ease-in-out both;
+    }
+    @keyframes {{ fade }} {
+      from { opacity: 0; }
+      to   { opacity: 1; }
+    }
+    @keyframes matchy-drift {
+      from { transform: scale(1.04) translate(1.5%, 1%); }
+      to   { transform: scale(1.18) translate(-6%, -4%); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      hui-view-background { animation: none; transform: scale(1.2); }
+    }
+    {%- endif %}
+```
+
+Without the Screens list, drop `off` and `personal` and set `q` to `'?pad=1.2'`. The fallback image
+now sits under the pictures rather than in the same layer list: it shows while a picture loads, or if
+it cannot. The background is pinned to the screen (`position: fixed`) so the drift has a fixed frame;
+a dashboard taller than the screen scrolls over it, as with the `fixed` background before.
+
+**Screensaver.** Wallpanel already crossfades (`crossfade_time`). For the drift, ask for the padded
+label in `label_url` (section 1), so the `image` entity serves it:
+
+```yaml
+          label_url: >-
+            {% set u = state_attr('sensor.matchy_feed', 'urls') %}
+            {{ '<matchy-url>' ~ (u.label | replace('{w}', '1920') | replace('{h}', '1200')) ~ '?s=1.35&pad=1.2'
+               if u is mapping and u.label is defined else none }}
+```
+
+and give the tablet's Wallpanel profile (section 3) the keyframes through `custom_css`, which
+Wallpanel adds to its own style sheet. `!important` because Wallpanel resets the animation on the
+picture it is about to show.
+
+```yaml
+wallpanel:
+  profiles:
+    user.<the tablet user's id>:
+      enabled: true
+      custom_css: |
+        #wallpanel-screensaver-image-one,
+        #wallpanel-screensaver-image-two {
+          animation: matchy-drift 90s ease-in-out infinite alternate !important;
+          will-change: transform;
+        }
+        @keyframes matchy-drift {
+          from { transform: scale(1.04) translate(1.5%, 1%); }
+          to   { transform: scale(1.18) translate(-6%, -4%); }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          #wallpanel-screensaver-image-one,
+          #wallpanel-screensaver-image-two { animation: none !important; transform: scale(1.2); }
+        }
+```
+
+Every screensaver fed by `label_url` now gets the padded picture; one without the drift shows a
+little more of the picture around it and a label about a sixth smaller. Give such a tablet its own
+`image` entity without `&pad=1.2` (as in section 4) if that matters.
+
+Leave Wallpanel's own `image_animation_ken_burns` off: it zooms past the pad, so it can push the label
+off the screen. With `image_fit_landscape: cover` and a picture size of the tablet's shape, the whole
+padded picture fills the screen before the zoom.
+
+**Older tablets.** The padded picture is 1.44 times the pixels (at pad 1.2), held twice during a
+fade. On a tablet that struggles, ask for its real resolution rather than a larger one (say
+`1280x800` in `background_url`, `previous_background_url` and `label_url`) and watch that it stays
+smooth and cool; a smaller pad (1.1, with the zoom kept under 1.1) moves less but costs less.
 
 ## Checking
 

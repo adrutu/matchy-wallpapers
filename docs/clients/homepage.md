@@ -31,13 +31,16 @@ curl -s http://<homepage-host>:3000/api/revalidate      # {"revalidated":true}
 ```js
 /* Matchy: keep Homepage's #background on the engine's current picture.
    settings.yaml background.image only paints the first frame; this swaps the url() on every
-   rotation (polls current.json once a minute, preloads the new image, then swaps).
+   rotation (polls current.json once a minute, preloads the new image, then fades it in over the
+   old one for FADE_MS; 0 swaps at once).
    Matchy's Screens list calls this "homepage" (one switch for every browser). Turned off there,
    current.json says follow:false and the background goes plain until it is turned back on. */
 (function () {
   var BASE = "<matchy-url>";
   var SCREEN = "screen=homepage";
+  var FADE_MS = 2500;
   var shown = null;
+  var layer = null; // the new picture while it fades in
   var original = null; // the background-image string Homepage painted, so "on" can put a url() back
 
   // A few fixed sizes keep the engine's render cache warm.
@@ -54,14 +57,33 @@ curl -s http://<homepage-host>:3000/api/revalidate      # {"revalidated":true}
     var bg = document.getElementById("background");
     if (!bg) return;
     if (original === null) original = bg.style.backgroundImage;
-    bg.style.backgroundImage = original.replace(/url\((['"]?).*?\1\)/, 'url("' + url + '")');
+    var next = original.replace(/url\((['"]?).*?\1\)/, 'url("' + url + '")');
     shown = version;
+    if (layer) { layer.remove(); layer = null; }
+    if (!FADE_MS || bg.style.backgroundImage === "none") { bg.style.backgroundImage = next; return; }
+    // A copy of #background on top of it (Homepage's own CSS for it, inline), faded in, then folded
+    // back into #background. Opacity only, so the browser does it without repainting the page.
+    var fading = layer = document.createElement("div");
+    fading.setAttribute("aria-hidden", "true");
+    fading.style.cssText = "position:fixed;inset:0;z-index:0;pointer-events:none;" +
+      "background-size:cover;background-position:center;background-repeat:no-repeat;" +
+      "opacity:0;transition:opacity " + FADE_MS + "ms ease-in-out";
+    fading.style.backgroundImage = next;
+    bg.parentNode.insertBefore(fading, bg.nextSibling);
+    fading.getBoundingClientRect(); // start from opacity 0
+    fading.style.opacity = "1";
+    setTimeout(function () {
+      bg.style.backgroundImage = next;
+      fading.remove();
+      if (layer === fading) layer = null;
+    }, FADE_MS + 100);
   }
 
   function plain() {
     var bg = document.getElementById("background");
     if (!bg) return;
     if (original === null) original = bg.style.backgroundImage;
+    if (layer) { layer.remove(); layer = null; }
     bg.style.backgroundImage = "none";
     shown = "off";
   }
@@ -86,6 +108,10 @@ curl -s http://<homepage-host>:3000/api/revalidate      # {"revalidated":true}
   setInterval(tick, 60000);
 })();
 ```
+
+The fade is a second layer on top of `#background` whose opacity goes from 0 to 1, after which
+`#background` takes the new picture and the layer goes; it stays on under reduced motion, since
+nothing moves. Homepage gets no drift: its cards cover most of the picture.
 
 `current.json` is served with `Access-Control-Allow-Origin: *`, so the browser may read it from the
 Homepage origin. The clean image is used on purpose: Homepage's cards cover the corner where the

@@ -96,6 +96,20 @@ class Renderer:
         box = crop_box(master.size[0], master.size[1], w, h, focus)
         return master.resize((w, h), Image.LANCZOS, box=box, reducing_gap=3.0)
 
+    @staticmethod
+    def padded(master, w, h, pad, focus=(0.5, 0.5)):
+        """The w x h cover crop drawn pad times larger, centred on focus (x, y in 0-1) as far as the
+        picture allows: (round(w * pad), round(h * pad)) pixels showing what a cover crop shows.
+        A client shows it at screen size and zooms in by up to pad, so it can pan without an edge."""
+        mw, mh = master.size
+        pw, ph = int(round(w * pad)), int(round(h * pad))
+        scale = max(pw / mw, ph / mh)
+        cw, ch = min(mw, pw / scale), min(mh, ph / scale)
+        left = min(max(focus[0] * mw - cw / 2, 0.0), mw - cw)
+        top = min(max(focus[1] * mh - ch / 2, 0.0), mh - ch)
+        box = (left, top, min(mw, left + cw), min(mh, top + ch))
+        return master.resize((pw, ph), Image.LANCZOS, box=box, reducing_gap=3.0)
+
     # ---------- the label ----------
     def geometry(self, w, h, s):
         st = self.st
@@ -109,12 +123,19 @@ class Renderer:
         u = card_w / (st["card_frac_landscape"] * 1920)
         return card_w, margin, u
 
-    def draw_label(self, img, meta, s=1.0):
-        """Composite the gallery label onto img (RGB, modified copy returned)."""
+    def draw_label(self, img, meta, s=1.0, screen=None):
+        """Composite the gallery label onto img (RGB, modified copy returned).
+
+        screen: (w, h) of the screen when img is a padded canvas larger than it. The label is then
+        sized for that screen and kept inside the part of the canvas that every screen-sized window
+        shows (bottom-right corner at (w, h), top-left at the canvas size minus (w, h)), so no pan
+        or zoom that stays inside the canvas at no more than 1:1 can take it out of frame."""
         st = self.st
-        w, h = img.size
+        iw, ih = img.size
+        w, h = screen or img.size
+        lx, ly = iw - w, ih - h  # the window's leftmost and topmost start
         card_w, margin, u = self.geometry(w, h, s)
-        card_w = int(round(card_w))
+        card_w = int(round(min(card_w, w - lx - 2 * margin)))
         pad = st["padding_px"] * u
         inner = card_w - 2 * pad
 
@@ -173,8 +194,8 @@ class Renderer:
 
         x0 = int(round(w - margin - card_w))
         y0 = int(round(h - margin - card_h))
-        if y0 < margin:  # absurdly small screen: pin to the top margin
-            y0 = int(margin)
+        if y0 < ly + margin:  # absurdly small screen: pin to the top margin
+            y0 = int(ly + margin)
         radius = st["radius_px"] * u
         out = img.copy()
 
@@ -183,7 +204,7 @@ class Renderer:
         sh_off = 6 * u
         ext = int(sh_blur * 3)
         sx0, sy0 = max(0, x0 - ext), max(0, y0 - ext)
-        sx1, sy1 = min(w, x0 + card_w + ext), min(h, int(y0 + card_h + sh_off + ext))
+        sx1, sy1 = min(iw, x0 + card_w + ext), min(ih, int(y0 + card_h + sh_off + ext))
         sh = Image.new("L", (sx1 - sx0, sy1 - sy0), 0)
         ImageDraw.Draw(sh).rounded_rectangle(
             (x0 - sx0, y0 - sy0 + sh_off, x0 - sx0 + card_w, y0 - sy0 + card_h + sh_off),
@@ -197,7 +218,7 @@ class Renderer:
         blur = st["blur_px"] * u
         be = int(blur * 2.5)
         bx0, by0 = max(0, x0 - be), max(0, y0 - be)
-        bx1, by1 = min(w, x0 + card_w + be), min(h, y0 + card_h + be)
+        bx1, by1 = min(iw, x0 + card_w + be), min(ih, y0 + card_h + be)
         behind = img.crop((bx0, by0, bx1, by1)).filter(ImageFilter.GaussianBlur(blur))
         glass = behind.crop((x0 - bx0, y0 - by0, x0 - bx0 + card_w, y0 - by0 + card_h))
         glass = Image.blend(glass, Image.new("RGB", glass.size, (0, 0, 0)), st["tint_alpha"])
@@ -228,6 +249,9 @@ class Renderer:
 
     def label(self, master, meta, w, h, s=1.0, focus=None):
         return self.draw_label(self.cover(master, w, h, focus), meta, s)
+
+    def label_padded(self, master, meta, w, h, s, pad, focus):
+        return self.draw_label(self.padded(master, w, h, pad, focus), meta, s, screen=(w, h))
 
     def span(self, master, meta, monitors, s=1.0, focus=None):
         cw = max(m[0] + m[2] for m in monitors)
@@ -361,6 +385,16 @@ def draw_smallcaps(d, xy, text, font, fill, track):
         f = font if ch.isupper() or not ch.isalpha() else small
         d.text((x, y), ch.upper(), font=f, fill=fill, anchor="ls")
         x += f.getlength(ch.upper()) + track
+
+
+def focus_point(sc):
+    """The sidecar's focus {x, y} (0-1, from the picture's top-left) as a tuple, or the centre."""
+    f = (sc or {}).get("focus")
+    if isinstance(f, dict):
+        x, y = f.get("x"), f.get("y")
+        if all(isinstance(v, (int, float)) and not isinstance(v, bool) and 0 <= v <= 1 for v in (x, y)):
+            return float(x), float(y)
+    return 0.5, 0.5
 
 
 def parse_layout(spec, lo=320, hi=7680, max_w=12000, max_h=8000, max_monitors=8):
