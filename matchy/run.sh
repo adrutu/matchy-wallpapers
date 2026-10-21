@@ -138,6 +138,28 @@ if bashio::config.exists 'exclude'; then
     done
 fi
 
+# ------------------------------------------------------------------ quiet hours
+# Only the fields the user set; the engine keeps quiet hours off unless start and end are both there.
+# `bashio::config` rather than `opt` for hold: has_value would count an explicit false as unset.
+quiet='{}'
+for key in start end; do
+    if bashio::config.has_value "quiet_hours.${key}"; then
+        quiet="$(jq -c --arg k "${key}" --arg v "$(bashio::config "quiet_hours.${key}")" '.[$k] = $v' <<<"${quiet}")"
+    fi
+done
+case "$(bashio::config 'quiet_hours.hold')" in
+    true) quiet="$(jq -c '.hold = true' <<<"${quiet}")" ;;
+    false) quiet="$(jq -c '.hold = false' <<<"${quiet}")" ;;
+esac
+if bashio::config.has_value 'quiet_hours.dim'; then
+    q_dim="$(bashio::config 'quiet_hours.dim')"
+    if [[ "${q_dim}" =~ ^(0(\.[0-9]+)?|1(\.0+)?)$ ]]; then
+        quiet="$(jq -c --argjson d "${q_dim}" '.dim = $d' <<<"${quiet}")"
+    else
+        bashio::log.warning "Option 'quiet_hours.dim' is not a number from 0 to 1 ('${q_dim}'); using the default."
+    fi
+fi
+
 # -------------------------------------------------------------- optional sources
 # A remote manifest (a JSON index of images served over HTTP) and a daily image.
 # Both off unless the user gives a URL.
@@ -215,6 +237,7 @@ jq -n \
     --argjson scan_minutes "$(int 'folder_scan_minutes' 10)" \
     --argjson rot_min "$(int 'rotation_min_minutes' 15)" \
     --argjson rot_max "$(int 'rotation_max_minutes' 20)" \
+    --argjson quiet_hours "${quiet}" \
     --argjson folders "${folders}" \
     --argjson sets "${sets}" \
     --argjson exclude "${exclude}" \
@@ -236,6 +259,7 @@ jq -n \
         render_threads: $render_threads,
         folder_scan_minutes: $scan_minutes,
         rotation: {min_minutes: $rot_min, max_minutes: $rot_max},
+        quiet_hours: $quiet_hours,
         location: $location,
         mood: $mood,
         folders: ($folders | map(. + {sets: $sets})),

@@ -42,6 +42,7 @@ DEFAULTS = {
     "render_threads": 2,
     "rotation": {"min_minutes": 15, "max_minutes": 20, "caption_priority": []},
     "location": None,  # {"latitude", "longitude"}: Day & night changes at sunrise and sunset there
+    "quiet_hours": {},  # {"start": "23:00", "end": "07:00", "hold": true, "dim": 0.6}; off without start and end
     "folders": [],
     "exclude": [],  # id globs kept out of the library
     "folder_scan_minutes": 10,
@@ -159,6 +160,60 @@ def sun_events(lat, lon, day):
             midnight + (720 - 4 * (lon - ha) - eqtime) * 60)
 
 
+HHMM_RE = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
+QUIET_DIM = 0.6  # how much quiet hours darken /current/... when the option leaves `dim` out
+
+
+def parse_hhmm(text):
+    m = HHMM_RE.match(text.strip()) if isinstance(text, str) else None
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def dim_key(dim):
+    """0.6 -> "0.6": the dim amount in a cache file name and an ETag."""
+    return ("%.2f" % dim).rstrip("0").rstrip(".")
+
+
+def parse_quiet(q):
+    """{"start", "end", "hold", "dim"} from the quiet_hours option, or None when it is off or unusable (logged).
+    Off unless both start and end are set; hold defaults to true and dim to QUIET_DIM."""
+    if not isinstance(q, dict) or (q.get("start") in (None, "") and q.get("end") in (None, "")):
+        return None
+    start, end = parse_hhmm(q.get("start")), parse_hhmm(q.get("end"))
+    if not start or not end:
+        log("quiet hours: start and end must both be times like 23:00 and 07:00; quiet hours are off")
+        return None
+    if start == end:
+        log("quiet hours: start and end are the same time; quiet hours are off")
+        return None
+    dim = q.get("dim", QUIET_DIM)
+    if isinstance(dim, bool) or not isinstance(dim, (int, float)) or not 0 <= dim <= 1:
+        log("quiet hours: dim must be a number from 0 to 1; using %s" % QUIET_DIM)
+        dim = QUIET_DIM
+    return {"start": start, "end": end, "hold": q.get("hold", True) is not False, "dim": float(dim)}
+
+
+def local_at(day, hm):
+    """Epoch seconds of the local wall-clock time hm = (hour, minute) on the date `day`. A time the clocks skip
+    (spring forward) lands after the jump; one they pass twice (fall back) is whichever the C library picks."""
+    return time.mktime((day.year, day.month, day.day, hm[0], hm[1], 0, 0, 0, -1))
+
+
+def quiet_window(now, start, end):
+    """(active, start, end) in epoch seconds: the quiet window now is in, or else the next one. An end at or before
+    the start is the next morning. Wall-clock times, so the night the clocks change is an hour longer or shorter."""
+    today = dt.datetime.fromtimestamp(now).date()
+    windows = []
+    for offset in (-1, 0, 1):
+        d = today + dt.timedelta(days=offset)
+        windows.append((local_at(d, start), local_at(d + dt.timedelta(days=1) if end <= start else d, end)))
+    for s, e in windows:
+        if s <= now < e:
+            return True, s, e
+    s, e = min(w for w in windows if w[0] > now)
+    return False, s, e
+
+
 # ======================================================================
 class Engine:
     def __init__(self, cfg):
@@ -178,6 +233,8 @@ class Engine:
         if ov and ov.get("options") != [r["min_minutes"], r["max_minutes"]]:
             log("rotation: the add-on options changed since the window was set in the panel; using the options")
             self.state.pop("rotation_override")
+        self.quiet_cfg = parse_quiet(cfg.get("quiet_hours"))
+        self.quiet_was = None  # whether the last rotator pass was in quiet hours, for the log
         self.lock = threading.RLock()
         self.wake = threading.Event()
         self.caption_wake = threading.Event()
@@ -334,7 +391,9 @@ class Engine:
         mp = self.state.get("mood_pick")
         log("rotate (%s) -> %s%s, next at %s%s" % (
             reason, iid, (" [mood: %s]" % (", ".join(mp["matched"]) or "no match")) if mp else "",
-            iso(self.state["next_change"]), " (rotation paused)" if self.state.get("paused") else ""))
+            iso(self.state["next_change"]),
+            " (rotation paused)" if self.state.get("paused")
+            else " (quiet hours: held until they end)" if self.state.get("quiet_hold") else ""))
 
     def rotate(self, reason):
         with self.lock:
@@ -343,21 +402,56 @@ class Engine:
                 return
             self._show(nxt, time.time(), reason)
 
+    def quiet(self, now):
+        """{"active", "start", "end", "hold", "dim"}, start and end in epoch seconds (the window now is in, or else
+        the next one), or None when quiet hours are off."""
+        q = self.quiet_cfg
+        if not q:
+            return None
+        active, start, end = quiet_window(now, q["start"], q["end"])
+        return {"active": active, "start": start, "end": end, "hold": q["hold"], "dim": q["dim"]}
+
+    def rotator_step(self, now):
+        """One pass of the rotator. Quiet hours with hold work like a pause that ends by itself: the rotation
+        stands still (Next and Show now still work), and when they end the picture gets a full interval from
+        then. state["quiet_hold"] carries that across a restart."""
+        with self.lock:
+            q = self.quiet(now)
+            active = bool(q and q["active"])
+            if active != self.quiet_was:
+                if active:
+                    log("quiet hours until %s%s%s" % (iso(q["end"]), ", holding the picture" if q["hold"] else "",
+                                                      ", /current/... dimmed by %d %%" % round(q["dim"] * 100)
+                                                      if q["dim"] else ""))
+                elif self.quiet_was:
+                    log("quiet hours over")
+                self.quiet_was = active
+            holding = active and q["hold"]
+            paused = self.state.get("paused")
+            if holding and not self.state.get("quiet_hold"):
+                self.state["quiet_hold"] = True
+                self.save_state()
+            elif not holding and self.state.pop("quiet_hold", None):
+                if not paused:  # a paused rotation gets its full interval on resume instead
+                    self.state["next_change"] = now + self.interval()
+                    log("rotation resumes after quiet hours, next at %s" % iso(self.state["next_change"]))
+                self.save_state()
+            cur = self.state.get("current")
+            still = paused or holding
+            due = not still and self.state.get("next_change", 0) <= now
+            missing = cur and cur not in self.lib.items
+            # An uncaptioned stand-in gives way as soon as a captioned picture exists,
+            # unless it was picked by hand or the rotation is paused or held on it.
+            placeholder = (cur and not still and not self.state.get("picked")
+                           and self.lib.status(cur) != "captioned"
+                           and any(self.lib.status(i) == "captioned" for i in self.eligible()))
+        if not cur or due or missing or placeholder:
+            self.rotate("due" if due else "placeholder" if placeholder else "start")
+
     def rotator(self):
         while True:
             try:
-                with self.lock:
-                    cur = self.state.get("current")
-                    paused = self.state.get("paused")
-                    due = not paused and self.state.get("next_change", 0) <= time.time()
-                    missing = cur and cur not in self.lib.items
-                    # An uncaptioned stand-in gives way as soon as a captioned picture exists,
-                    # unless it was picked by hand or the rotation is paused on it.
-                    placeholder = (cur and not paused and not self.state.get("picked")
-                                   and self.lib.status(cur) != "captioned"
-                                   and any(self.lib.status(i) == "captioned" for i in self.eligible()))
-                if not cur or due or missing or placeholder:
-                    self.rotate("due" if due else "placeholder" if placeholder else "start")
+                self.rotator_step(time.time())
             except Exception:
                 traceback.print_exc()
             self.wake.wait(5)
@@ -555,12 +649,18 @@ class Engine:
             paused = bool(self.state.get("paused"))
             tags = self.lib.tags(cur)
             matched = list((self.state.get("mood_pick") or {}).get("matched") or []) if self.mood_level() != "off" else []
+        q = self.quiet(time.time())
+        quiet = bool(q and q["active"])
         rev = d["rev"]
         return {
             "id": cur, "rev": rev, "version": "%s.%s.%d" % (cur, rev, int(since)),
             "title": d["title"], "place": d["place"], "credit": d["credit"], "blurb": d["blurb"],
-            "since": iso(since), "next_change": None if paused else iso(nxt), "paused": paused,
-            "captioned": self.lib.status(cur) == "captioned",
+            # Held by quiet hours, the next change is a full interval after they end: not known yet.
+            "since": iso(since), "next_change": None if paused or (quiet and q["hold"]) else iso(nxt),
+            "paused": paused, "captioned": self.lib.status(cur) == "captioned",
+            # The window now is in, or else the next one; null when quiet hours are off.
+            "quiet": quiet,
+            "quiet_window": q and {"start": iso(q["start"]), "end": iso(q["end"]), "hold": q["hold"], "dim": q["dim"]},
             # Mood-aware picks: the picture's tags, and which of them matched the moment when it was
             # picked ([] with mood off, for a hand-picked picture, or when nothing matched).
             "tags": tags, "mood_match": matched,
@@ -915,16 +1015,19 @@ class Engine:
             log("cache evicted down to %d MB" % (total // 1048576))
         self.cache_bytes = total
 
-    def render_kind(self, iid, rev, kind, w, h, s=1.0, layout=None):
+    def render_kind(self, iid, rev, kind, w, h, s=1.0, layout=None, dim=0.0):
+        """dim (quiet hours, clean and label only) darkens the render and gets its own cache file."""
         disp = self.lib.display(iid)
         meta = {k: disp[k] for k in ("title", "place", "credit", "blurb")}
         sk = ("%.2f" % s).rstrip("0").rstrip(".")
+        dk = ("-d%s" % dim_key(dim)) if dim else ""
         if kind == "clean":
-            key = "%s/%s/clean-%dx%d.jpg" % (iid, rev, w, h)
-            prod = lambda: self.renderer.encode(self.renderer.clean(self.master_image(iid), w, h))
+            key = "%s/%s/clean-%dx%d%s.jpg" % (iid, rev, w, h, dk)
+            prod = lambda: self.renderer.encode(self.renderer.dim(self.renderer.clean(self.master_image(iid), w, h), dim))
         elif kind == "label":
-            key = "%s/%s/label-%dx%d-s%s.jpg" % (iid, rev, w, h, sk)
-            prod = lambda: self.renderer.encode(self.renderer.label(self.master_image(iid), meta, w, h, s))
+            key = "%s/%s/label-%dx%d-s%s%s.jpg" % (iid, rev, w, h, sk, dk)
+            prod = lambda: self.renderer.encode(self.renderer.dim(
+                self.renderer.label(self.master_image(iid), meta, w, h, s), dim))
         else:
             layout = layout.replace(" ", "+").strip()
             lk = hashlib.sha1(layout.encode()).hexdigest()[:12]
@@ -1181,11 +1284,14 @@ class Handler(BaseHTTPRequestHandler):
                 if not size or not cur:
                     return self.send(404, "not found\n", head=head)
                 s = self.parse_scale(q) if parts[1] == "label" else 1.0
-                etag = '"%s-%s-%dx%d-%s"' % (cur["version"], parts[1], size[0], size[1], s)
+                # Quiet hours dim /current/ only: /img/ URLs are cacheable for a year and keep their meaning.
+                dim = cur["quiet_window"]["dim"] if cur["quiet"] else 0.0
+                etag = '"%s-%s-%dx%d-%s%s"' % (cur["version"], parts[1], size[0], size[1], s,
+                                               ("-dim" + dim_key(dim)) if dim else "")
                 hdr = {"Cache-Control": "no-cache", "ETag": etag}
                 if self.headers.get("If-None-Match") == etag:
                     return self.send(304, headers=hdr, head=True)
-                data = eng.render_kind(cur["id"], cur["rev"], parts[1], size[0], size[1], s)
+                data = eng.render_kind(cur["id"], cur["rev"], parts[1], size[0], size[1], s, dim=dim)
                 return self.send(200, data, "image/jpeg", hdr, head)
 
             if len(parts) >= 3 and parts[0] == "img" and parts[1] in eng.lib.items:
@@ -1411,13 +1517,31 @@ def gallery_html(eng, control, admin):
                '<p class="mut">No pictures found so far. Check <code>source_folders</code> in the add-on options; '
                'the log names any folder it could not read.</p></div></section>')
 
+    qw = cur.get("quiet_window")
+    if cur.get("quiet"):
+        held = qw["hold"] and not lib["paused"]
+        what = [w for w in ("holding this picture" if held else "",
+                            "/current/ pictures dimmed by %d %%" % round(qw["dim"] * 100) if qw["dim"] else "") if w]
+        quiet = "Quiet until %s%s." % (esc(hhmm(qw["end"])), (": " + ", ".join(what)) if what else "")
+        if held:
+            quiet += " Next picture and Show now still work; the rotation resumes with a full interval at %s." % (
+                esc(hhmm(qw["end"])))
+    elif qw:
+        quiet = "Quiet hours from %s to %s." % (esc(hhmm(qw["start"])), esc(hhmm(qw["end"])))
+    else:
+        quiet = ""
     if lib["paused"]:
         state = 'Rotation: <b>paused</b>, holding this picture until you resume.'
         toggle = '<button class="primary" data-act="resume"%s>Resume rotation</button>' % no_ctl
+    elif cur.get("quiet") and qw["hold"]:
+        state = 'Rotation: <b>quiet</b>.'
+        toggle = '<button data-act="pause"%s>Pause rotation</button>' % no_ctl
     else:
         state = 'Rotation: <b>running</b>%s.' % (
             (", next picture at %s" % esc(hhmm(cur.get("next_change")))) if cur.get("next_change") else "")
         toggle = '<button data-act="pause"%s>Pause rotation</button>' % no_ctl
+    if quiet:
+        state += "<br>" + quiet
     opt = rot["options"]
     if rot["source"] == "panel":
         source = ('Set here. The add-on options say %s to %s minutes; changing them there takes over again. '

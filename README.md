@@ -24,6 +24,7 @@ and serves your pictures on your own network.
   label shows the title and credit.
 - **Rotation to taste.** Every 15 to 20 minutes by default; the panel's slider goes from every 15
   minutes to every 12 hours, or one picture at sunrise and the next at sunset where you live.
+  Optional quiet hours hold one dimmed picture overnight.
 - **Mood-aware picks**, if you want them. The captioner tags each picture (night, rain, forest,
   cosy…) and the weather, the season and the time of day pull matching pictures forward: cosy on a
   cold wet evening, bright on a sunny morning. The whole library still rotates.
@@ -91,13 +92,13 @@ identically on amd64 and aarch64 in CI. The HTTP API is documented but may still
 - The published port has no login. Anyone who can reach it sees every picture and caption; the
   controls that change the library work only from the sidebar panel. Keep it on your own network.
 - As an add-on, pictures must live under `/media` or `/share`.
-- One rotation for the whole house: no per-screen pictures, no quiet hours yet.
+- One rotation for the whole house: no per-screen pictures.
 - The engine runs as root inside its container, as Home Assistant add-ons do.
 
 ## Development
 
 - `tests/run_tests.py`: integration tests against the real engine (rotation, panel controls, access
-  tiers, screens, request bodies, oversized images). `uv run --with pillow python tests/run_tests.py`,
+  tiers, screens, quiet hours, request bodies, oversized images). `uv run --with pillow python tests/run_tests.py`,
   or any Python 3 with Pillow; about a minute.
 - `tests/caption_test.py` (the grounding check), `tests/mood_test.py` (the moment's tags and the
   weighting of the picks), `tests/render_test.py` (crops for every picture shape and client size) and
