@@ -58,7 +58,7 @@ cfg = {"caption": {"min_words": 30, "max_words": 45}, "captioners": []}
 check("prompt: no box asked for by default", "subject" not in Captioner(cfg).prompt({}))
 check("prompt: box asked for with focus_auto", '"subject"' in Captioner(dict(cfg, focus_auto=True)).prompt({}))
 check("parse still reads title and blurb next to a box",
-      Captioner.parse('{"title": "T", "blurb": "b  c", "subject": [0.1, 0.1, 0.5, 0.5]}') == ("T", "b c"))
+      Captioner.parse('{"title": "T", "blurb": "b  c", "subject": [0.1, 0.1, 0.5, 0.5]}')[:2] == ("T", "b c"))
 
 cap = Captioner({"captioners": [], "caption": {"min_words": 30, "max_words": 45, "spelling": "British",
                                               "kids": {"min_words": 15, "max_words": 30}}})

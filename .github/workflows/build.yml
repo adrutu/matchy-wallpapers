@@ -80,6 +80,9 @@ jobs:
       - name: tests/art_sources_test.py (open-access art sources, against recorded fixtures, no network)
         run: python tests/art_sources_test.py
 
+      - name: tests/mood_test.py (the moment's tags and the weighting of the picks)
+        run: python tests/mood_test.py
+
       - name: tests/render_test.py (crops for every picture shape and client size)
         run: python tests/render_test.py
 

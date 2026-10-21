@@ -25,6 +25,9 @@ and serves your pictures on your own network.
 - **Rotation to taste.** Every 15 to 20 minutes by default; the panel's slider goes from every 15
   minutes to every 12 hours, or one picture at sunrise and the next at sunset where you live.
   Optional quiet hours hold one dimmed picture overnight.
+- **Mood-aware picks**, if you want them. The captioner tags each picture (night, rain, forest,
+  cosy…) and the weather, the season and the time of day pull matching pictures forward: cosy on a
+  cold wet evening, bright on a sunny morning. The whole library still rotates.
 - **A screens list.** Every screen that names itself shows up in the panel, where you can turn it off
   (it goes back to its own wallpaper) or on again.
 - **Colour match.** Each picture's main colours, a usable accent and the nearest GNOME accent name,
@@ -105,9 +108,9 @@ identically on amd64 and aarch64 in CI. The HTTP API is documented but may still
 - `tests/run_tests.py`: integration tests against the real engine (rotation, panel controls, access
   tiers, screens, quiet hours, request bodies, oversized images). `uv run --with pillow python tests/run_tests.py`,
   or any Python 3 with Pillow; about a minute.
-- `tests/caption_test.py` (the grounding check), `tests/render_test.py` (crops for every picture
-  shape and client size) and `tests/run_sh_test.py` (`run.sh` turning add-on options into
-  `config.json`, bashio stubbed by jq).
+- `tests/caption_test.py` (the grounding check), `tests/mood_test.py` (the moment's tags and the
+  weighting of the picks), `tests/render_test.py` (crops for every picture shape and client size) and
+  `tests/run_sh_test.py` (`run.sh` turning add-on options into `config.json`, bashio stubbed by jq).
 - `tests/validate_config.py`: `config.yaml` and `translations/` against the Home Assistant
   Supervisor's own schema at a pinned release.
 - `tests/label_diff.py` and `tests/ci_probe.py`: the label rendered inside each built image and

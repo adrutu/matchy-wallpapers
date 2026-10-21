@@ -6,7 +6,8 @@ images and a fake OpenAI-compatible captioner (tests/fakecap.py).
 
 MATCHY_TEST_PORT moves the ports it uses (default 18160..18174). Takes about three minutes.
 """
-import http.client, json, os, shutil, socket, subprocess, sys, tempfile, time, urllib.parse
+import collections, http.client, json, os, shutil, socket, subprocess, sys, tempfile, threading, time, urllib.parse
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ENGINE = os.path.join(HERE, "..", "matchy", "app", "engine.py")
@@ -433,6 +434,9 @@ class _Stub:
         self.cfg = {"rotation": {"love_weight": weight}}
         self.state = {"bag": [], "priority": [], "hidden": list(hidden), "loved": list(loved)}
     def eligible(self): return sorted(i for i in self.ids if i not in self.state["hidden"])
+    def mood_level(self): return "off"
+    def mood_context(self): return []
+    lib = type("_Lib", (), {"tags": staticmethod(lambda iid: [])})()
     love_weight = engine_mod.Engine.love_weight
     new_bag = engine_mod.Engine.new_bag
     pick_next = engine_mod.Engine.pick_next
@@ -1280,6 +1284,125 @@ try:
     check("K current.json bad reveal 400", req(K, "GET", "/current.json?reveal=x")[0] == 400)
 finally:
     pk.terminate(); pk.wait(); fk.terminate()
+
+# ---------------- M: mood-aware picks: tags from the captioner, a weather entity, the weighting ----------------
+# The fake captioner tags by colour (test-0 red: warm, cosy, rain; test-1 green: forest, calm, cloud;
+# test-2 blue: cool, sea, snow; test-3 yellow: bright, sun, desert). A fake Home Assistant API answers
+# the weather entity with rain at 6 °C, so the red picture is the only one that fits the moment.
+M = BASE + 7
+fm = subprocess.Popen([sys.executable, os.path.join(HERE, "fakecap.py"), str(BASE + 3), FAIL_FLAG])
+WEATHER = {"entity_id": "weather.test_home", "state": "rainy", "attributes": {"temperature": 42.8, "temperature_unit": "°F"}}
+
+class FakeHA(BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_GET(self):
+        if self.headers.get("Authorization") != "Bearer t":
+            body, code = b'{"message": "Unauthorized"}', 401
+        elif self.path == "/api/states/weather.test_home":
+            body, code = json.dumps(WEATHER).encode(), 200
+        else:
+            body, code = b'{"message": "Entity not found."}', 404
+        self.send_response(code); self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+
+ha = ThreadingHTTPServer(("127.0.0.1", BASE + 1), FakeHA)
+threading.Thread(target=ha.serve_forever, daemon=True).start()
+cfgM = {"port": M, "ingress_peers": ["127.0.0.0/8"], "rotation": {"min_minutes": 15, "max_minutes": 20},
+        "location": {"latitude": 53.35, "longitude": -6.26},
+        "captioners": [{"name": "fake", "url": "http://127.0.0.1:%d/v1/chat/completions" % (BASE + 3), "model": "x", "timeout": 10}],
+        "caption": {"enabled": True, "min_words": 30, "max_words": 45},
+        "mood": {"level": "strong", "weather_entity": "weather.test_home", "api_url": "http://127.0.0.1:%d/api" % (BASE + 1),
+                 "api_token": "t", "refresh_minutes": 1}}
+RED, GREEN, BLUE, YELLOW = ["warm", "cosy", "rain"], ["forest", "calm", "cloud"], ["cool", "sea", "snow"], ["bright", "sun", "desert"]
+pm = start("M", dict(cfgM))
+try:
+    for _ in range(60):
+        if all(i["status"] == "captioned" for i in lib(M)["items"]): break
+        time.sleep(1)
+    tags = {i["id"]: i["tags"] for i in lib(M)["items"]}
+    check("M tags from the captioner, in the sidecar and library.json",
+          tags == {"test-0": RED, "test-1": GREEN, "test-2": BLUE, "test-3": YELLOW}, tags)
+    sc = json.load(open(os.path.join(S, "data-M", "library", "test-0.json")))
+    check("M sidecar carries tags", sc.get("tags") == RED, sc)
+    for _ in range(40):
+        m = lib(M)["mood"]
+        if m["weather"]: break
+        time.sleep(0.25)
+    check("M weather read through the API with the token, °F converted",
+          m["level"] == "strong" and m["weather"] and m["weather"]["condition"] == "rainy"
+          and abs(m["weather"]["temperature_c"] - 6) < 0.1 and m["weather_entity"] == "weather.test_home", m)
+    ctx = set(m["context"])
+    check("M the moment: rain, cosy, warm, plus a time of day and a season",
+          {"rain", "cosy", "warm"} <= ctx and ctx & {"day", "night", "dawn", "dusk"} and ctx & {"spring", "summer", "autumn", "winter"}, m["context"])
+    # The pull: the red picture (the only match) leads most shuffles; every picture still comes up once per shuffle.
+    state_path = os.path.join(S, "data-M", "state.json")
+    firsts, seen = [], collections.Counter()
+    for _ in range(64):
+        c = req(M, "POST", "/api/next", {})[1]
+        seen[c["id"]] += 1
+        if len(json.load(open(state_path))["bag"]) == 3:  # a fresh shuffle of 4, one just taken
+            firsts.append((c["id"], c["mood_match"]))
+    check("M every picture once per shuffle (no starvation)", len(seen) == 4 and all(v >= 14 for v in seen.values()), seen)
+    red_first = sum(1 for i, _ in firsts if i == "test-0")
+    check("M strong: the matching picture leads most shuffles", len(firsts) >= 14 and red_first >= 9, (len(firsts), red_first))
+    check("M mood_match names the matched tags", firsts and all(mm == ["cosy", "rain", "warm"] for i, mm in firsts if i == "test-0")
+          and all(mm == [] for i, mm in firsts if i != "test-0"), firsts)
+    check("M log: the match on the rotate line", "[mood: cosy, rain, warm]" in open(os.path.join(S, "log-M.txt")).read())
+    page = req(M, "GET", "/")[2]
+    check("M page: why this one, the mood line, tags on the cards, tag boxes in the editor",
+          "Why this one:" in page and "Mood: <b>strong</b>" in page and "weather.test_home says rainy, 6 °C" in page
+          and "warm · cosy · rain" in page and 'name="tags" value="cosy"' in page, page[-3000:])
+    # tags edited by hand: folded onto the vocabulary, unknown words refused, left out means unchanged
+    st, j, txt, _ = req(M, "POST", "/api/caption", {"id": "test-1", "title": "T", "blurb": "hand", "tags": ["Fog", "cosy", "ocean"]})
+    it = item(M, "test-1")
+    check("M hand-edited tags", st == 200 and it["tags"] == ["fog", "cosy", "sea"] and it["edited"] and it["blurb"] == "hand", (st, txt, it))
+    st, _, txt, _ = req(M, "POST", "/api/caption", {"id": "test-1", "blurb": "hand", "tags": ["purple"]})
+    check("M unknown tag 400 names it", st == 400 and "purple" in txt, (st, txt))
+    st, *_ = req(M, "POST", "/api/caption", {"id": "test-1", "blurb": "hand", "tags": "fog"}); check("M tags not a list 400", st == 400, st)
+    req(M, "POST", "/api/caption", {"id": "test-1", "blurb": "hand two"}); it = item(M, "test-1")
+    check("M an edit without tags keeps them", it["tags"] == ["fog", "cosy", "sea"] and it["blurb"] == "hand two", it)
+    req(M, "POST", "/api/show", {"id": "test-2"}); c = cur(M)
+    check("M current.json: tags, and no match for a hand pick", c["tags"] == BLUE and c["mood_match"] == [], c)
+    check("M page: you picked it", "you picked it" in req(M, "GET", "/")[2])
+finally:
+    pm.terminate(); pm.wait()
+
+# restart M with the weather entity gone: pictures captioned before tags existed get them at the back of
+# the queue (the caption, hand-edited or not, untouched), and the picks go by the time of day and season.
+ha.shutdown(); ha.server_close()
+for iid in ("test-1", "test-3"):
+    p = os.path.join(S, "data-M", "library", iid + ".json"); sc = json.load(open(p)); del sc["tags"]; json.dump(sc, open(p, "w"))
+pm = start("M", dict(cfgM, _fresh=False))
+try:
+    for _ in range(120):
+        its = {i["id"]: i for i in lib(M)["items"]}
+        if its["test-1"]["tags"] and its["test-3"]["tags"]: break
+        time.sleep(0.5)
+    check("M backfill: tags return, the captions untouched", its["test-3"]["tags"] == YELLOW and its["test-3"]["blurb"].startswith("A field")
+          and not its["test-3"]["edited"] and its["test-1"]["tags"] == GREEN and its["test-1"]["edited"] and its["test-1"]["blurb"] == "hand two",
+          {k: (v["tags"], v["edited"], v["blurb"][:20]) for k, v in its.items()})
+    logM = open(os.path.join(S, "log-M.txt")).read()
+    check("M backfill logged", "tagged test-3: bright, sun, desert" in logM, logM[-800:])
+    m = lib(M)["mood"]
+    check("M weather entity unreachable: said so, the moment goes by time and season",
+          m["weather"] is None and m["weather_error"] and not ({"rain", "cosy", "warm"} & set(m["context"])) and m["context"], m)
+    check("M page: weather not read yet", "weather.test_home: not read yet" in req(M, "GET", "/")[2])
+    check("M log: cannot read the entity", "cannot read weather.test_home" in logM, logM[-800:])
+finally:
+    pm.terminate(); pm.wait(); fm.terminate()
+
+# M with mood off: nothing matched, no "Why this one", the tags still listed
+pm = start("M", dict(cfgM, _fresh=False, mood={"level": "off"}))
+try:
+    c = cur(M); m = lib(M)["mood"]; page = req(M, "GET", "/")[2]
+    check("M off: no match reported", c["mood_match"] == [] and c["tags"] and m["level"] == "off" and m["context"] == [], (c, m))
+    check("M off: no why line, tags shown", "Why this one" not in page and "Mood: <b>off</b>" in page and "Tags: " in page, page[-3000:])
+    seen = set()
+    for _ in range(8):
+        seen.add(req(M, "POST", "/api/next", {})[1]["id"])
+    check("M off: still rotates", len(seen) == 4, seen)
+finally:
+    pm.terminate(); pm.wait()
 
 print("\n%d passed, %d failed (logs in %s)" % (ok, fail, S))
 if not fail:

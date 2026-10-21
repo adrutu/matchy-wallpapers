@@ -166,7 +166,7 @@ try:
     view = eng.library_view()
     page = engine.gallery_html(eng, control=True, admin=True)
     label = eng.render_kind(other, lib.display(other)["rev"], "label", 640, 360)
-    queue = eng.caption_queue()
+    queue = eng.queues()[0]  # waiting for a caption; with no tags yet it may wait for tags, which is fine
     check("bad sidecar types: library, page, label and queue still work",
           view and "123" in page and label[:2] == b"\xff\xd8" and other not in queue,
           (len(page), label[:2], queue))

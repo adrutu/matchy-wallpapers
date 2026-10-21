@@ -234,6 +234,27 @@ fi
 [[ "${location}" != 'null' ]] \
     || bashio::log.info "Home Assistant's location is not known; Day & night changes at 07:00 and 19:00."
 
+# ------------------------------------------------------------- mood-aware picks
+# The level (off = today's plain shuffle) and, optionally, the weather entity the engine reads
+# itself through the Supervisor's core API (SUPERVISOR_TOKEN is in its environment).
+mood_level="$(opt 'mood' off)"
+case "${mood_level}" in
+    off|light|strong) ;;
+    *)
+        bashio::log.warning "Option 'mood' must be off, light or strong ('${mood_level}'); using off."
+        mood_level=off
+        ;;
+esac
+mood="$(jq -nc --arg l "${mood_level}" '{level: $l}')"
+if bashio::config.has_value 'weather_entity'; then
+    weather_entity="$(bashio::config 'weather_entity')"
+    if [[ "${weather_entity}" =~ ^weather\.[a-z0-9_]+$ ]]; then
+        mood="$(jq -c --arg w "${weather_entity}" '.weather_entity = $w' <<<"${mood}")"
+    else
+        bashio::log.warning "Option 'weather_entity' is not a weather entity id like weather.forecast_home ('${weather_entity}'); ignoring it."
+    fi
+fi
+
 # ----------------------------------------------------------------- write config
 jq -n \
     --argjson port "${PORT}" \
@@ -262,6 +283,7 @@ jq -n \
     --argjson caption_kids "${kids_on}" \
     --argjson palette_enabled "${palette_on}" \
     --argjson location "${location}" \
+    --argjson mood "${mood}" \
     '{
         port: $port,
         data_dir: $data_dir,
@@ -273,6 +295,7 @@ jq -n \
         rotation: {min_minutes: $rot_min, max_minutes: $rot_max, love_weight: $love_weight},
         quiet_hours: $quiet_hours,
         location: $location,
+        mood: $mood,
         folders: ($folders | map(. + {sets: $sets})),
         exclude: $exclude,
         captioners: $captioners,

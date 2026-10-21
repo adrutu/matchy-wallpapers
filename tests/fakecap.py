@@ -4,6 +4,8 @@ Usage: fakecap.py <port> <flag-file> [key=<k>] [no-json-mode] [new-openai] [part
 
 Answers a valid caption, or garbage while <flag-file> exists. A kids prompt (it mentions children) gets
 a kids blurb, or garbage while <flag-file>.kids exists. The options make it behave like
+The tags go by the picture's colour (red: warm, cosy, rain; green: forest, calm, cloud; blue: cool,
+sea, snow; yellow: bright, sun, desert), so the mood tests know what to expect. The options make it behave like
 servers that are pickier than llama.cpp:
   key=<k>       401 unless the request carries `Authorization: Bearer <k>`
   no-json-mode  400 when the request has `response_format` (an LM Studio-style refusal)
@@ -12,8 +14,9 @@ servers that are pickier than llama.cpp:
   think         the reply starts with an inline <think>...</think> block containing braces
   subject=l,t,r,b  the reply carries this subject box ("subject": [l, t, r, b]), for focal-point crops
 """
-import json, os, sys
+import base64, io, json, os, sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from PIL import Image
 FLAG, OPTS = sys.argv[2], sys.argv[3:]
 KEY = next((o[4:] for o in OPTS if o.startswith("key=")), None)
 SUBJECT = next(([float(v) for v in o[8:].split(",")] for o in OPTS if o.startswith("subject=")), None)
@@ -22,6 +25,17 @@ BLURB = ("a field of colour scattered with small pale specks that catch the ligh
          "and even glow")
 KIDS = ("Look at all the tiny white dots! They sparkle like frost on a window. Fun fact: frost is made of "
         "tiny ice crystals that grow on cold glass.")
+TAGS_BY_COLOUR = {"red": ["warm", "cosy", "rain"], "green": ["forest", "calm", "cloud"],
+                  "blue": ["cool", "sea", "snow"], "yellow": ["bright", "sun", "desert"]}
+def tags_for(req):
+    try:
+        url = [p for p in req["messages"][0]["content"] if p.get("type") == "image_url"][0]["image_url"]["url"]
+        with Image.open(io.BytesIO(base64.b64decode(url.split(",", 1)[1]))) as im:
+            r, g, b = im.convert("RGB").resize((1, 1)).getpixel((0, 0))
+    except Exception:
+        return []
+    if r > 150 and g > 150: return TAGS_BY_COLOUR["yellow"]
+    return TAGS_BY_COLOUR[max((r, "red"), (g, "green"), (b, "blue"))[1]]
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def send(self, code, obj):
@@ -44,7 +58,7 @@ class H(BaseHTTPRequestHandler):
         if "children" in prompt:
             content = "not json at all" if os.path.exists(FLAG + ".kids") else json.dumps({"blurb": KIDS})
         else:
-            reply = {"title": "Speckled Colour Field", "blurb": BLURB.capitalize() + "."}
+            reply = {"title": "Speckled Colour Field", "blurb": BLURB.capitalize() + ".", "tags": tags_for(req)}
             if SUBJECT:
                 reply["subject"] = SUBJECT
             content = "not json at all" if os.path.exists(FLAG) else json.dumps(reply)
