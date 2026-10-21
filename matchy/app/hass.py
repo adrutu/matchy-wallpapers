@@ -159,8 +159,9 @@ class Bridge:
                 "json_attributes_topic": st, "json_attributes_template": "{{ {'writing': value_json.captioning} | tojson }}"},
         }
         if self.base_url:
-            out[("image", "picture")] = {"name": "Now showing", "url_topic": p + "/picture",
-                                         "content_type": "image/jpeg"}
+            # No content_type: Home Assistant refuses it together with url_topic (it reads the type
+            # from the fetched picture), and drops the whole entity.
+            out[("image", "picture")] = {"name": "Now showing", "url_topic": p + "/picture"}
         if hasattr(self.eng, "love"):  # the favourites feature; no dead button without it
             out[("button", "love")] = {"name": "Love", "icon": "mdi:heart", "command_topic": p + "/cmd/love",
                                        "payload_press": "PRESS"}

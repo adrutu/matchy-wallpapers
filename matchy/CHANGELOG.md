@@ -28,6 +28,9 @@ New features, all documented in DOCS.md; the client recipes are in `docs/clients
   its own device by MQTT discovery: now showing, title, next, love, pause, rotation, one switch per
   screen and the caption queue. Off by default.
 
+Fix found on trial: the `image` entity was refused by Home Assistant (`content_type` cannot be used
+together with `url_topic`), so there was no *Now showing* entity.
+
 Bug fixes from a review of the add-on; each has a test in `tests/run_tests.py`.
 
 - A file named like a picture that Pillow cannot decode (not really an image, or cut short by an

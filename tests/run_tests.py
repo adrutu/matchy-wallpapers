@@ -1431,7 +1431,7 @@ try:
     check("M one device, availability, origin, unique ids", sel["device"]["identifiers"] == ["matchy"] and sel["device"]["name"] == "Matchy Wallpapers"
           and sel["availability_topic"] == "matchy/status" and sel["unique_id"] == "matchy_rotation" and "support_url" in sel["origin"], sel)
     img = json.loads(broker.retained[cfg_topic("image", "picture")])
-    check("M image entity reads a URL topic", img["url_topic"] == "matchy/picture" and img["content_type"] == "image/jpeg", img)
+    check("M image entity reads a URL topic", img["url_topic"] == "matchy/picture" and "content_type" not in img, img)
     check("M status online, retained", broker.retained.get("matchy/status") == "online")
     c = cur(M); st_ = mstate()
     check("M state: title (the id while uncaptioned), attributes, paused, rotation, queue", st_ and st_["title"] == (c["title"] or c["id"]) and st_["attributes"]["id"] == c["id"]
