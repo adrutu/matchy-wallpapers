@@ -494,10 +494,20 @@ class Engine:
                 self.save_state()
                 log("back in rotation:", iid)
 
-    def love(self, iid):
+    def _id_or_current(self, iid):
+        """iid, or the picture on screen for None (a voice command says "this wallpaper")."""
+        if iid is None:
+            iid = self.state.get("current")
+            if not iid:
+                raise Refused(409, "nothing is on screen yet")
+        self._need_item(iid)
+        return iid
+
+    def love(self, iid=None):
         """A heart: love_weight turns per shuffle instead of one. It only changes the weighting, so
         it is open to the network like Next, and a hidden picture stays hidden however loved."""
-        self._need_item(iid)
+        with self.lock:
+            iid = self._id_or_current(iid)
         with self.lock:
             if iid in self.state["loved"]:
                 return
@@ -509,8 +519,10 @@ class Engine:
             self.save_state()
         log("loved:", iid)
 
-    def unlove(self, iid):
+    def unlove(self, iid=None):
         with self.lock:
+            if iid is None:  # the picture on screen; an id that is not loved (or not known) changes nothing
+                iid = self._id_or_current(iid)
             if iid not in self.state["loved"]:
                 return
             self.state["loved"].remove(iid)
@@ -1543,6 +1555,11 @@ def arg_id(a):
     return iid
 
 
+def arg_id_or_current(a):
+    """`id` as arg_id, or None when the body has no id: the picture on screen."""
+    return arg_id(a) if "id" in a else None
+
+
 def arg_caption(a):
     out = {}
     for k, cap in CAPTION_LIMITS.items():
@@ -1621,8 +1638,8 @@ ACTIONS = {
     "/api/hide": ("panel", lambda eng, a: eng.hide(arg_id(a))),
     "/api/unhide": ("panel", lambda eng, a: eng.unhide(arg_id(a))),
     # "lan", not "panel": a heart only changes the weighting, and a one-tap dashboard tile wants it.
-    "/api/love": ("lan", lambda eng, a: eng.love(arg_id(a))),
-    "/api/unlove": ("lan", lambda eng, a: eng.unlove(arg_id(a))),
+    "/api/love": ("lan", lambda eng, a: eng.love(arg_id_or_current(a))),
+    "/api/unlove": ("lan", lambda eng, a: eng.unlove(arg_id_or_current(a))),
     "/api/caption": ("panel", lambda eng, a: eng.set_caption(arg_id(a), arg_caption(a))),
     "/api/caption/kids": ("panel", lambda eng, a: eng.set_kids_caption(arg_id(a), arg_kids(a))),
     "/api/recaption": ("panel", lambda eng, a: eng.recaption(arg_id(a))),
@@ -1656,6 +1673,8 @@ def gallery_html(eng, control, admin):
             out.append('<span class="tag on">On screen now</span>')
         if it["hidden"]:
             out.append('<span class="tag hid">Hidden from rotation</span>')
+        if it.get("loved"):
+            out.append('<span class="tag love">Loved</span>')
         if it["recaption_queued"]:
             st = "Caption: re-caption queued"
         else:
@@ -1915,6 +1934,7 @@ figcaption p{margin:.4em 0 0;font-size:13px;color:#c9d0cc;flex:1}
 button.heart.on{border-color:var(--love);color:var(--love)}button.heart:hover:not(:disabled){border-color:var(--love)}
 .filter{font-size:13px;font-weight:400;color:var(--mut);margin-left:12px;cursor:pointer;white-space:nowrap}.filter input{accent-color:var(--love);vertical-align:-2px}
 .grid.only-loved .card:not(.is-loved){display:none}#no-loved{margin:12px 0 0}
+.tag.love{background:#5a2a45}
 dialog{background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:12px;width:min(640px,calc(100vw - 32px));padding:18px}
 dialog::backdrop{background:#000a}dialog label{display:block;margin:10px 0 0;font-size:13px;color:var(--mut)}
 dialog input,dialog textarea{display:block;width:100%;margin-top:4px;font:15px/1.4 system-ui,sans-serif;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:6px 8px}

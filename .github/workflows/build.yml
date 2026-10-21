@@ -42,6 +42,9 @@ jobs:
             voluptuous==0.16.0 awesomeversion==25.8.0 aiohttp==3.14.5 PyYAML==6.0.3
           python tests/validate_config.py
 
+      - name: YAML recipes in the docs parse (PyYAML from the step above)
+        run: python tests/docs_yaml_test.py
+
       - name: shellcheck run.sh
         run: shellcheck -s bash matchy/run.sh
 

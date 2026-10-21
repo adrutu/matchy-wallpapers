@@ -269,8 +269,8 @@ fetch the new crop the next time they check.
 
 Clients fetch images directly from `http://<your-ha-host>:<published port>`. Each client asks for
 the size it wants and gets a JPEG; nothing is pre-rendered. Recipes for a GNOME desktop, a Homepage
-dashboard, Home Assistant tablets and plain `curl` are in the repository:
-<https://github.com/adrutu/matchy-wallpapers/tree/main/docs/clients>.
+dashboard, Home Assistant tablets, Home Assistant Assist by voice ("what's on the wall?") and plain
+`curl` are in the repository: <https://github.com/adrutu/matchy-wallpapers/tree/main/docs/clients>.
 
 ### Kids labels
 
@@ -428,8 +428,8 @@ undecodable one, re-captioning with no captioner) or `413` (body over 64 KB, or 
 | `POST /api/show` | `{"id": "<id>"}` | Network | Put this picture on screen now. |
 | `POST /api/hide` | `{"id": "<id>"}` | Panel | Keep this picture out of rotation. |
 | `POST /api/unhide` | `{"id": "<id>"}` | Panel | Put it back (an id that is not hidden changes nothing). |
-| `POST /api/love` | `{"id": "<id>"}` | Network | Give this picture a heart: it comes up `love_weight` times as often (see Loved pictures). |
-| `POST /api/unlove` | `{"id": "<id>"}` | Network | Take the heart back (an id that is not loved changes nothing). |
+| `POST /api/love` | `{"id": "<id>"}` or `{}` | Network | Give this picture a heart: it comes up `love_weight` times as often (see Loved pictures). `{}` means the picture on screen (`409` while nothing is). |
+| `POST /api/unlove` | `{"id": "<id>"}` or `{}` | Network | Take the heart back (an id that is not loved changes nothing). |
 | `POST /api/caption` | `{"id", "title", "place", "credit", "blurb"}` | Panel | Write the caption by hand; `blurb` is required, the others may be empty. |
 | `POST /api/caption/kids` | `{"id": "<id>", "blurb": "…"}` | Panel | Write the kids caption by hand (up to 400 characters); an empty `blurb` clears it, so the captioner writes a fresh one. |
 | `POST /api/recaption` | `{"id": "<id>"}` | Panel | Ask the captioner for a fresh caption. |

@@ -12,6 +12,9 @@ Three pieces, each optional, a fourth for the Screens list (section 4), a fifth 
 3. A **Wallpanel** screensaver ([j-a-n/lovelace-wallpanel](https://github.com/j-a-n/lovelace-wallpanel),
    via HACS) that shows the labelled picture when a wall tablet goes idle.
 
+Voice is its own recipe: [home-assistant-assist.md](home-assistant-assist.md) builds on the package
+below so a satellite can answer *what's on the wall?* and take *next wallpaper*.
+
 Replace `<matchy-url>` with where Home Assistant can reach the add-on's published port, for example
 `http://<your-ha-host>:<port>`. Two addresses may be needed: Home Assistant fetches `current.json` and
 the labelled image **server-side**, so a plain `http://` LAN address is fine there; the card-mod

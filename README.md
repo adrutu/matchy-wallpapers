@@ -64,6 +64,9 @@ Short recipes, not separate programs, under [docs/clients/](docs/clients/):
 - **Home Assistant dashboards and wall tablets**: entities for the picture, a card-mod view
   background that follows the rotation, a Wallpanel screensaver with the label, and one on/off switch
   per tablet. [home-assistant.md](docs/clients/home-assistant.md)
+- **Home Assistant Assist**: ask a voice satellite *what's on the wall?* and it reads the label; *next
+  wallpaper*, *pause the wallpaper* and *I love this wallpaper* by voice.
+  [home-assistant-assist.md](docs/clients/home-assistant-assist.md)
 - **Homepage dashboard**: a background that follows the rotation, plus a tile.
   [homepage.md](docs/clients/homepage.md)
 - **Anything else**: `curl` examples for the API. [curl.md](docs/clients/curl.md)
