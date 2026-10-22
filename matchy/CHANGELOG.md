@@ -112,6 +112,8 @@ Robustness review of the engine's edges (`tests/security_test.py`, also in CI):
 - Remote sources can no longer be bent into a proxy for your network: a redirect from a manifest,
   daily or art source host may stay on that host or go to a public address, and an image address
   an art API hands back must be public. A `302` to the Supervisor or Home Assistant is refused.
+- The panel page carries a Content-Security-Policy with a per-response nonce: only its own script
+  and stylesheet run, images and requests stay on its origin.
 
 - Colour match: each picture gets a five-colour `palette`, a usable `accent` (3:1 contrast on both
   light and dark) and the nearest `gnome_accent` name, computed once from the master into the sidecar

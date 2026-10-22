@@ -4,7 +4,7 @@ may answer. Runs the engine in-process (no subprocess, no captioner), so it take
 
     python3 tests/security_test.py
 """
-import http.client, io, json, os, shutil, socket, sys, tempfile, threading, time, urllib.request
+import http.client, io, json, os, re, shutil, socket, sys, tempfile, threading, time, urllib.request
 from http.server import ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -385,6 +385,26 @@ check("guard: public and private addresses told apart",
                                             "0.0.0.0", "fd00::1", "fe80::1")]
       == [True, True] + [False] * 11)
 rsrv.shutdown(); rsrv.server_close()
+
+# ---------------- Content-Security-Policy on the panel ----------------
+# Escaping is complete today; a CSP makes a future slip harmless: only the page's own <script> and
+# <style> (with this response's nonce) run, images and fetches go to this origin only.
+eng = make_engine("csp")
+port = serve(eng)
+st, body, h = req(port, "GET", "/")
+csp = h.get("Content-Security-Policy", "")
+m = re.search(r"script-src 'nonce-([A-Za-z0-9_-]{16,})'", csp)
+page = body.decode()
+tags = re.findall(r"<(script|style)\b([^>]*)>", page)
+check("csp: the panel sends a policy with a script nonce", st == 200 and m and "default-src 'none'" in csp, csp)
+check("csp: every <script> and <style> carries the nonce", m and tags and all('nonce="%s"' % m.group(1) in a for _t, a in tags),
+      tags)
+check("csp: no inline event handlers on the page", not re.search(r"<[^>]+\son[a-z]+\s*=", page))
+check("csp: images and fetches from this origin only", "img-src 'self'" in csp and "connect-src 'self'" in csp
+      and "base-uri 'none'" in csp, csp)
+h2 = req(port, "GET", "/")[2]
+check("csp: a new nonce for every response", h2.get("Content-Security-Policy") != csp)
+check("csp: not on JSON or images (only the page has inline code)", "Content-Security-Policy" not in req(port, "GET", "/current.json")[2])
 
 print("\n%d passed, %d failed" % (ok, fail))
 if not fail:

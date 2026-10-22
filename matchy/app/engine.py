@@ -14,6 +14,7 @@ import math
 import os
 import random
 import re
+import secrets
 import shutil
 import string
 import sys
@@ -1774,9 +1775,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(403, "LAN only\n", head=head, cors=False)
             return self.send_json({"screens": eng.screens_view()}, head=head, cors=False)
         if path in ("/", "/index.html"):
-            page = gallery_html(eng, control=self.client_is_lan(), admin=self.client_is_ingress())
+            nonce = secrets.token_urlsafe(18)
+            page = gallery_html(eng, control=self.client_is_lan(), admin=self.client_is_ingress(), nonce=nonce)
             # No CORS: the page names the house's screens; another website has no business reading it.
-            return self.send(200, page, "text/html; charset=utf-8", {"Cache-Control": "no-store"}, head, cors=False)
+            return self.send(200, page, "text/html; charset=utf-8",
+                             {"Cache-Control": "no-store", "Content-Security-Policy": PANEL_CSP.format(n=nonce)}, head,
+                             cors=False)
 
         try:
             # /current/<kind>/<W>x<H>.jpg
@@ -2065,9 +2069,17 @@ def mood_html(m):
     return out
 
 
-def gallery_html(eng, control, admin):
+# The panel's policy: only its own <script> and <style> (this response's nonce) run; style attributes
+# (colour swatches, the focus dot) are allowed, being unable to run code; images and fetches stay on
+# this origin, which under ingress is Home Assistant's own.
+PANEL_CSP = ("default-src 'none'; script-src 'nonce-{n}'; style-src 'nonce-{n}'; style-src-attr 'unsafe-inline'; "
+             "img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'")
+
+
+def gallery_html(eng, control, admin, nonce=""):
     """The sidebar panel. control/admin: whether this viewer may use the "lan"/"panel" actions;
-    the buttons they may not use are drawn disabled, with the reason as a tooltip."""
+    the buttons they may not use are drawn disabled, with the reason as a tooltip. nonce: the CSP
+    nonce of this response, on every <script> and <style>."""
     esc = html.escape
     cur = eng.current() or {}
     lib = eng.library_view()
@@ -2301,7 +2313,7 @@ def gallery_html(eng, control, admin):
             '<label class="tagbox"><input type="checkbox" name="tags" value="%s"> %s</label>' % (t, t) for t in words))
         for group, words in mood.TAG_GROUPS.items())
     return PAGE.substitute(
-        shot=shot, now=now, state=state, nextbtn=nextbtn, toggle=toggle, window=window, screens=screens,
+        nonce=nonce, shot=shot, now=now, state=state, nextbtn=nextbtn, toggle=toggle, window=window, screens=screens,
         capnote=('<p class="note">%s</p>' % capnote) if capnote else "", summary=esc(summary),
         loved_help=esc(loved_help),
         moodline=mood_html(lib["mood"]), tagboxes=tagboxes,
@@ -2313,7 +2325,7 @@ def gallery_html(eng, control, admin):
 # string.Template, so the CSS and JS need no escaping; the script avoids "$" for the same reason.
 PAGE = string.Template("""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>Matchy Wallpapers</title>
-<style>
+<style nonce="$nonce">
 :root{color-scheme:dark;--bg:#111413;--card:#1b201e;--line:#2c3430;--fg:#e8ece9;--mut:#9aa59f;--acc:#7fb38f;--bad:#e08a7f;--love:#e38aa6}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.5 system-ui,sans-serif}
 main{max-width:1500px;margin:auto;padding:20px 16px 40px}
@@ -2401,8 +2413,8 @@ is never overwritten. Save it empty and the captioner writes a new one.</p>
 <p id="kd-msg" role="status"></p>
 <menu><button value="cancel" formnovalidate>Cancel</button><button class="primary" value="save">Save kids caption</button></menu>
 </form></dialog>
-<script type="application/json" id="lib">$data</script>
-<script>
+<script type="application/json" id="lib" nonce="$nonce">$data</script>
+<script nonce="$nonce">
 const data = JSON.parse(document.getElementById('lib').textContent);
 const byId = Object.fromEntries(data.items.map(i => [i.id, i]));
 const msg = document.getElementById('msg');

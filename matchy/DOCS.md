@@ -617,6 +617,9 @@ The gallery page draws the buttons a viewer may not use as disabled, with the re
   and serve it as a picture. The check resolves each name before the request; a name that changes
   its answer in between (DNS rebinding) is not covered. Captioner endpoints and the weather entity
   are your own settings and are not checked.
+- The panel page is sent with a **Content-Security-Policy**: only its own script and stylesheet run
+  (a fresh nonce for every response), and images and requests stay on the page's own origin. If a
+  caption or screen name ever slipped past the escaping, it still could not run code.
 - An API key you enter for a captioner is written to a file inside the add-on's own data directory
   at mode 600 and re-written on every start. It never appears in the generated config file or in
   the log. Like every add-on option it is also in Home Assistant's own `options.json` for the add-on.
