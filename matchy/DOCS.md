@@ -61,8 +61,8 @@ port>`. Leave it empty and only the sidebar panel works.
 | `caption_max_words` | int, 5–200 | 45 | Longest blurb asked for. After a second try, a blurb within three words of the range is kept. |
 | `caption_kids` | bool | false | Also write a **kids caption** for each picture: 15 to 30 simple words for ages 5 to 9, with one fun fact and nothing scary, checked by the same grounding rules. It waits until no normal caption is waiting, because the vision model may be busy with other work. Screens show it with `?label=kids` (see *Kids labels*). |
 | `captioners` | list of objects | `[]` | OpenAI-compatible vision endpoints, tried in order. Fields: `name` (required), `url` (required, the full `/v1/chat/completions` URL), `model` (required), `api_key` (optional), `timeout` (seconds, 5–600, default 120). |
-| `art_institute_chicago` | object | off | Public-domain works from the Art Institute of Chicago. Fields: `enabled` (false), `per_day` (1–50, default 3, new works a day), `min_px` (640–7680, default 2560, the smallest long side kept). See [Open-access art](#open-access-art). |
-| `the_met` | object | off | Public-domain highlights from The Metropolitan Museum of Art. Same fields and defaults. |
+| `art_institute_chicago` | object | off | Public-domain works from the Art Institute of Chicago. Fields: `enabled` (false), `per_day` (1–50, default 3, new works a day), `min_px` (640–7680, default 1686, the smallest long side kept; 1686 is the most this source serves). See [Open-access art](#open-access-art). |
+| `the_met` | object | off | Public-domain paintings and drawings from The Metropolitan Museum of Art's highlights. Same fields; `min_px` defaults to 2560. |
 | `wikimedia_picture_of_the_day` | object | off | Wikimedia Commons' Picture of the Day. Same fields; `per_day` is 1–7, default 1 (today's picture; more fills in the days before). |
 | `palette_enabled` | bool | true | Colour match: work out each picture's main colours, an accent and the nearest GNOME accent name (see [Colour match](#colour-match)). Off: `palette` is `[]` and `accent` and `gnome_accent` are `null` everywhere, and nothing is computed. |
 | `mood` | `off`, `light` or `strong` | off | Mood-aware picks (see below). `off` is a plain shuffle, exactly as before the option existed. `light` pulls a picture whose tags fit the moment forward about 3 shuffles in 4, `strong` about 19 in 20; every picture still comes up once per shuffle. |
@@ -95,7 +95,7 @@ What each one adds, and how the label credits it:
 | Source | Picks | Label (title / second line / credit) | Id |
 | :--- | :--- | :--- | :--- |
 | Art Institute of Chicago | A random page of public-domain works with an image. | Title / artist · date / *The Art Institute of Chicago · CC0* | `aic-<id>` |
-| The Met | A random page of the collection's highlights with images; each object is checked for public domain. | Title / artist · date / *The Metropolitan Museum of Art · metmuseum.org · CC0* | `met-<id>` |
+| The Met | A random page of the collection's highlights with images, paintings or drawings (one of the two each time); each object is checked for public domain and for being a painting, drawing, watercolour or pastel. | Title / artist · date / *The Metropolitan Museum of Art · metmuseum.org · CC0* | `met-<id>` |
 | Wikimedia Commons Picture of the Day | Today's picture (UTC), then earlier days if `per_day` asks for more. | Title / – / *author · licence · Wikimedia Commons* | `potd-YYYYMMDD` |
 
 The artist, date, medium and place of origin go into the picture's sidecar (`facts`) and the
@@ -105,8 +105,11 @@ and the grounding check accepts it. Wikimedia's description of the picture is gi
 Things to know:
 
 - **The Art Institute of Chicago serves public-domain images at most 1686 pixels wide** (its API
-  documentation lists 843, 1200 and 1686). With the default `min_px` of 2560 only tall works pass;
-  lower `min_px` to 1686 to take landscapes too, at a resolution that is soft on a 4K screen.
+  documentation lists 843, 1200 and 1686), so its `min_px` defaults to 1686. That is soft on a 4K
+  screen; raise it to 2560 to keep only tall works, which come at 1686 × 2500 or more.
+- **The Met's highlights are mostly objects** (vases, armour, furniture), so Matchy asks its search
+  for paintings or drawings and checks each object again. The engine-only `art_sources.met.media`
+  list sets the kinds (an empty list takes everything).
 - **Picture of the Day is not only public domain.** Most pictures are photographs under Creative
   Commons licences (CC BY, CC BY-SA); the label always carries the author and the licence, which
   is what those licences ask for.
@@ -173,7 +176,8 @@ the same JSON): dawn, day, dusk, night · sun, cloud, rain, snow, fog, storm · 
 winter · sea, mountain, forest, city, desert · warm, cool, cosy, bright, calm, dramatic. Words outside
 the list are dropped (a few near misses are folded in: cozy, ocean, sunset…); tags never get a caption
 rejected. Pictures captioned before tags existed get them through one tag-only request each, at the
-back of the captioning queue, without touching the caption (a hand-written one included). The tags
+back of the captioning queue, without touching the caption (a hand-written one included), but only
+while `mood` is on: with it off nothing uses the tags, so no model calls are spent on them. The tags
 are what the mood-aware picks match against.
 
 ## First run
@@ -612,7 +616,8 @@ The gallery page draws the buttons a viewer may not use as disabled, with the re
 - The engine runs as **root inside its container**, as official add-ons do; the Supervisor offers no
   option to change that, and Matchy does not drop privileges itself. `/media` and `/share` are
   mounted read-only, and the engine process is started without the Supervisor token (the start
-  script uses it once, to read the location, and then drops it).
+  script uses it once, to read the location, and then drops it), unless `mood` is on with a
+  `weather_entity`: the engine then keeps it to read that entity every ten minutes.
 
 ## Where things live
 
@@ -735,7 +740,7 @@ generates, with its defaults:
   "palette": {"enabled": true},
   "static_manifest": {"enabled": false},
   "daily": {"enabled": false},
-  "art_sources": {"aic": {"enabled": false, "per_day": 3, "min_px": 2560},
+  "art_sources": {"aic": {"enabled": false, "per_day": 3, "min_px": 1686},
                   "met": {"enabled": false, "per_day": 3, "min_px": 2560},
                   "potd": {"enabled": false, "per_day": 1, "min_px": 2560}},
   "mqtt": {"enabled": false, "host": "<broker>", "port": 1883, "username": "", "password": "",

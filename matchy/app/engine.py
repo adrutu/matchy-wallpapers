@@ -56,10 +56,10 @@ DEFAULTS = {
     # Open-access art (artsources.py): each source off until enabled; `per_day` new works a day, each at
     # least `min_px` on its long side. `contact` goes into the User-Agent next to the project URL.
     "art_sources": {"check_minutes": 60, "pause_seconds": 1.0, "contact": "",
-                    "aic": {"enabled": False, "per_day": 3, "min_px": 2560, "batch": 20,
+                    "aic": {"enabled": False, "per_day": 3, "min_px": 1686, "batch": 20,
                             "base_url": "https://api.artic.edu/api/v1"},
                     "met": {"enabled": False, "per_day": 3, "min_px": 2560, "lookups": 15,
-                            "search": {"isHighlight": "true"},
+                            "search": {"isHighlight": "true"}, "media": ["Paintings", "Drawings"],
                             "base_url": "https://collectionapi.metmuseum.org/public/collection"},
                     "potd": {"enabled": False, "per_day": 1, "min_px": 2560, "days_back": 7, "language": "en",
                              "api_url": "https://commons.wikimedia.org/w/api.php"}},
@@ -1022,7 +1022,8 @@ class Engine:
             time.sleep(60)
 
     def queues(self):
-        """(ids waiting for a caption, in order; captioned ids waiting for tags, the backfill)."""
+        """(ids waiting for a caption, in order; captioned ids waiting for tags, the backfill). The
+        backfill waits while mood is off: nothing uses the tags then, and each one is a model call."""
         lib = self.lib
         retry = 3600 * float(self.cfg["caption"].get("retry_failed_hours", 6))
         prio = self.cfg["rotation"].get("caption_priority", [])
@@ -1030,12 +1031,13 @@ class Engine:
         # Asked for from the panel: first, whatever their status, and even over a hand edit.
         recap = [i for i in self.state["recaption"] if i in lib.items]
         todo, tagging = [], []
+        backfill = self.mood_level() != "off"
         for iid, it in lib.items.items():
             if iid in recap:
                 continue
             stt = lib.status(iid)
             if stt == "captioned":
-                if iid not in lib.skipped and lib.needs_tags(iid, retry):
+                if backfill and iid not in lib.skipped and lib.needs_tags(iid, retry):
                     tagging.append((it["order"], iid))
                 continue
             sc = lib.sidecars.get(iid) or {}

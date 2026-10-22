@@ -10,7 +10,9 @@ New features, all documented in DOCS.md; the client recipes are in `docs/clients
   panel to set one; with `focus_auto` on, the captioner or a quick look at the picture finds one.
 - **Open-access art:** new pictures every day from the Art Institute of Chicago
   (`art_institute_chicago`), The Met (`the_met`) and Wikimedia's Picture of the Day
-  (`wikimedia_picture_of_the_day`). Each is off by default.
+  (`wikimedia_picture_of_the_day`). Each is off by default. The Met adds paintings and drawings only
+  (its highlights are mostly objects), and the Art Institute's smallest size defaults to 1686 px, the
+  most it serves.
 - **Gentle motion:** `?pad=1.0`–`1.3` serves a larger picture for a slow pan and zoom, with the label
   kept on screen. The Home Assistant, Wallpanel and Homepage recipes drift and crossfade.
 - **Kids labels:** with `caption_kids` on, `?label=kids` serves a simpler blurb in bigger type.
@@ -23,7 +25,8 @@ New features, all documented in DOCS.md; the client recipes are in `docs/clients
   `/library.json` (`palette_enabled`, on by default). The GNOME follower can set the desktop accent
   (off by default). The Home Assistant recipe can tint the theme and any lights that are already on.
 - **Mood-aware picks:** `mood: light` or `strong` lets the time of day, the season and
-  `weather_entity` choose the next picture, using tags you can edit in the panel. Off by default.
+  `weather_entity` choose the next picture, using tags you can edit in the panel. Off by default;
+  pictures captioned before tags existed get theirs only once mood is on.
 - **Home Assistant entities:** with `mqtt_enabled` on and the Mosquitto broker running, Matchy creates
   its own device by MQTT discovery: now showing, title, next, love, pause, rotation, one switch per
   screen and the caption queue. Off by default.
@@ -92,7 +95,9 @@ Robustness review of the engine's edges (`tests/security_test.py`, also in CI):
   is rejected like any other bad answer.
 - Remote sources (`remote_manifest_url`, `daily_json_url`, `daily_image_url`) are fetched over
   `http(s)` only.
-- `run.sh` drops the Supervisor token from the engine's environment: the engine never uses it.
+- `run.sh` drops the Supervisor token from the engine's environment, except when the mood-aware
+  picks read a `weather_entity` (the only thing the engine uses it for; without it that read
+  answered `401`).
 
 - Colour match: each picture gets a five-colour `palette`, a usable `accent` (3:1 contrast on both
   light and dark) and the nearest `gnome_accent` name, computed once from the master into the sidecar

@@ -127,9 +127,16 @@ def aic(cfg, client, rng, seen):
 # ---------------------------------------------------------------- The Met
 def met(cfg, client, rng, seen):
     """A random page of the v1.1 search (highlights with images by default), then objects one by one
-    until the caller has enough; at most `lookups` object requests."""
+    until the caller has enough; at most `lookups` object requests.
+
+    `media` keeps it to pictures: the highlights are mostly vases, armour and furniture. The search
+    takes one medium at a time ("Paintings|Drawings" matches almost nothing), so each sync picks one,
+    and every object is checked again, since the medium search lets the odd necklace through."""
     base = cfg["base_url"].rstrip("/")
     params = {"q": "*", "hasImages": "true"}
+    media = [str(m) for m in cfg.get("media") or []]
+    if media:
+        params["medium"] = rng.choice(media)
     params.update({k: str(v) for k, v in (cfg.get("search") or {}).items()})
     params = {k: v for k, v in params.items() if v not in ("", "None")}  # "" drops a default filter
     pages = (MET_SEARCH_WINDOW - MET_SEARCH_LIMIT) // MET_SEARCH_LIMIT
@@ -155,12 +162,22 @@ def met(cfg, client, rng, seen):
         if not o.get("primaryImage"):
             yield {"id": "met-%s" % oid, "skip": "no image"}
             continue
+        if media and not met_is_picture(o):
+            yield {"id": "met-%s" % oid, "skip": "not a painting or drawing"}
+            continue
         place = ", ".join(x for x in (clean(o.get("city")), clean(o.get("country"))) if x) or clean(o.get("culture"))
         facts = {"artist": clean(o.get("artistDisplayName")), "date": clean(o.get("objectDate")),
                  "medium": clean(o.get("medium")), "place": place}
         yield {"id": "met-%s" % o.get("objectID", oid), "title": clean(o.get("title")), "place": label_line(facts),
                "credit": MET_CREDIT, "facts": facts, "artwork": True, "source_url": clean(o.get("objectURL")),
                "image_url": o["primaryImage"], "size": None}
+
+
+def met_is_picture(o):
+    """A painting, drawing, watercolour or pastel by its classification or object name (The American
+    Wing leaves the classification empty and says "Painting" in the name)."""
+    kind = ("%s %s" % (o.get("classification") or "", o.get("objectName") or "")).lower()
+    return any(w in kind for w in ("paint", "draw", "watercolo", "pastel"))
 
 
 # ---------------------------------------------------------------- Wikimedia Commons Picture of the Day

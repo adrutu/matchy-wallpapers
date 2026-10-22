@@ -135,7 +135,7 @@ configuration:
     name: Art Institute of Chicago
     description: >-
       Public-domain works from the Art Institute of Chicago's open API, credited on the label. Its
-      images are at most 1686 pixels wide, so mostly tall works pass the default smallest size.
+      images are at most 1686 pixels wide, which is soft on a 4K screen.
     fields:
       enabled:
         name: Turned on
@@ -146,12 +146,13 @@ configuration:
       min_px:
         name: Smallest picture
         description: >-
-          Pixels on the long side. Works with a smaller image are skipped (default 2560).
+          Pixels on the long side. Works with a smaller image are skipped (default 1686, the
+          most this source serves).
   the_met:
     name: The Met
     description: >-
-      Public-domain highlights from The Metropolitan Museum of Art's open API, credited on the
-      label.
+      Public-domain paintings and drawings from The Metropolitan Museum of Art's highlights,
+      through its open API, credited on the label.
     fields:
       enabled:
         name: Turned on

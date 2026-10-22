@@ -1391,11 +1391,18 @@ try:
     check("M page: weather not read yet", "weather.test_home: not read yet" in req(M, "GET", "/")[2])
     check("M log: cannot read the entity", "cannot read weather.test_home" in logM, logM[-800:])
 finally:
-    pm.terminate(); pm.wait(); fm.terminate()
+    pm.terminate(); pm.wait()
 
-# M with mood off: nothing matched, no "Why this one", the tags still listed
+# M with mood off: nothing matched, no "Why this one", the tags still listed; and no tag backfill
+# (the captioner is still up): a picture without tags stays without them
+p3 = os.path.join(S, "data-M", "library", "test-3.json"); sc = json.load(open(p3)); del sc["tags"]; json.dump(sc, open(p3, "w"))
+tagged_before = open(os.path.join(S, "log-M.txt")).read().count("tagged test-3")
 pm = start("M", dict(cfgM, _fresh=False, mood={"level": "off"}))
 try:
+    time.sleep(6)
+    its = {i["id"]: i for i in lib(M)["items"]}
+    check("M off: no tag backfill", its["test-3"]["tags"] == [] and its["test-3"]["blurb"].startswith("A field")
+          and open(os.path.join(S, "log-M.txt")).read().count("tagged test-3") == tagged_before, its["test-3"])
     c = cur(M); m = lib(M)["mood"]; page = req(M, "GET", "/")[2]
     check("M off: no match reported", c["mood_match"] == [] and c["tags"] and m["level"] == "off" and m["context"] == [], (c, m))
     check("M off: no why line, tags shown", "Why this one" not in page and "Mood: <b>off</b>" in page and "Tags: " in page, page[-3000:])
@@ -1404,7 +1411,7 @@ try:
         seen.add(req(M, "POST", "/api/next", {})[1]["id"])
     check("M off: still rotates", len(seen) == 4, seen)
 finally:
-    pm.terminate(); pm.wait()
+    pm.terminate(); pm.wait(); fm.terminate()
 
 # ---------------- M: Home Assistant entities over MQTT, against the fake broker ----------------
 import fakebroker  # noqa: E402

@@ -83,7 +83,7 @@ options:
   art_institute_chicago:
     enabled: false
     per_day: 3
-    min_px: 2560
+    min_px: 1686
   the_met:
     enabled: false
     per_day: 3

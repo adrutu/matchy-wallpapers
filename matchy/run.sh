@@ -192,16 +192,17 @@ elif bashio::config.has_value 'daily_json_url' || bashio::config.has_value 'dail
 fi
 
 # Open-access art: each source is an option object {enabled, per_day, min_px}, off by default.
+# The Art Institute of Chicago serves at most 1686 px, so its smallest size defaults to that.
 art_sources='{}'
 art_enabled=0
-for source in aic:art_institute_chicago:3 met:the_met:3 potd:wikimedia_picture_of_the_day:1; do
-    IFS=: read -r key option per_day_default <<<"${source}"
+for source in aic:art_institute_chicago:3:1686 met:the_met:3:2560 potd:wikimedia_picture_of_the_day:1:2560; do
+    IFS=: read -r key option per_day_default min_px_default <<<"${source}"
     on="$(opt "${option}.enabled" false)"
     [[ "${on}" == "true" ]] || on=false
     [[ "${on}" == "false" ]] || art_enabled=$((art_enabled + 1))
     art_sources="$(jq -c --arg k "${key}" --argjson on "${on}" \
         --argjson n "$(int "${option}.per_day" "${per_day_default}")" \
-        --argjson px "$(int "${option}.min_px" 2560)" \
+        --argjson px "$(int "${option}.min_px" "${min_px_default}")" \
         '.[$k] = {enabled: $on, per_day: $n, min_px: $px}' <<<"${art_sources}")"
 done
 readonly art_enabled
@@ -236,7 +237,7 @@ fi
 
 # ------------------------------------------------------------- mood-aware picks
 # The level (off = today's plain shuffle) and, optionally, the weather entity the engine reads
-# itself through the Supervisor's core API (SUPERVISOR_TOKEN is in its environment).
+# itself through the Supervisor's core API (it keeps SUPERVISOR_TOKEN for that, see the end).
 mood_level="$(opt 'mood' off)"
 case "${mood_level}" in
     off|light|strong) ;;
@@ -361,7 +362,10 @@ if [[ "${captions_on}" == "true" ]] && [[ "${captioner_count}" -eq 0 ]]; then
     bashio::log.warning "Captions are on but no captioner is configured: wallpapers will rotate without gallery labels. Add a captioner, or set caption_enabled to false. See DOCS.md."
 fi
 
-# The engine needs nothing from the Supervisor (the location was read above), so it does not get
-# the token: a bug in an image decoder then cannot reach the Home Assistant API with it.
-unset SUPERVISOR_TOKEN
+# The engine needs the token only to read the weather entity of the mood-aware picks (the location
+# was read above). Without that it does not get it: a bug in an image decoder then cannot reach the
+# Home Assistant API with it.
+if [[ "${mood_level}" == "off" ]] || [[ -z "$(jq -r '.weather_entity // empty' <<<"${mood}")" ]]; then
+    unset SUPERVISOR_TOKEN
+fi
 exec python3 /app/engine.py

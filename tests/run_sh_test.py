@@ -182,13 +182,21 @@ check("location from Home Assistant", rc == 0 and cfg and cfg.get("location") ==
 env_txt = open(os.path.join(data, "engine-env.txt")).read() if os.path.exists(os.path.join(data, "engine-env.txt")) else ""
 check("the engine does not inherit the Supervisor token", env_txt and "SUPERVISOR_TOKEN" not in env_txt
       and "WE_CONFIG=" in env_txt, env_txt[:300])
+# ... except when it reads a weather entity for the mood-aware picks (and only then)
+for opts, keeps, name in ((dict(base, mood="light", weather_entity="weather.home"), True, "mood light + weather entity"),
+                          (dict(base, mood="off", weather_entity="weather.home"), False, "mood off + weather entity"),
+                          (dict(base, mood="strong"), False, "mood strong, no weather entity")):
+    rc, cfg, err, data, tmp = run(opts, fake_bin("exit 7")); temps.append(tmp)
+    p = os.path.join(data, "engine-env.txt")
+    txt = open(p).read() if os.path.exists(p) else ""
+    check("token for the engine: " + name, rc == 0 and ("SUPERVISOR_TOKEN=t" in txt) == keeps, (rc, err[-300:]))
 rc, cfg, err, data, tmp = run(dict(base), fake_bin("exit 7")); temps.append(tmp)
 check("Home Assistant not answering: no location, still starts", rc == 0 and cfg and "location" not in cfg
       and "location is not known" in err, (rc, err[-300:]))
 
 # open-access art: off by default with the documented budgets; one source on is enough to start
 check("defaults: every art source off", (run(dict(base))[1] or {}).get("art_sources") == {
-      "aic": {"enabled": False, "per_day": 3, "min_px": 2560}, "met": {"enabled": False, "per_day": 3, "min_px": 2560},
+      "aic": {"enabled": False, "per_day": 3, "min_px": 1686}, "met": {"enabled": False, "per_day": 3, "min_px": 2560},
       "potd": {"enabled": False, "per_day": 1, "min_px": 2560}})
 rc, cfg, err, data, tmp = run(dict(base, source_folders=["/nonexistent/matchy"],
                                    the_met={"enabled": True, "per_day": 2, "min_px": 3000})); temps.append(tmp)

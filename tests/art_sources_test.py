@@ -161,6 +161,24 @@ check("Met: an offset past the end starts again from the top", [w["id"] for w in
 cl = FakeClient()
 list(artsources.met(dict(CFG["met"], search={"isHighlight": ""}), cl, random.Random(2), set()))
 check("Met: an empty search value drops that filter", "isHighlight" not in cl.calls[0][0], cl.calls[0][0])
+chair = {"objectID": 200, "isPublicDomain": True, "primaryImage": B + "/met/images/chair.jpg", "title": "Armchair",
+         "classification": "", "objectName": "Armchair"}
+cl = FakeClient(routes={B + "/met/v1.1/search": json.dumps({"total": 2, "objectIDs": [436535, 200]}).encode(),
+                        B + "/met/v1/objects/200": json.dumps(chair).encode()})
+out = list(artsources.met(dict(CFG["met"], media=["Paintings", "Drawings"]), cl, random.Random(4), set()))
+sq = urllib.parse.parse_qs(urllib.parse.urlparse(cl.calls[0][0]).query)
+check("Met media: the search asks for one medium of the list", sq.get("medium") in (["Paintings"], ["Drawings"]), cl.calls[0][0])
+check("Met media: the painting passes, the chair is skipped",
+      [w["id"] for w in out if not w.get("skip")] == ["met-436535"]
+      and [(w["id"], w["skip"]) for w in out if w.get("skip")] == [("met-200", "not a painting or drawing")], out)
+check("Met media: picture kinds by classification or object name",
+      [artsources.met_is_picture(o) for o in ({"classification": "Paintings-Panels"}, {"objectName": "Watercolor"},
+                                                {"classification": "Drawings"}, {"objectName": "Necklace, broad collar"},
+                                                {"classification": "Arms and Armor"}, {})]
+      == [True, True, True, False, False, False])
+cl = FakeClient()
+list(artsources.met(dict(CFG["met"], media=[]), cl, random.Random(2), set()))
+check("Met media: an empty list asks for no medium", "medium=" not in cl.calls[0][0], cl.calls[0][0])
 
 cl = FakeClient()
 day = dt.date(2026, 10, 20)
@@ -288,7 +306,7 @@ cfg = {"port": ENGINE_PORT, "bind": "127.0.0.1", "data_dir": os.path.join(S, "da
        "captioners": [{"name": "fake", "url": "http://127.0.0.1:%d/v1/chat/completions" % CAP_PORT, "model": "x", "timeout": 10}],
        "caption": {"enabled": True, "min_words": 30, "max_words": 45, "spelling": "British"},
        "art_sources": {"pause_seconds": 0, "contact": "maintainer@example.org",
-                       "aic": {"enabled": True, "per_day": 1, "base_url": local + "/api/v1"},
+                       "aic": {"enabled": True, "per_day": 1, "min_px": 2560, "base_url": local + "/api/v1"},
                        "met": {"enabled": True, "per_day": 1, "base_url": local + "/met"},
                        "potd": {"enabled": True, "api_url": local + "/w/api.php"}}}
 cfg_path = os.path.join(S, "cfg.json")
