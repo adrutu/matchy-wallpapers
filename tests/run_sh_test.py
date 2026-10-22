@@ -25,7 +25,7 @@ bashio::config.has_value() {
     local v; v="$(_opt_raw "${1}")"
     [[ "$v" != "null" && "$v" != '""' && "$v" != "[]" ]]
 }
-bashio::addon.hostname() { printf '%s' "${ADDON_HOSTNAME:-local-matchy}"; }
+bashio::app.hostname() { printf '%s' "${ADDON_HOSTNAME:-local-matchy}"; }
 # The Supervisor's services API: MQTT_SERVICE is a JSON object (the Mosquitto add-on's answer) or unset.
 bashio::services.available() { [[ -n "${MQTT_SERVICE:-}" ]]; }
 bashio::services() { jq -r ".${2}" <<<"${MQTT_SERVICE}"; }

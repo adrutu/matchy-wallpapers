@@ -5,7 +5,7 @@
 New features, all documented in DOCS.md; the client recipes are in `docs/clients`.
 
 - **Quiet hours:** `quiet_hours` holds the picture overnight and dims `/current/...` (`start`, `end`,
-  `hold`, `dim`). Off by default.
+  `hold`, `dim`); a new picture goes up when they end. Off by default.
 - **Focus points:** each screen's crop is centred on the picture's subject. Click a thumbnail in the
   panel to set one; with `focus_auto` on, the captioner or a quick look at the picture finds one.
 - **Open-access art:** new pictures every day from the Art Institute of Chicago

@@ -505,8 +505,8 @@ class Engine:
 
     def rotator_step(self, now):
         """One pass of the rotator. Quiet hours with hold work like a pause that ends by itself: the rotation
-        stands still (Next and Show now still work), and when they end the picture gets a full interval from
-        then. state["quiet_hold"] carries that across a restart."""
+        stands still (Next and Show now still work), and when they end a new picture goes up straight away, so the
+        morning does not start on the night's picture. state["quiet_hold"] carries that across a restart."""
         with self.lock:
             q = self.quiet(now)
             active = bool(q and q["active"])
@@ -524,9 +524,13 @@ class Engine:
                 self.state["quiet_hold"] = True
                 self.save_state()
             elif not holding and self.state.pop("quiet_hold", None):
-                if not paused:  # a paused rotation gets its full interval on resume instead
+                if not paused and q:  # the window ended: due, so a new picture goes up further down in this pass
+                    self.state["next_change"] = now
+                    log("rotation resumes after quiet hours with a new picture")
+                elif not paused:  # quiet hours turned off mid-hold: the picture stays, with a full interval
                     self.state["next_change"] = now + self.interval()
-                    log("rotation resumes after quiet hours, next at %s" % iso(self.state["next_change"]))
+                    log("quiet hours turned off, next picture at %s" % iso(self.state["next_change"]))
+                # a paused rotation gets its full interval on resume instead
                 self.save_state()
             cur = self.state.get("current")
             still = paused or holding
@@ -2067,8 +2071,7 @@ def gallery_html(eng, control, admin):
                             "/current/ pictures dimmed by %d %%" % round(qw["dim"] * 100) if qw["dim"] else "") if w]
         quiet = "Quiet until %s%s." % (esc(hhmm(qw["end"])), (": " + ", ".join(what)) if what else "")
         if held:
-            quiet += " Next picture and Show now still work; the rotation resumes with a full interval at %s." % (
-                esc(hhmm(qw["end"])))
+            quiet += " Next picture and Show now still work; a new picture goes up at %s." % esc(hhmm(qw["end"]))
     elif qw:
         quiet = "Quiet hours from %s to %s." % (esc(hhmm(qw["start"])), esc(hhmm(qw["end"])))
     else:

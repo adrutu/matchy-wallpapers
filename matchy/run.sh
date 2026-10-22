@@ -274,7 +274,7 @@ if bashio::services.available 'mqtt'; then
     if bashio::config.has_value 'mqtt_image_url'; then
         mqtt_base="$(bashio::config 'mqtt_image_url')"
     else
-        mqtt_base="http://$(bashio::addon.hostname):${PORT}"
+        mqtt_base="http://$(bashio::app.hostname):${PORT}"
     fi
     # Only numbers and booleans may reach --argjson (see int above).
     mqtt_port="$(bashio::services 'mqtt' 'port')"

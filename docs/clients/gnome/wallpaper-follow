@@ -490,8 +490,13 @@ def main():
         loop.quit()
         return False
 
+    try:  # GLib 2.80+ moved it (the old name warns); older systems only have GLib.unix_signal_add
+        from gi.repository import GLibUnix
+        signal_add = GLibUnix.signal_add
+    except ImportError:
+        signal_add = GLib.unix_signal_add
     for sig in (signal.SIGTERM, signal.SIGINT):
-        GLib.unix_signal_add(GLib.PRIORITY_HIGH, sig, on_stop)
+        signal_add(GLib.PRIORITY_HIGH, sig, on_stop)
 
     bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
     bus.signal_subscribe("org.gnome.Mutter.DisplayConfig", "org.gnome.Mutter.DisplayConfig",

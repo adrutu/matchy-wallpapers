@@ -540,10 +540,12 @@ eng.rotator_step(night + 120)
 check("quiet: Next still works, and the new picture is held too", second != first and eng.state["current"] == second
       and eng.state.get("quiet_hold") is True, eng.state)
 eng = quiet_engine()  # a restart in the night: the hold is in state.json
+t0 = time.time()  # the new picture's interval runs on the real clock
 eng.rotator_step(morning + 5)
-check("quiet: hold resumes with a full interval at the end, across a restart", eng.state["current"] == second
-      and "quiet_hold" not in eng.state and morning + 5 + 15 * 60 <= eng.state["next_change"] <= morning + 5 + 20 * 60,
-      (eng.state.get("quiet_hold"), eng.state["next_change"] - morning))
+check("quiet: a new picture at the end, then a full interval, across a restart", eng.state["current"] != second
+      and "quiet_hold" not in eng.state and t0 + 15 * 60 <= eng.state["next_change"] <= time.time() + 20 * 60,
+      (eng.state["current"], eng.state.get("quiet_hold"), eng.state["next_change"] - t0))
+second = eng.state["current"]
 eng.set_paused(True)
 eng.state["next_change"] = 1234.0
 eng.rotator_step(at(2026, 10, 21, 23, 30))

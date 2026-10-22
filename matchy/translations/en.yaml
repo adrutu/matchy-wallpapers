@@ -62,8 +62,7 @@ configuration:
       hold:
         name: Hold the picture
         description: >-
-          Keep one picture all night (default on). The rotation resumes with a full interval when
-          quiet hours end.
+          Keep one picture all night (default on). A new picture goes up when quiet hours end.
       dim:
         name: Dim
         description: >-

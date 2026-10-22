@@ -214,6 +214,10 @@ So: usable almost immediately, fully captioned after a while.
   is used as is, `place` and `credit` go on the label, and `context` (one sentence on what the
   picture shows) grounds the blurb. Other keys are ignored, so you can keep provenance notes there.
   Without it the captioner describes only what it sees, and never names a place.
+- **Photos from free-photo sites** (Unsplash, Pexels and the like) that you download yourself can go
+  in a folder like any other picture; Matchy has no built-in source for them, since their API terms
+  rule out a wallpaper app. Credit the photographer through `meta.json`:
+  `{"misty-lake.jpg": {"credit": "Photo by <name> on Unsplash"}}`.
 
 ## Using it
 
@@ -450,8 +454,8 @@ During the window:
 
 - **`hold`** (default true): the rotation stands still on the picture on screen, like a pause that
   ends by itself. **Next picture** and **Show now** still work, and the picture they put up is held
-  too. When the window ends, the rotation resumes with a full interval from then, so the night's
-  picture stays up for one more interval before the next one. With `hold: false` the rotation carries
+  too. When the window ends, a new picture goes up straight away and the rotation carries on from
+  there, so the morning does not start on the night's picture. With `hold: false` the rotation carries
   on as usual. A rotation paused before or during the window stays paused afterwards; **Resume**
   starts the full interval.
 - **`dim`** (default 0.6): `/current/clean/...` and `/current/label/...` are darkened by that much (0
