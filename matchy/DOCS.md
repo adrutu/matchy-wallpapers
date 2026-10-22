@@ -614,9 +614,9 @@ The gallery page draws the buttons a viewer may not use as disabled, with the re
   back is not trusted that far: a redirect may stay on the host you configured or go to a public
   address, and an image address an art API names must be public (or on that API's host). So a source
   answering `302` to the Supervisor, Home Assistant or a router cannot have the add-on fetch that
-  and serve it as a picture. The check resolves each name before the request; a name that changes
-  its answer in between (DNS rebinding) is not covered. Captioner endpoints and the weather entity
-  are your own settings and are not checked.
+  and serve it as a picture. The address each connection actually reaches is checked before anything
+  is sent, so a name that answers differently the second time (DNS rebinding) is refused too.
+  Captioner endpoints and the weather entity are your own settings and are not checked.
 - The panel page is sent with a **Content-Security-Policy**: only its own script and stylesheet run
   (a fresh nonce for every response), and images and requests stay on the page's own origin. If a
   caption or screen name ever slipped past the escaping, it still could not run code.

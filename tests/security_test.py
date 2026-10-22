@@ -384,6 +384,31 @@ check("guard: public and private addresses told apart",
                                             "100.64.1.1", "169.254.169.254", "127.0.0.1", "::1", "::ffff:127.0.0.1",
                                             "0.0.0.0", "fd00::1", "fe80::1")]
       == [True, True] + [False] * 11)
+# DNS rebinding: a name that resolves public for the check and private for the connection. The
+# address actually connected to is checked too, on every hop.
+real_gai = socket.getaddrinfo
+answers = []
+
+
+def rebinding_gai(host, *a, **kw):
+    if host == "rebind.test":
+        answers.append(1)
+        ip = "93.184.216.34" if len(answers) == 1 else "127.0.0.1"
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, a[0] if a and a[0] else 0))]
+    return real_gai(host, *a, **kw)
+
+
+RP = rsrv.server_address[1]
+socket.getaddrinfo = rebinding_gai
+try:
+    got = fetch(lambda: artsources.Client(pause=0, trusted=["127.0.0.1"]).get("http://rebind.test:%d/secret" % RP))
+    check("guard: a name that rebinds to a private address after the check is refused",
+          isinstance(got, ValueError) and "refused" in str(got) and len(answers) >= 2, (repr(got), len(answers)))
+    answers[:] = [1]  # resolves private from the start: a configured host may be on your network
+    got = fetch(lambda: library.http_get("http://rebind.test:%d/secret" % RP, 5))
+    check("guard: a configured name is trusted wherever it resolves", got == b"secret", repr(got))
+finally:
+    socket.getaddrinfo = real_gai
 rsrv.shutdown(); rsrv.server_close()
 
 # ---------------- Content-Security-Policy on the panel ----------------
