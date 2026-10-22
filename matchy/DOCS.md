@@ -473,8 +473,9 @@ Any client may add `?screen=<name>` to any `GET` (`/current.json`, `/current/...
 is 1 to 40 characters of letters (in any script), digits, space and `. _ : @ -`, starting with a letter
 or digit; a request with any other name is served as usual but not listed. Only clients on your own
 network (the Network tier below) are listed. The panel's **Screens** box then shows that screen. Up to
-24 are kept: a new one beyond that replaces the following screen unseen the longest, and screens you
-turned off stay (so with 24 screens all turned off, a new one is not added).
+24 are kept: a new one beyond that replaces the following screen unseen the longest, at most one new
+name a minute (the others are served but not listed until they ask again), and screens you turned off
+stay (so with 24 screens all turned off, a new one is not added).
 
 **Turn off** is advisory: Matchy keeps serving that screen. `/current.json?screen=<name>` answers
 `"follow": false`, and every `/current.json` lists the screens that are off in `"screens_off"`. A client

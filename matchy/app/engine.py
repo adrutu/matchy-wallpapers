@@ -160,6 +160,7 @@ MAX_REVEAL_S = 86400  # ?reveal= on /current/label: whole seconds, up to a day
 SCREEN_RE = re.compile(r"^[^\W_][\w .:@-]{0,39}$")  # letters in any script (a user called Zoë), digits, " ._:@-"
 MAX_SCREENS = 24     # the direct port has no login, so nobody may grow the file without bound
 SCREEN_SAVE_S = 300  # last-seen times reach the disk at most this often
+SCREEN_ADMIT_S = 60  # a full Screens list takes at most one new name this often (no churn, no write storm)
 
 # The panel's "How often" slider: (label, minutes), and None for Day & night.
 PACE_STOPS = [("Every 15 minutes", 15), ("Every 20 minutes", 20), ("Every half hour", 30), ("Every hour", 60),
@@ -314,6 +315,7 @@ class Engine:
         self.screens = {k: v for k, v in screens.items() if isinstance(v, dict)} if isinstance(screens, dict) else {}
         self.screens_saved = 0.0
         self.screens_full_logged = False
+        self.screens_admitted_at = 0.0  # when a new name last replaced one on a full list
         self.weather = None        # {"condition", "temperature_c", "at"} from the weather entity
         self.weather_error = None  # why the last reading failed, for the panel
         lvl = cfg["mood"].get("level")
@@ -816,6 +818,8 @@ class Engine:
             new = s is None
             if new:
                 if len(self.screens) >= MAX_SCREENS:
+                    if now - self.screens_admitted_at < SCREEN_ADMIT_S:
+                        return  # served as usual, just not listed (it may ask again in a minute)
                     # Make room by dropping the screen unseen the longest that still follows (it comes back
                     # the next time it asks). Screens turned off are a choice made in the panel: kept.
                     following = [k for k, v in self.screens.items() if v.get("follow") is not False]
@@ -827,6 +831,7 @@ class Engine:
                         return
                     gone = min(following, key=lambda k: self.screens[k].get("last_seen") or 0)
                     del self.screens[gone]
+                    self.screens_admitted_at = now
                     log("screens: the list is full (%d); dropped %r, unseen the longest" % (MAX_SCREENS, gone))
                 s = self.screens[sid] = {"follow": True, "first_seen": now}
                 log("screens: new screen %r from %s" % (sid, ip))

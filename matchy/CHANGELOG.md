@@ -104,6 +104,8 @@ Robustness review of the engine's edges (`tests/security_test.py`, also in CI):
   (`size_limits.max_pixels`; 8K and three 4K screens fit), and past 16 renders waiting
   (`render_queue`) a new render answers `503` with `Retry-After`, so a loop of huge requests can no
   longer run the add-on out of memory. The GNOME follower scales a larger layout down to fit.
+- A full Screens list takes at most one new name a minute, so a client cycling made-up `?screen=`
+  names no longer rewrites `screens.json` on every request.
 
 - Colour match: each picture gets a five-colour `palette`, a usable `accent` (3:1 contrast on both
   light and dark) and the nearest `gnome_accent` name, computed once from the master into the sidecar

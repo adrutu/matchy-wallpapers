@@ -272,6 +272,29 @@ release.set(); holder.join(5)
 st, _, _ = req(port, "GET", "/img/%s/%s/clean/800x600.jpg" % (iid, rev))
 check("budget: the queue frees up again", st == 200 and eng.render_waiting == 0, (st, eng.render_waiting))
 
+# ---------------- screens list churn ----------------
+# Once the list is full, a client cycling new ?screen= names would replace one screen and write
+# screens.json on every request. A full list now takes at most one new name a minute.
+eng = make_engine("screens")
+writes = []
+real_save = eng.save_screens
+eng.save_screens = lambda: (writes.append(1), real_save())
+for i in range(engine.MAX_SCREENS):
+    eng.saw_screen("screen-%d" % i, "192.168.0.%d" % (i + 2), "test")
+n = len(writes)
+eng.saw_screen("newcomer-1", "192.168.0.99", "test")
+check("screens: a full list takes one new name", "newcomer-1" in eng.screens and len(writes) == n + 1, len(writes) - n)
+for i in range(50):
+    eng.saw_screen("churn-%d" % i, "192.168.0.99", "test")
+check("screens: more new names within the minute are not added and not written",
+      not any(k.startswith("churn-") for k in eng.screens) and len(writes) == n + 1
+      and len(eng.screens) == engine.MAX_SCREENS, (len(writes) - n, len(eng.screens)))
+eng.saw_screen("screen-5", "192.168.0.7", "test")
+check("screens: a known screen is still seen", "screen-5" in eng.screens and eng.screens["screen-5"]["ip"] == "192.168.0.7")
+eng.screens_admitted_at -= 61
+eng.saw_screen("newcomer-2", "192.168.0.99", "test")
+check("screens: a minute later a new name gets in again", "newcomer-2" in eng.screens and len(writes) == n + 2, len(writes) - n)
+
 print("\n%d passed, %d failed" % (ok, fail))
 if not fail:
     shutil.rmtree(S, ignore_errors=True)
