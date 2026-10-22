@@ -109,6 +109,9 @@ Robustness review of the engine's edges (`tests/security_test.py`, also in CI):
 - `original.jpg` is streamed from disk, four at a time, instead of being read whole into memory for
   every request, and a JPEG with a GPS position in its EXIF is served without it (losslessly: the
   picture and the rest of its EXIF are unchanged).
+- Remote sources can no longer be bent into a proxy for your network: a redirect from a manifest,
+  daily or art source host may stay on that host or go to a public address, and an image address
+  an art API hands back must be public. A `302` to the Supervisor or Home Assistant is refused.
 
 - Colour match: each picture gets a five-colour `palette`, a usable `accent` (3:1 contrast on both
   light and dark) and the nearest `gnome_accent` name, computed once from the master into the sidecar

@@ -16,6 +16,7 @@ import urllib.request
 from PIL import Image, ImageOps
 
 import artsources
+import netguard
 
 import palette
 
@@ -92,11 +93,12 @@ def num(v, default=0.0):
 
 
 def http_get(url, timeout=30, max_bytes=60_000_000):
-    # urllib would also open file:, data: and ftp: URLs; a remote source is a web server.
+    # urllib would also open file:, data: and ftp: URLs; a remote source is a web server. The URL is
+    # yours (configured), wherever it points; a redirect may stay on its host or go somewhere public.
     if urllib.parse.urlsplit(url).scheme not in ("http", "https"):
         raise ValueError("only http(s) URLs are fetched: %r" % url)
     req = urllib.request.Request(url, headers={"User-Agent": "wallpaper-engine/1"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with netguard.urlopen(req, netguard.trusted_hosts(url), timeout) as r:
         data = r.read(max_bytes + 1)
     if len(data) > max_bytes:
         raise ValueError("response too large")
@@ -676,7 +678,8 @@ class Library:
             c = a.get(name) or {}
             if not c.get("enabled"):
                 continue
-            client = artsources.Client(a.get("contact", ""), a.get("pause_seconds", 1.0))
+            client = artsources.Client(a.get("contact", ""), a.get("pause_seconds", 1.0),
+                                       trusted=netguard.trusted_hosts(c.get("base_url"), c.get("api_url")))
             try:
                 new += self._sync_art_source(name, c, client, rng)
             except Exception as e:

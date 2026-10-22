@@ -12,9 +12,11 @@ sys.path.insert(0, os.path.join(HERE, "..", "matchy", "app"))
 
 from PIL import Image  # noqa: E402
 
+import artsources  # noqa: E402
 import caption  # noqa: E402
 import engine  # noqa: E402
 import library  # noqa: E402
+import netguard  # noqa: E402
 
 ok = fail = 0
 S = tempfile.mkdtemp(prefix="matchy-sec-")
@@ -329,6 +331,60 @@ st, body, h = req(port, "GET", "/img/%s/original.jpg" % plain)
 check("original: past the streams limit, 503 with Retry-After", st == 503 and h.get("Retry-After"), (st, body[:80]))
 for _ in held:
     eng.original_sem.release()
+
+# ---------------- remote sources cannot be bent into a proxy for the internal network ----------------
+# A manifest or daily host (or an art API) answering 302 to the Supervisor, Home Assistant or any other
+# private address would have the add-on fetch it and serve the result. Redirects may stay on the host
+# you configured or go to public addresses; an address an art API hands out must be public (or one of
+# the configured hosts).
+from http.server import BaseHTTPRequestHandler  # noqa: E402
+
+
+class Redirector(BaseHTTPRequestHandler):
+    def do_GET(self):
+        port = self.server.server_address[1]
+        to = {"/to-other": "http://localhost:%d/secret" % port, "/to-same": "/secret", "/to-file": "file:///etc/hostname",
+              "/to-meta": "http://169.254.169.254/latest/meta-data/"}.get(self.path)
+        if to:
+            self.send_response(302); self.send_header("Location", to); self.send_header("Content-Length", "0"); self.end_headers()
+            return
+        body = b"secret" if self.path == "/secret" else b"ok"
+        self.send_response(200); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+
+    def log_message(self, *a): pass
+
+
+rsrv = ThreadingHTTPServer(("127.0.0.1", 0), Redirector)
+rsrv.daemon_threads = True
+threading.Thread(target=rsrv.serve_forever, daemon=True).start()
+R = "http://127.0.0.1:%d" % rsrv.server_address[1]
+
+
+def fetch(fn):
+    try:
+        return fn()
+    except Exception as e:  # noqa: BLE001
+        return e
+
+
+check("guard: a configured private host is fetched", fetch(lambda: library.http_get(R + "/plain", 5)) == b"ok")
+check("guard: a redirect on the same host is followed", fetch(lambda: library.http_get(R + "/to-same", 5)) == b"secret")
+for path in ("/to-other", "/to-meta", "/to-file"):
+    got = fetch(lambda: library.http_get(R + path, 5))
+    check("guard: http_get refuses a redirect %s" % path, isinstance(got, Exception) and not isinstance(got, bytes)
+          and ("refused" in str(got) or "not allowed" in str(got)), repr(got))  # urllib itself refuses file:
+cl = artsources.Client(pause=0, trusted=["127.0.0.1"])
+check("guard: art client fetches its configured host", fetch(lambda: cl.get(R + "/plain")) == b"ok")
+got = fetch(lambda: cl.get("http://localhost:%d/secret" % rsrv.server_address[1]))
+check("guard: art client refuses a private address it was handed", isinstance(got, ValueError) and "refused" in str(got), repr(got))
+got = fetch(lambda: cl.get(R + "/to-other"))
+check("guard: art client refuses a redirect to a private address", isinstance(got, ValueError) and "refused" in str(got), repr(got))
+check("guard: public and private addresses told apart",
+      [netguard.host_is_public(h) for h in ("8.8.8.8", "2606:4700:4700::1111", "10.1.2.3", "172.30.32.1", "192.168.1.5",
+                                            "100.64.1.1", "169.254.169.254", "127.0.0.1", "::1", "::ffff:127.0.0.1",
+                                            "0.0.0.0", "fd00::1", "fe80::1")]
+      == [True, True] + [False] * 11)
+rsrv.shutdown(); rsrv.server_close()
 
 print("\n%d passed, %d failed" % (ok, fail))
 if not fail:

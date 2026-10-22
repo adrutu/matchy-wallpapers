@@ -606,8 +606,17 @@ The gallery page draws the buttons a viewer may not use as disabled, with the re
   without CORS headers, so the browser refuses it. Known gaps: a page could still issue a simple
   `POST /api/next` (no preflight needed), a page using DNS rebinding could reach the Network tier,
   and a page can add made-up names to the Screens list (an image tag with `?screen=`), which can push
-  real screens out of a full list until they next ask. The worst outcome is a skipped or paused
-  wallpaper or a cluttered Screens list, never a changed caption or library.
+  real screens out of a full list until they next ask (one a minute at most once the list is full).
+  The worst outcome is a skipped or paused wallpaper or a cluttered Screens list, never a changed
+  caption or library.
+- **Downloads stay where you point them.** A URL you configure (a remote manifest, the daily picture,
+  an art source's API) is fetched wherever it is, your own network included. What a source hands
+  back is not trusted that far: a redirect may stay on the host you configured or go to a public
+  address, and an image address an art API names must be public (or on that API's host). So a source
+  answering `302` to the Supervisor, Home Assistant or a router cannot have the add-on fetch that
+  and serve it as a picture. The check resolves each name before the request; a name that changes
+  its answer in between (DNS rebinding) is not covered. Captioner endpoints and the weather entity
+  are your own settings and are not checked.
 - An API key you enter for a captioner is written to a file inside the add-on's own data directory
   at mode 600 and re-written on every start. It never appears in the generated config file or in
   the log. Like every add-on option it is also in Home Assistant's own `options.json` for the add-on.
