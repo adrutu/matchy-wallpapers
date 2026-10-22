@@ -295,6 +295,41 @@ eng.screens_admitted_at -= 61
 eng.saw_screen("newcomer-2", "192.168.0.99", "test")
 check("screens: a minute later a new name gets in again", "newcomer-2" in eng.screens and len(writes) == n + 2, len(writes) - n)
 
+# ---------------- original.jpg: streamed from disk, GPS left out ----------------
+# A JPEG original was read whole into memory per request, outside any limit, with its EXIF (GPS
+# included) served to any client. Now: streamed in chunks under a small limit of its own; a JPEG
+# that carries a GPS position is served from a copy without it (lossless: the image data and the
+# rest of the EXIF, orientation included, stay as they are).
+eng = make_engine("orig")
+imgs = os.path.join(S, "imgs-orig")
+ex = Image.Exif()
+ex[0x0110] = "TestCam"
+ex[0x0112] = 6
+ex[0x8825] = {1: "N", 2: (51.0, 54.0, 0.0), 3: "W", 4: (8.0, 28.0, 0.0)}
+Image.new("RGB", (1600, 900), (90, 120, 30)).save(os.path.join(imgs, "phone.jpg"), quality=90, exif=ex)
+eng.lib.rescan()
+port = serve(eng)
+by_path = {os.path.basename(it["path"]): iid for iid, it in eng.lib.items.items()}
+st, body, h = req(port, "GET", "/img/%s/original.jpg" % by_path["phone.jpg"])
+got = Image.open(io.BytesIO(body))
+gx = got.getexif()
+check("original: GPS left out", st == 200 and not dict(gx.get_ifd(0x8825)) and 0x8825 not in gx, (st, dict(gx)))
+check("original: the rest of the EXIF kept (model, orientation)", gx.get(0x0110) == "TestCam" and gx.get(0x0112) == 6, dict(gx))
+src = open(os.path.join(imgs, "phone.jpg"), "rb").read()
+check("original: the picture itself untouched (same scan data)", body[body.index(b"\xff\xda"):] == src[src.index(b"\xff\xda"):]
+      and int(h.get("Content-Length", -1)) == len(body))
+plain = by_path["pic-0.jpg"]
+st, body, h = req(port, "GET", "/img/%s/original.jpg" % plain)
+check("original: a JPEG without GPS is the file as it is", st == 200 and body == open(eng.lib.items[plain]["path"], "rb").read()
+      and int(h.get("Content-Length", -1)) == len(body), (st, len(body)))
+st, body, h = req(port, "HEAD", "/img/%s/original.jpg" % plain)
+check("original: HEAD has the length and no body", st == 200 and body == b"" and int(h.get("Content-Length", 0)) > 0, (st, h))
+held = [eng.original_sem.acquire() for _ in range(engine.ORIGINAL_STREAMS)]
+st, body, h = req(port, "GET", "/img/%s/original.jpg" % plain)
+check("original: past the streams limit, 503 with Retry-After", st == 503 and h.get("Retry-After"), (st, body[:80]))
+for _ in held:
+    eng.original_sem.release()
+
 print("\n%d passed, %d failed" % (ok, fail))
 if not fail:
     shutil.rmtree(S, ignore_errors=True)

@@ -14,6 +14,7 @@ import math
 import os
 import random
 import re
+import shutil
 import string
 import sys
 import threading
@@ -154,6 +155,9 @@ CAPTION_LIMITS = {"title": 100, "place": 120, "credit": 200, "blurb": 600}
 KIDS_LIMIT = 400  # characters of a hand-written kids blurb
 KIDS_DROP = ("kids_caption_failed_at", "kids_caption_error", "kids_caption_attempts", "kids_caption_note")
 MAX_REVEAL_S = 86400  # ?reveal= on /current/label: whole seconds, up to a day
+ORIGINAL_STREAMS = 4  # original.jpg responses streaming at once; the next waits ORIGINAL_WAIT_S, then 503
+ORIGINAL_WAIT_S = 2
+EXIF_GPS = 0x8825
 
 # The Screens list: a client names itself with ?screen=<name> on any GET. "Off" is advisory: the
 # engine keeps serving it, and the client reads "follow" from /current.json and stands down itself.
@@ -306,6 +310,8 @@ class Engine:
         self.masters = OrderedDict()
         self.masters_lock = threading.Lock()
         self.master_sizes = {}  # master path -> (w, h), for the panel's focus picker
+        self.original_sem = threading.Semaphore(ORIGINAL_STREAMS)
+        self.original_gps = {}  # sha256 -> whether that JPEG carries a GPS position in its EXIF
         self.cache_dir = os.path.join(cfg["data_dir"], "cache")
         self.cache_bytes = None
         self.caption_busy = None
@@ -1438,18 +1444,48 @@ class Engine:
                 "max_pixels": z.get("max_pixels")}
 
     def original(self, iid):
-        it = self.lib.item(iid)
-        if it["path"].lower().endswith((".jpg", ".jpeg")):
-            with open(it["path"], "rb") as f:
-                return f.read()
+        with open(self.original_path(iid), "rb") as f:
+            return f.read()
 
-        def prod():
-            try:
-                with open_image(it["path"]) as im:
-                    return self.renderer.encode(im.convert("RGB"), quality=92)
-            except (OSError, SyntaxError) as e:  # not a picture after all, or cut short: a 400, not a 500
-                raise ValueError("cannot be decoded (%s)" % e.__class__.__name__) from None
-        return self.cached("%s/original-%s.jpg" % (iid, it["sha256"][:8]), prod)
+    def original_path(self, iid):
+        """The file /img/<id>/original.jpg streams: the JPEG itself, or a cached copy. A JPEG with a
+        GPS position in its EXIF gets a copy without it (lossless, see jpeg_without_gps): a phone photo
+        in a picture folder should not tell every screen on the network where it was taken. Other
+        formats are re-encoded as JPEG, which keeps no EXIF at all."""
+        it = self.lib.item(iid)
+        sha8 = it["sha256"][:8]
+        if it["path"].lower().endswith((".jpg", ".jpeg")):
+            gps = self.original_gps.get(it["sha256"])
+            if gps is None:
+                try:
+                    with Image.open(it["path"]) as im:  # reads the header only
+                        gps = EXIF_GPS in im.getexif()
+                except Exception:  # noqa: BLE001  unreadable EXIF: nothing to leave out
+                    gps = False
+                self.original_gps[it["sha256"]] = gps
+            if not gps:
+                return it["path"]
+            key = "%s/original-%s-nogps.jpg" % (iid, sha8)
+
+            def prod():
+                with open(it["path"], "rb") as f:
+                    out = jpeg_without_gps(f.read())
+                if out is None:  # never serve the position: a JPEG we cannot rewrite is re-encoded instead
+                    return self.renderer.encode(self.master_image(iid), quality=92)
+                return out
+        else:
+            key = "%s/original-%s.jpg" % (iid, sha8)
+
+            def prod():
+                try:
+                    with open_image(it["path"]) as im:
+                        return self.renderer.encode(im.convert("RGB"), quality=92)
+                except (OSError, SyntaxError) as e:  # not a picture after all, or cut short: a 400, not a 500
+                    raise ValueError("cannot be decoded (%s)" % e.__class__.__name__) from None
+        full = os.path.join(self.cache_dir, key)
+        if not os.path.exists(full):
+            self.cached(key, prod)
+        return full
 
 
 # ======================================================================
@@ -1471,18 +1507,37 @@ class Handler(BaseHTTPRequestHandler):
     def send(self, code, body=b"", ctype="text/plain; charset=utf-8", headers=None, head=False, cors=True):
         if isinstance(body, str):
             body = body.encode()
+        self.send_head(code, ctype, len(body), headers, cors)
+        if not head and body:
+            self.wfile.write(body)
+
+    def send_head(self, code, ctype, length, headers=None, cors=True):
         self.send_response(code)
         if cors:
             self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Access-Control-Expose-Headers", "ETag")
         self.send_header("X-Content-Type-Options", "nosniff")  # a source file is served as what it claims to be
         self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Length", str(length))
         for k, v in (headers or {}).items():
             self.send_header(k, v)
         self.end_headers()
-        if not head and body:
-            self.wfile.write(body)
+
+    def send_file(self, path, ctype, headers=None, head=False):
+        """A file streamed from disk in chunks (an original can be tens of MB), a few at a time."""
+        if not self.engine.original_sem.acquire(timeout=ORIGINAL_WAIT_S):
+            raise Busy()
+        try:
+            try:
+                f = open(path, "rb")
+            except FileNotFoundError:  # moved away, or a cached copy evicted, since the path was chosen
+                return self.send(404, "not found\n", head=head)
+            with f:
+                self.send_head(200, ctype, os.fstat(f.fileno()).st_size, headers)
+                if not head:
+                    shutil.copyfileobj(f, self.wfile, 256 * 1024)
+        finally:
+            self.engine.original_sem.release()
 
     def send_json(self, obj, code=200, headers=None, head=False, cors=True):
         h = {"Cache-Control": "no-store"}
@@ -1751,7 +1806,7 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts) >= 3 and parts[0] == "img" and parts[1] in eng.lib.items:
                 iid = parts[1]
                 if len(parts) == 3 and parts[2] == "original.jpg":
-                    return self.send(200, eng.original(iid), "image/jpeg", {"Cache-Control": "public, max-age=86400"}, head)
+                    return self.send_file(eng.original_path(iid), "image/jpeg", {"Cache-Control": "public, max-age=86400"}, head)
                 rev = parts[2]
                 cur_rev = eng.lib.display(iid)["rev"]
                 kind = parts[3] if len(parts) >= 4 else ""
@@ -1793,6 +1848,41 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError as e:
             return self.send(400, "%s\n" % e, head=head)
         return self.send(404, "not found\n", head=head)
+
+
+def jpeg_without_gps(data):
+    """The JPEG with the GPS position left out of its EXIF (and any XMP packet that names one), the
+    image data and every other segment byte for byte as they were; None when it has no position or
+    is not a JPEG this can walk."""
+    if data[:2] != b"\xff\xd8":
+        return None
+    out, i, changed = [data[:2]], 2, False
+    while i + 4 <= len(data):
+        if data[i] != 0xFF:
+            return None
+        marker = data[i + 1]
+        if marker in (0xDA, 0xD9):  # start of scan (or the end): the rest is image data
+            out.append(data[i:])
+            break
+        n = int.from_bytes(data[i + 2:i + 4], "big")
+        seg = data[i:i + 2 + n]
+        payload = seg[4:]
+        if marker == 0xE1 and payload.startswith(b"Exif\x00\x00"):
+            ex = Image.Exif()
+            ex.load(payload)
+            if EXIF_GPS in ex:
+                del ex[EXIF_GPS]
+                new = ex.tobytes()
+                seg = b"\xff\xe1" + (len(new) + 2).to_bytes(2, "big") + new
+                changed = True
+        elif marker == 0xE1 and payload.startswith(b"http://ns.adobe.com/xap/1.0/") and b"GPS" in payload:
+            seg = b""
+            changed = True
+        out.append(seg)
+        i += 2 + n
+    else:
+        return None  # no image data found
+    return b"".join(out) if changed else None
 
 
 def check_pixels(n, limits):

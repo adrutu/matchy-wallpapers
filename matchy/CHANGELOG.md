@@ -106,6 +106,9 @@ Robustness review of the engine's edges (`tests/security_test.py`, also in CI):
   longer run the add-on out of memory. The GNOME follower scales a larger layout down to fit.
 - A full Screens list takes at most one new name a minute, so a client cycling made-up `?screen=`
   names no longer rewrites `screens.json` on every request.
+- `original.jpg` is streamed from disk, four at a time, instead of being read whole into memory for
+  every request, and a JPEG with a GPS position in its EXIF is served without it (losslessly: the
+  picture and the rest of its EXIF are unchanged).
 
 - Colour match: each picture gets a five-colour `palette`, a usable `accent` (3:1 contrast on both
   light and dark) and the nearest `gnome_accent` name, computed once from the master into the sidecar

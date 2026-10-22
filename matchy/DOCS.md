@@ -523,7 +523,7 @@ Read endpoints:
 | `GET /img/<id>/<rev>/clean/WxH.jpg[?pad=]` | One specific picture; cacheable for a year, so never dimmed. With a `pad` other than 1.0 it is sent with an `ETag` and `no-cache` instead, because the focus point can move under the same `<rev>`. |
 | `GET /img/<id>/<rev>/label/WxH.jpg[?s=&label=kids&pad=]` | The same with the label. |
 | `GET /img/<id>/<rev>/span.jpg?layout=WxH+X+Y[p],...[&s=&label=kids]` | One picture composed across a multi-monitor layout: each monitor as `width x height + x + y`, `p` marks the primary, which gets the label (the largest screen if none is marked). Gaps are black. |
-| `GET /img/<id>/original.jpg` | The original: PNG and WebP pictures from your folders are re-encoded as JPEG; pictures downloaded from a remote manifest or the daily URL are served as downloaded. |
+| `GET /img/<id>/original.jpg` | The original: PNG and WebP pictures from your folders are re-encoded as JPEG; pictures downloaded from a remote manifest or the daily URL are served as downloaded. A JPEG with a GPS position in its EXIF (a phone photo) is served without it: the position and any XMP packet naming one are left out, the image data and the rest of the EXIF (orientation, camera) stay as they are. Streamed from disk, four at a time; past that `503` with `Retry-After`. |
 | `GET /healthz` | Liveness; answers `ok` even before the first scan. |
 
 A `label` other than `kids`, or a `reveal` that is not whole seconds from 0 to 86400, answers `400`.
