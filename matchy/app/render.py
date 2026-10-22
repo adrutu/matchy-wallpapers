@@ -398,7 +398,7 @@ def focus_point(sc):
     return 0.5, 0.5
 
 
-def parse_layout(spec, lo=320, hi=7680, max_w=12000, max_h=8000, max_monitors=8):
+def parse_layout(spec, lo=320, hi=7680, max_w=12000, max_h=8000, max_monitors=8, max_pixels=None):
     mons = []
     spec = spec.replace(" ", "+")  # an unencoded "+" arrives as a space
     for part in spec.split(","):
@@ -417,4 +417,6 @@ def parse_layout(spec, lo=320, hi=7680, max_w=12000, max_h=8000, max_monitors=8)
     ch = max(m[1] + m[3] for m in mons)
     if cw > max_w or ch > max_h:
         raise ValueError("canvas too large")
+    if max_pixels and cw * ch > max_pixels:  # the whole canvas is allocated, gaps included
+        raise ValueError("canvas over %g megapixels" % (max_pixels / 1e6))
     return mons

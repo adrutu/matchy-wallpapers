@@ -477,8 +477,9 @@ Any client may add `?screen=<name>` to any `GET` (`/current.json`, `/current/...
 is 1 to 40 characters of letters (in any script), digits, space and `. _ : @ -`, starting with a letter
 or digit; a request with any other name is served as usual but not listed. Only clients on your own
 network (the Network tier below) are listed. The panel's **Screens** box then shows that screen. Up to
-24 are kept: a new one beyond that replaces the following screen unseen the longest, and screens you
-turned off stay (so with 24 screens all turned off, a new one is not added).
+24 are kept: a new one beyond that replaces the following screen unseen the longest, at most one new
+name a minute (the others are served but not listed until they ask again), and screens you turned off
+stay (so with 24 screens all turned off, a new one is not added).
 
 **Turn off** is advisory: Matchy keeps serving that screen. `/current.json?screen=<name>` answers
 `"follow": false`, and every `/current.json` lists the screens that are off in `"screens_off"`. A client
@@ -526,13 +527,16 @@ Read endpoints:
 | `GET /img/<id>/<rev>/clean/WxH.jpg[?pad=]` | One specific picture; cacheable for a year, so never dimmed. With a `pad` other than 1.0 it is sent with an `ETag` and `no-cache` instead, because the focus point can move under the same `<rev>`. |
 | `GET /img/<id>/<rev>/label/WxH.jpg[?s=&label=kids&pad=]` | The same with the label. |
 | `GET /img/<id>/<rev>/span.jpg?layout=WxH+X+Y[p],...[&s=&label=kids]` | One picture composed across a multi-monitor layout: each monitor as `width x height + x + y`, `p` marks the primary, which gets the label (the largest screen if none is marked). Gaps are black. |
-| `GET /img/<id>/original.jpg` | The original: PNG and WebP pictures from your folders are re-encoded as JPEG; pictures downloaded from a remote manifest or the daily URL are served as downloaded. |
+| `GET /img/<id>/original.jpg` | The original: PNG and WebP pictures from your folders are re-encoded as JPEG; pictures downloaded from a remote manifest or the daily URL are served as downloaded. A JPEG with a GPS position in its EXIF (a phone photo) is served without it: the position and any XMP packet naming one are left out, the image data and the rest of the EXIF (orientation, camera) stay as they are. Streamed from disk, four at a time; past that `503` with `Retry-After`. |
 | `GET /healthz` | Liveness; answers `ok` even before the first scan. |
 
 A `label` other than `kids`, or a `reveal` that is not whole seconds from 0 to 86400, answers `400`.
 Sizes: width and height 320–7680 (outside that, `/img/...` answers `400` and `/current/...` `404`;
 a `pad` outside 1.0–1.3, or one that takes a side past 7680, answers `400` on both); a
-span canvas up to 12000x8000 with at most 8 monitors and one primary. A `<rev>` that is no longer current (the caption or the focus point changed) answers `302` to the current
+span canvas up to 12000x8000 with at most 8 monitors and one primary. One picture (padding included)
+or span canvas is at most 40 megapixels (`size_limits.max_pixels`; 7680x4320 and three 4K screens in a
+row fit), otherwise `400`. When more than 16 renders are already waiting (`render_queue`), a request
+that needs a new render answers `503` with `Retry-After: 5`; sizes already rendered are still served. A `<rev>` that is no longer current (the caption or the focus point changed) answers `302` to the current
 URL. `HEAD` works everywhere `GET` does. Every read response carries
 `Access-Control-Allow-Origin: *`, except the gallery page and `/screens.json`, which name the screens (and the latter their addresses).
 
@@ -606,8 +610,20 @@ The gallery page draws the buttons a viewer may not use as disabled, with the re
   without CORS headers, so the browser refuses it. Known gaps: a page could still issue a simple
   `POST /api/next` (no preflight needed), a page using DNS rebinding could reach the Network tier,
   and a page can add made-up names to the Screens list (an image tag with `?screen=`), which can push
-  real screens out of a full list until they next ask. The worst outcome is a skipped or paused
-  wallpaper or a cluttered Screens list, never a changed caption or library.
+  real screens out of a full list until they next ask (one a minute at most once the list is full).
+  The worst outcome is a skipped or paused wallpaper or a cluttered Screens list, never a changed
+  caption or library.
+- **Downloads stay where you point them.** A URL you configure (a remote manifest, the daily picture,
+  an art source's API) is fetched wherever it is, your own network included. What a source hands
+  back is not trusted that far: a redirect may stay on the host you configured or go to a public
+  address, and an image address an art API names must be public (or on that API's host). So a source
+  answering `302` to the Supervisor, Home Assistant or a router cannot have the add-on fetch that
+  and serve it as a picture. The address each connection actually reaches is checked before anything
+  is sent, so a name that answers differently the second time (DNS rebinding) is refused too.
+  Captioner endpoints and the weather entity are your own settings and are not checked.
+- The panel page is sent with a **Content-Security-Policy**: only its own script and stylesheet run
+  (a fresh nonce for every response), and images and requests stay on the page's own origin. If a
+  caption or screen name ever slipped past the escaping, it still could not run code.
 - An API key you enter for a captioner is written to a file inside the add-on's own data directory
   at mode 600 and re-written on every start. It never appears in the generated config file or in
   the log. Like every add-on option it is also in Home Assistant's own `options.json` for the add-on.
@@ -786,7 +802,7 @@ Keys the engine understands but the add-on does not expose:
   identifier and the start of every unique id, so two engines on one broker need two prefixes) and
   `image_size` (`[1920, 1080]`, the labelled picture the image entity shows);
 - `rotation.caption_priority`, `dedupe.avoid_prefixes` and `ladder_prefer` (`"4k"`), `lan_cidrs`,
-  `ingress_peers`, `size_limits`, `bind` and `style` (label proportions, fonts, `jpeg_quality`, and
+  `ingress_peers`, `size_limits` (`max_pixels` included), `render_queue` (16), `bind` and `style` (label proportions, fonts, `jpeg_quality`, and
   `kids_scale`, 1.3, the label scale for `?label=kids` without `s`).
 
 Environment: `WE_CONFIG`, `WE_PORT`, `WE_DATA_DIR`, `WE_FONT_DIR`, `WE_ACCESS_LOG`.

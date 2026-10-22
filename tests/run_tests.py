@@ -786,7 +786,10 @@ try:
         req(A, "GET", "/current.json?screen=s%d" % n)
     ids_seen = [x["id"] for x in req(A, "GET", "/screens.json")[1]["screens"]]
     check("A screen: capped at 24, the oldest following dropped, off ones kept", len(ids_seen) == 24
-          and "lap-1" in ids_seen and "s0" not in ids_seen and "s29" in ids_seen, ids_seen)
+          and "lap-1" in ids_seen and "s0" not in ids_seen and "s23" in ids_seen, ids_seen)
+    check("A screen: a full list takes one new name a minute", not any(i in ids_seen for i in ("s24", "s29")), ids_seen)
+    for gone in ("s1", "s2"):  # room for the two names below
+        req(A, "POST", "/api/screen/forget", {"id": gone})
     hostile = 'x" onmouseover=alert(1) a'
     req(A, "GET", "/current.json?screen=" + urllib.parse.quote(hostile))  # breaks SCREEN_RE: never listed
     req(A, "GET", "/current.json?screen=" + urllib.parse.quote("Hall Panel"))

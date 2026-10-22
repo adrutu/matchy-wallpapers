@@ -25,6 +25,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+import netguard
+
 PROJECT_URL = "https://github.com/adrutu/matchy-wallpapers"
 SOURCES = ("aic", "met", "potd")  # the order they are synced in
 
@@ -56,16 +58,19 @@ class Client:
     """Serial HTTP for one sync: a User-Agent with a contact, and a pause before every request after
     the first, so no source sees more than one request a `pause` seconds."""
 
-    def __init__(self, contact="", pause=1.0, timeout=60):
+    def __init__(self, contact="", pause=1.0, timeout=60, trusted=()):
         who = PROJECT_URL + ("; " + contact if contact else "")
         self.ua = "MatchyWallpapers (bot; %s) Python-urllib/%d.%d" % (who, *sys.version_info[:2])
         self.aic_ua = "matchy-wallpapers (%s)" % who
         self.pause, self.timeout, self.last = float(pause), timeout, 0.0
         self.requests = 0
+        # The configured API hosts; an image or object URL an API hands back must be public otherwise.
+        self.trusted = {str(h).lower() for h in trusted}
 
     def get(self, url, data=None, headers=None, max_bytes=60_000_000):
         if not re.match(r"^https?://", url or ""):
             raise ValueError("not an http(s) URL: %r" % url)
+        netguard.check_url(url, self.trusted)
         wait = self.last + self.pause - time.time()
         if self.requests and wait > 0:
             time.sleep(wait)
@@ -73,7 +78,7 @@ class Client:
         h.update(headers or {})
         req = urllib.request.Request(url, data=data, headers=h, method="POST" if data is not None else "GET")
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+            with netguard.urlopen(req, self.trusted, self.timeout) as r:
                 body = r.read(max_bytes + 1)
         finally:
             self.last = time.time()

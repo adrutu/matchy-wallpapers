@@ -16,6 +16,7 @@ import urllib.request
 from PIL import Image, ImageOps
 
 import artsources
+import netguard
 
 import palette
 
@@ -92,11 +93,12 @@ def num(v, default=0.0):
 
 
 def http_get(url, timeout=30, max_bytes=60_000_000):
-    # urllib would also open file:, data: and ftp: URLs; a remote source is a web server.
+    # urllib would also open file:, data: and ftp: URLs; a remote source is a web server. The URL is
+    # yours (configured), wherever it points; a redirect may stay on its host or go somewhere public.
     if urllib.parse.urlsplit(url).scheme not in ("http", "https"):
         raise ValueError("only http(s) URLs are fetched: %r" % url)
     req = urllib.request.Request(url, headers={"User-Agent": "wallpaper-engine/1"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with netguard.urlopen(req, netguard.trusted_hosts(url), timeout) as r:
         data = r.read(max_bytes + 1)
     if len(data) > max_bytes:
         raise ValueError("response too large")
@@ -150,6 +152,10 @@ def valid_focus(f):
     if not all(isinstance(v, (int, float)) and not isinstance(v, bool) and 0 <= v <= 1 for v in xy):
         return None
     return f
+
+
+class Gone(KeyError):
+    """A picture that left the library (a rescan swapped `items`) while a request was using it."""
 
 
 class Library:
@@ -672,7 +678,8 @@ class Library:
             c = a.get(name) or {}
             if not c.get("enabled"):
                 continue
-            client = artsources.Client(a.get("contact", ""), a.get("pause_seconds", 1.0))
+            client = artsources.Client(a.get("contact", ""), a.get("pause_seconds", 1.0),
+                                       trusted=netguard.trusted_hosts(c.get("base_url"), c.get("api_url")))
             try:
                 new += self._sync_art_source(name, c, client, rng)
             except Exception as e:
@@ -739,8 +746,15 @@ class Library:
         write_json(self.art_skipped_path, self.art_skipped)
 
     # ---------- masters ----------
+    def item(self, iid):
+        """The library entry, or Gone: a rescan may swap `items` between a check and its use."""
+        it = self.items.get(iid)
+        if it is None:
+            raise Gone(iid)
+        return it
+
     def master_path(self, iid):
-        it = self.items[iid]
+        it = self.item(iid)
         tag = hashlib.sha256(("%s|%d" % (it["sha256"], MASTER_FORMAT)).encode()).hexdigest()[:8]
         return os.path.join(self.data, "masters", "%s-%s.jpg" % (iid, tag))
 
@@ -760,7 +774,7 @@ class Library:
                 self.master_locks.pop(iid, None)
 
     def _make_master(self, iid, p):
-        it = self.items[iid]
+        it = self.item(iid)
         if iid in self.skipped:  # reported once already; it stays in the library so the gallery can say why
             raise ValueError(self.skipped[iid][1])
         cap = int(self.cfg["master_max_px"])

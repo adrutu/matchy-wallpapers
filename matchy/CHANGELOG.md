@@ -98,6 +98,27 @@ Robustness review of the engine's edges (`tests/security_test.py`, also in CI):
 - `run.sh` drops the Supervisor token from the engine's environment, except when the mood-aware
   picks read a `weather_entity` (the only thing the engine uses it for; without it that read
   answered `401`).
+- A picture removed from the library while a request for it was on its way (a folder scan in
+  between) answers `404` instead of `500`.
+- Render budget on the published port: one picture or span canvas is at most 40 megapixels
+  (`size_limits.max_pixels`; 8K and three 4K screens fit), and past 16 renders waiting
+  (`render_queue`) a new render answers `503` with `Retry-After`, so a loop of huge requests can no
+  longer run the add-on out of memory. The GNOME follower scales a larger layout down to fit.
+- A full Screens list takes at most one new name a minute, so a client cycling made-up `?screen=`
+  names no longer rewrites `screens.json` on every request.
+- `original.jpg` is streamed from disk, four at a time, instead of being read whole into memory for
+  every request, and a JPEG with a GPS position in its EXIF is served without it (losslessly: the
+  picture and the rest of its EXIF are unchanged).
+- Remote sources can no longer be bent into a proxy for your network: a redirect from a manifest,
+  daily or art source host may stay on that host or go to a public address, and an image address
+  an art API hands back must be public. A `302` to the Supervisor or Home Assistant is refused.
+- The panel page carries a Content-Security-Policy with a per-response nonce: only its own script
+  and stylesheet run, images and requests stay on its origin.
+- The captioner's prompt marks the picture's source text (titles, museum facts, Wikimedia's
+  description) off as data in a fenced block, each value on one line and capped, so a source cannot
+  pass the captioner instructions; the grounding check is unchanged.
+- CI installs Pillow and the config validator's packages from hash-pinned requirement files
+  (`tests/requirements/`, `pip --require-hashes`).
 
 - Colour match: each picture gets a five-colour `palette`, a usable `accent` (3:1 contrast on both
   light and dark) and the nearest `gnome_accent` name, computed once from the master into the sidecar

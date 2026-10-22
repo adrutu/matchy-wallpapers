@@ -11,7 +11,8 @@ AppOptions). On top of that it fails where the Supervisor only logs or stays sil
 Usage: python3 tests/validate_config.py [--config matchy/config.yaml] [--supervisor-src DIR]
 Without --supervisor-src it clones the pinned tag into ~/.cache/matchy/ (needs git) and checks the
 commit. Needs Python 3.14 (the Supervisor source uses `except A, B:`) and the Supervisor's pins:
-  pip install voluptuous==0.16.0 awesomeversion==25.8.0 aiohttp==3.14.5 PyYAML==6.0.3
+  pip install --require-hashes -r tests/requirements/validate.txt   (voluptuous 0.16.0, awesomeversion
+  25.8.0, aiohttp 3.14.5, PyYAML 6.0.3 and their dependencies, hash-pinned)
 Exits 0 when valid, 1 when not, 2 when the Supervisor source could not be loaded."""
 import argparse
 import copy

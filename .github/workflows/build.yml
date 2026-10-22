@@ -38,8 +38,7 @@ jobs:
 
       - name: config.yaml against the pinned Supervisor source
         run: |
-          python -m pip install --disable-pip-version-check \
-            voluptuous==0.16.0 awesomeversion==25.8.0 aiohttp==3.14.5 PyYAML==6.0.3
+          python -m pip install --disable-pip-version-check --require-hashes -r tests/requirements/validate.txt
           python tests/validate_config.py
 
       - name: YAML recipes in the docs parse (PyYAML from the step above)
@@ -63,7 +62,7 @@ jobs:
           python-version: "3.13"
 
       - name: Install Pillow
-        run: python -m pip install --disable-pip-version-check "pillow>=11,<12"
+        run: python -m pip install --disable-pip-version-check --require-hashes -r tests/requirements/engine.txt
 
       - name: tests/security_test.py (headers, concurrent masters, replaced pictures, sidecar types, captioner replies)
         run: python tests/security_test.py
@@ -150,7 +149,7 @@ jobs:
           python-version: "3.13"
 
       - name: Install Pillow
-        run: python -m pip install --disable-pip-version-check "pillow>=11,<12"
+        run: python -m pip install --disable-pip-version-check --require-hashes -r tests/requirements/engine.txt
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:

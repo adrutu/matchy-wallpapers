@@ -14,6 +14,8 @@ import math
 import os
 import random
 import re
+import secrets
+import shutil
 import string
 import sys
 import threading
@@ -33,7 +35,7 @@ import hass  # noqa: E402
 import render  # noqa: E402
 from caption import Captioner, subject_box  # noqa: E402
 from artsources import SOURCES  # noqa: E402
-from library import Library, log, num, open_image, read_json, rev_of, write_json  # noqa: E402
+from library import Gone, Library, log, num, open_image, read_json, rev_of, write_json  # noqa: E402
 from palette import HEX_RE  # noqa: E402
 
 DEFAULTS = {
@@ -43,6 +45,7 @@ DEFAULTS = {
     "master_max_px": 3840,
     "cache_max_mb": 2048,
     "render_threads": 2,
+    "render_queue": 16,  # cache misses waiting for or holding a render slot; past it, 503 + Retry-After
     # love_weight: how many turns a loved picture gets per shuffle, so about how many times as often it comes up.
     "rotation": {"min_minutes": 15, "max_minutes": 20, "love_weight": 3, "caption_priority": []},
     "location": None,  # {"latitude", "longitude"}: Day & night changes at sunrise and sunset there
@@ -89,7 +92,8 @@ DEFAULTS = {
     "lan_cidrs": ["127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10",
                   "::1/128", "fc00::/7", "fe80::/10"],
     "style": {},
-    "size_limits": {"min": 320, "max": 7680, "span_w": 12000, "span_h": 8000},
+    # max_pixels: one picture (padding included) or a span canvas; 7680x4320 and three 4K screens fit.
+    "size_limits": {"min": 320, "max": 7680, "span_w": 12000, "span_h": 8000, "max_pixels": 40_000_000},
     # Home Assistant entities over MQTT discovery (hass.py). The add-on fills host, port, username,
     # password_file and base_url from the Supervisor; base_url is where Home Assistant fetches the
     # picture for the image entity. Off by default.
@@ -136,6 +140,10 @@ def box_focus(box, sha):
             "sha256": sha}
 
 
+class Busy(Exception):
+    """Too many renders waiting: the handler answers 503 with Retry-After."""
+
+
 class Refused(Exception):
     """A control request the engine turns down; the handler answers with `code` and the message."""
 
@@ -148,12 +156,16 @@ CAPTION_LIMITS = {"title": 100, "place": 120, "credit": 200, "blurb": 600}
 KIDS_LIMIT = 400  # characters of a hand-written kids blurb
 KIDS_DROP = ("kids_caption_failed_at", "kids_caption_error", "kids_caption_attempts", "kids_caption_note")
 MAX_REVEAL_S = 86400  # ?reveal= on /current/label: whole seconds, up to a day
+ORIGINAL_STREAMS = 4  # original.jpg responses streaming at once; the next waits ORIGINAL_WAIT_S, then 503
+ORIGINAL_WAIT_S = 2
+EXIF_GPS = 0x8825
 
 # The Screens list: a client names itself with ?screen=<name> on any GET. "Off" is advisory: the
 # engine keeps serving it, and the client reads "follow" from /current.json and stands down itself.
 SCREEN_RE = re.compile(r"^[^\W_][\w .:@-]{0,39}$")  # letters in any script (a user called Zoë), digits, " ._:@-"
 MAX_SCREENS = 24     # the direct port has no login, so nobody may grow the file without bound
 SCREEN_SAVE_S = 300  # last-seen times reach the disk at most this often
+SCREEN_ADMIT_S = 60  # a full Screens list takes at most one new name this often (no churn, no write storm)
 
 # The panel's "How often" slider: (label, minutes), and None for Day & night.
 PACE_STOPS = [("Every 15 minutes", 15), ("Every 20 minutes", 20), ("Every half hour", 30), ("Every hour", 60),
@@ -294,10 +306,13 @@ class Engine:
         self.wake = threading.Event()
         self.caption_wake = threading.Event()
         self.render_sem = threading.Semaphore(int(cfg["render_threads"]))
+        self.render_waiting = 0  # cache misses between the queue check and the end of their render
         self.render_locks = {}
         self.masters = OrderedDict()
         self.masters_lock = threading.Lock()
         self.master_sizes = {}  # master path -> (w, h), for the panel's focus picker
+        self.original_sem = threading.Semaphore(ORIGINAL_STREAMS)
+        self.original_gps = {}  # sha256 -> whether that JPEG carries a GPS position in its EXIF
         self.cache_dir = os.path.join(cfg["data_dir"], "cache")
         self.cache_bytes = None
         self.caption_busy = None
@@ -307,6 +322,7 @@ class Engine:
         self.screens = {k: v for k, v in screens.items() if isinstance(v, dict)} if isinstance(screens, dict) else {}
         self.screens_saved = 0.0
         self.screens_full_logged = False
+        self.screens_admitted_at = 0.0  # when a new name last replaced one on a full list
         self.weather = None        # {"condition", "temperature_c", "at"} from the weather entity
         self.weather_error = None  # why the last reading failed, for the panel
         lvl = cfg["mood"].get("level")
@@ -813,6 +829,8 @@ class Engine:
             new = s is None
             if new:
                 if len(self.screens) >= MAX_SCREENS:
+                    if now - self.screens_admitted_at < SCREEN_ADMIT_S:
+                        return  # served as usual, just not listed (it may ask again in a minute)
                     # Make room by dropping the screen unseen the longest that still follows (it comes back
                     # the next time it asks). Screens turned off are a choice made in the panel: kept.
                     following = [k for k, v in self.screens.items() if v.get("follow") is not False]
@@ -824,6 +842,7 @@ class Engine:
                         return
                     gone = min(following, key=lambda k: self.screens[k].get("last_seen") or 0)
                     del self.screens[gone]
+                    self.screens_admitted_at = now
                     log("screens: the list is full (%d); dropped %r, unseen the longest" % (MAX_SCREENS, gone))
                 s = self.screens[sid] = {"follow": True, "first_seen": now}
                 log("screens: new screen %r from %s" % (sid, ip))
@@ -1317,6 +1336,11 @@ class Engine:
         except OSError:
             pass
         with self.lock:
+            # Each miss waits for a slot holding a thread (and, once rendering, the picture in memory):
+            # past the queue the client is told to come back rather than adding to the pile.
+            if self.render_waiting >= int(self.cfg.get("render_queue", 16)):
+                raise Busy()
+            self.render_waiting += 1
             lk = self.render_locks.setdefault(key_path, threading.Lock())
         try:
             with lk:
@@ -1337,6 +1361,7 @@ class Engine:
         finally:  # a render that fails must not leave its lock behind (one per size asked for)
             with self.lock:
                 self.render_locks.pop(key_path, None)
+                self.render_waiting -= 1
         self.evict(len(data))
         return data
 
@@ -1420,21 +1445,52 @@ class Engine:
 
     def span_limits(self):
         z = self.cfg["size_limits"]
-        return {"lo": z["min"], "hi": z["max"], "max_w": z["span_w"], "max_h": z["span_h"]}
+        return {"lo": z["min"], "hi": z["max"], "max_w": z["span_w"], "max_h": z["span_h"],
+                "max_pixels": z.get("max_pixels")}
 
     def original(self, iid):
-        it = self.lib.items[iid]
-        if it["path"].lower().endswith((".jpg", ".jpeg")):
-            with open(it["path"], "rb") as f:
-                return f.read()
+        with open(self.original_path(iid), "rb") as f:
+            return f.read()
 
-        def prod():
-            try:
-                with open_image(it["path"]) as im:
-                    return self.renderer.encode(im.convert("RGB"), quality=92)
-            except (OSError, SyntaxError) as e:  # not a picture after all, or cut short: a 400, not a 500
-                raise ValueError("cannot be decoded (%s)" % e.__class__.__name__) from None
-        return self.cached("%s/original-%s.jpg" % (iid, it["sha256"][:8]), prod)
+    def original_path(self, iid):
+        """The file /img/<id>/original.jpg streams: the JPEG itself, or a cached copy. A JPEG with a
+        GPS position in its EXIF gets a copy without it (lossless, see jpeg_without_gps): a phone photo
+        in a picture folder should not tell every screen on the network where it was taken. Other
+        formats are re-encoded as JPEG, which keeps no EXIF at all."""
+        it = self.lib.item(iid)
+        sha8 = it["sha256"][:8]
+        if it["path"].lower().endswith((".jpg", ".jpeg")):
+            gps = self.original_gps.get(it["sha256"])
+            if gps is None:
+                try:
+                    with Image.open(it["path"]) as im:  # reads the header only
+                        gps = EXIF_GPS in im.getexif()
+                except Exception:  # noqa: BLE001  unreadable EXIF: nothing to leave out
+                    gps = False
+                self.original_gps[it["sha256"]] = gps
+            if not gps:
+                return it["path"]
+            key = "%s/original-%s-nogps.jpg" % (iid, sha8)
+
+            def prod():
+                with open(it["path"], "rb") as f:
+                    out = jpeg_without_gps(f.read())
+                if out is None:  # never serve the position: a JPEG we cannot rewrite is re-encoded instead
+                    return self.renderer.encode(self.master_image(iid), quality=92)
+                return out
+        else:
+            key = "%s/original-%s.jpg" % (iid, sha8)
+
+            def prod():
+                try:
+                    with open_image(it["path"]) as im:
+                        return self.renderer.encode(im.convert("RGB"), quality=92)
+                except (OSError, SyntaxError) as e:  # not a picture after all, or cut short: a 400, not a 500
+                    raise ValueError("cannot be decoded (%s)" % e.__class__.__name__) from None
+        full = os.path.join(self.cache_dir, key)
+        if not os.path.exists(full):
+            self.cached(key, prod)
+        return full
 
 
 # ======================================================================
@@ -1456,18 +1512,37 @@ class Handler(BaseHTTPRequestHandler):
     def send(self, code, body=b"", ctype="text/plain; charset=utf-8", headers=None, head=False, cors=True):
         if isinstance(body, str):
             body = body.encode()
+        self.send_head(code, ctype, len(body), headers, cors)
+        if not head and body:
+            self.wfile.write(body)
+
+    def send_head(self, code, ctype, length, headers=None, cors=True):
         self.send_response(code)
         if cors:
             self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Access-Control-Expose-Headers", "ETag")
         self.send_header("X-Content-Type-Options", "nosniff")  # a source file is served as what it claims to be
         self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Length", str(length))
         for k, v in (headers or {}).items():
             self.send_header(k, v)
         self.end_headers()
-        if not head and body:
-            self.wfile.write(body)
+
+    def send_file(self, path, ctype, headers=None, head=False):
+        """A file streamed from disk in chunks (an original can be tens of MB), a few at a time."""
+        if not self.engine.original_sem.acquire(timeout=ORIGINAL_WAIT_S):
+            raise Busy()
+        try:
+            try:
+                f = open(path, "rb")
+            except FileNotFoundError:  # moved away, or a cached copy evicted, since the path was chosen
+                return self.send(404, "not found\n", head=head)
+            with f:
+                self.send_head(200, ctype, os.fstat(f.fileno()).st_size, headers)
+                if not head:
+                    shutil.copyfileobj(f, self.wfile, 256 * 1024)
+        finally:
+            self.engine.original_sem.release()
 
     def send_json(self, obj, code=200, headers=None, head=False, cors=True):
         h = {"Cache-Control": "no-store"}
@@ -1655,8 +1730,10 @@ class Handler(BaseHTTPRequestHandler):
         if not 1.0 <= p <= 1.3:
             raise ValueError("pad must be 1.0-1.3")
         p = round(p, 2)
-        if max(round(size[0] * p), round(size[1] * p)) > self.engine.cfg["size_limits"]["max"]:
-            raise ValueError("pad makes the picture larger than %d pixels" % self.engine.cfg["size_limits"]["max"])
+        z = self.engine.cfg["size_limits"]
+        if max(round(size[0] * p), round(size[1] * p)) > z["max"]:
+            raise ValueError("pad makes the picture larger than %d pixels" % z["max"])
+        check_pixels(round(size[0] * p) * round(size[1] * p), z)
         return p
 
     def parse_size(self, name):
@@ -1667,6 +1744,7 @@ class Handler(BaseHTTPRequestHandler):
         z = self.engine.cfg["size_limits"]
         if not (z["min"] <= w <= z["max"] and z["min"] <= h <= z["max"]):
             return None
+        check_pixels(w * h, z)
         return w, h
 
     def route(self, head):
@@ -1701,9 +1779,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(403, "LAN only\n", head=head, cors=False)
             return self.send_json({"screens": eng.screens_view()}, head=head, cors=False)
         if path in ("/", "/index.html"):
-            page = gallery_html(eng, control=self.client_is_lan(), admin=self.client_is_ingress())
+            nonce = secrets.token_urlsafe(18)
+            page = gallery_html(eng, control=self.client_is_lan(), admin=self.client_is_ingress(), nonce=nonce)
             # No CORS: the page names the house's screens; another website has no business reading it.
-            return self.send(200, page, "text/html; charset=utf-8", {"Cache-Control": "no-store"}, head, cors=False)
+            return self.send(200, page, "text/html; charset=utf-8",
+                             {"Cache-Control": "no-store", "Content-Security-Policy": PANEL_CSP.format(n=nonce)}, head,
+                             cors=False)
 
         try:
             # /current/<kind>/<W>x<H>.jpg
@@ -1733,7 +1814,7 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts) >= 3 and parts[0] == "img" and parts[1] in eng.lib.items:
                 iid = parts[1]
                 if len(parts) == 3 and parts[2] == "original.jpg":
-                    return self.send(200, eng.original(iid), "image/jpeg", {"Cache-Control": "public, max-age=86400"}, head)
+                    return self.send_file(eng.original_path(iid), "image/jpeg", {"Cache-Control": "public, max-age=86400"}, head)
                 rev = parts[2]
                 cur_rev = eng.lib.display(iid)["rev"]
                 kind = parts[3] if len(parts) >= 4 else ""
@@ -1767,9 +1848,56 @@ class Handler(BaseHTTPRequestHandler):
                             return self.send(304, headers=hdr, head=True)
                     data = eng.render_kind(iid, rev, kind, size[0], size[1], s, kids=kids, pad=pad)
                     return self.send(200, data, "image/jpeg", hdr, head)
+        except Gone:  # removed from the library while this request was on its way
+            return self.send(404, "not found\n", head=head)
+        except Busy:
+            return self.send(503, "busy rendering, try again shortly\n", head=head,
+                             headers={"Retry-After": "5", "Cache-Control": "no-store"})
         except ValueError as e:
             return self.send(400, "%s\n" % e, head=head)
         return self.send(404, "not found\n", head=head)
+
+
+def jpeg_without_gps(data):
+    """The JPEG with the GPS position left out of its EXIF (and any XMP packet that names one), the
+    image data and every other segment byte for byte as they were; None when it has no position or
+    is not a JPEG this can walk."""
+    if data[:2] != b"\xff\xd8":
+        return None
+    out, i, changed = [data[:2]], 2, False
+    while i + 4 <= len(data):
+        if data[i] != 0xFF:
+            return None
+        marker = data[i + 1]
+        if marker in (0xDA, 0xD9):  # start of scan (or the end): the rest is image data
+            out.append(data[i:])
+            break
+        n = int.from_bytes(data[i + 2:i + 4], "big")
+        seg = data[i:i + 2 + n]
+        payload = seg[4:]
+        if marker == 0xE1 and payload.startswith(b"Exif\x00\x00"):
+            ex = Image.Exif()
+            ex.load(payload)
+            if EXIF_GPS in ex:
+                del ex[EXIF_GPS]
+                new = ex.tobytes()
+                seg = b"\xff\xe1" + (len(new) + 2).to_bytes(2, "big") + new
+                changed = True
+        elif marker == 0xE1 and payload.startswith(b"http://ns.adobe.com/xap/1.0/") and b"GPS" in payload:
+            seg = b""
+            changed = True
+        out.append(seg)
+        i += 2 + n
+    else:
+        return None  # no image data found
+    return b"".join(out) if changed else None
+
+
+def check_pixels(n, limits):
+    """A ValueError (400) for a picture or span canvas over `size_limits.max_pixels`."""
+    cap = limits.get("max_pixels")
+    if cap and n > cap:
+        raise ValueError("over %g megapixels" % (cap / 1e6))
 
 
 def arg_id(a):
@@ -1945,9 +2073,17 @@ def mood_html(m):
     return out
 
 
-def gallery_html(eng, control, admin):
+# The panel's policy: only its own <script> and <style> (this response's nonce) run; style attributes
+# (colour swatches, the focus dot) are allowed, being unable to run code; images and fetches stay on
+# this origin, which under ingress is Home Assistant's own.
+PANEL_CSP = ("default-src 'none'; script-src 'nonce-{n}'; style-src 'nonce-{n}'; style-src-attr 'unsafe-inline'; "
+             "img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'")
+
+
+def gallery_html(eng, control, admin, nonce=""):
     """The sidebar panel. control/admin: whether this viewer may use the "lan"/"panel" actions;
-    the buttons they may not use are drawn disabled, with the reason as a tooltip."""
+    the buttons they may not use are drawn disabled, with the reason as a tooltip. nonce: the CSP
+    nonce of this response, on every <script> and <style>."""
     esc = html.escape
     cur = eng.current() or {}
     lib = eng.library_view()
@@ -2180,7 +2316,7 @@ def gallery_html(eng, control, admin):
             '<label class="tagbox"><input type="checkbox" name="tags" value="%s"> %s</label>' % (t, t) for t in words))
         for group, words in mood.TAG_GROUPS.items())
     return PAGE.substitute(
-        shot=shot, now=now, state=state, nextbtn=nextbtn, toggle=toggle, window=window, screens=screens,
+        nonce=nonce, shot=shot, now=now, state=state, nextbtn=nextbtn, toggle=toggle, window=window, screens=screens,
         capnote=('<p class="note">%s</p>' % capnote) if capnote else "", summary=esc(summary),
         loved_help=esc(loved_help),
         moodline=mood_html(lib["mood"]), tagboxes=tagboxes,
@@ -2192,7 +2328,7 @@ def gallery_html(eng, control, admin):
 # string.Template, so the CSS and JS need no escaping; the script avoids "$" for the same reason.
 PAGE = string.Template("""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>Matchy Wallpapers</title>
-<style>
+<style nonce="$nonce">
 :root{color-scheme:dark;--bg:#111413;--card:#1b201e;--line:#2c3430;--fg:#e8ece9;--mut:#9aa59f;--acc:#7fb38f;--bad:#e08a7f;--love:#e38aa6}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.5 system-ui,sans-serif}
 main{max-width:1500px;margin:auto;padding:20px 16px 40px}
@@ -2280,8 +2416,8 @@ is never overwritten. Save it empty and the captioner writes a new one.</p>
 <p id="kd-msg" role="status"></p>
 <menu><button value="cancel" formnovalidate>Cancel</button><button class="primary" value="save">Save kids caption</button></menu>
 </form></dialog>
-<script type="application/json" id="lib">$data</script>
-<script>
+<script type="application/json" id="lib" nonce="$nonce">$data</script>
+<script nonce="$nonce">
 const data = JSON.parse(document.getElementById('lib').textContent);
 const byId = Object.fromEntries(data.items.map(i => [i.id, i]));
 const msg = document.getElementById('msg');
