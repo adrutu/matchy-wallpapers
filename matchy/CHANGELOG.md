@@ -98,6 +98,8 @@ Robustness review of the engine's edges (`tests/security_test.py`, also in CI):
 - `run.sh` drops the Supervisor token from the engine's environment, except when the mood-aware
   picks read a `weather_entity` (the only thing the engine uses it for; without it that read
   answered `401`).
+- A picture removed from the library while a request for it was on its way (a folder scan in
+  between) answers `404` instead of `500`.
 
 - Colour match: each picture gets a five-colour `palette`, a usable `accent` (3:1 contrast on both
   light and dark) and the nearest `gnome_accent` name, computed once from the master into the sidecar

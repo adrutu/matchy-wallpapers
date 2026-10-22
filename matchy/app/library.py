@@ -152,6 +152,10 @@ def valid_focus(f):
     return f
 
 
+class Gone(KeyError):
+    """A picture that left the library (a rescan swapped `items`) while a request was using it."""
+
+
 class Library:
     """Holds items {id: item}. item = {id, kind, path, sha256, meta{title,place,credit,context,collection}, order}.
     Sidecars (captions) live in <data>/library/<id>.json and are the source of truth for display text.
@@ -739,8 +743,15 @@ class Library:
         write_json(self.art_skipped_path, self.art_skipped)
 
     # ---------- masters ----------
+    def item(self, iid):
+        """The library entry, or Gone: a rescan may swap `items` between a check and its use."""
+        it = self.items.get(iid)
+        if it is None:
+            raise Gone(iid)
+        return it
+
     def master_path(self, iid):
-        it = self.items[iid]
+        it = self.item(iid)
         tag = hashlib.sha256(("%s|%d" % (it["sha256"], MASTER_FORMAT)).encode()).hexdigest()[:8]
         return os.path.join(self.data, "masters", "%s-%s.jpg" % (iid, tag))
 
@@ -760,7 +771,7 @@ class Library:
                 self.master_locks.pop(iid, None)
 
     def _make_master(self, iid, p):
-        it = self.items[iid]
+        it = self.item(iid)
         if iid in self.skipped:  # reported once already; it stays in the library so the gallery can say why
             raise ValueError(self.skipped[iid][1])
         cap = int(self.cfg["master_max_px"])

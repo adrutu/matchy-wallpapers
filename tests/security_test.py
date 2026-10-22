@@ -214,6 +214,27 @@ for url in ("file:///etc/hostname", "file://localhost/etc/hostname", "ftp://exam
     except Exception as e:  # noqa: BLE001
         check("http_get refuses %s" % url, False, repr(e))
 
+# ---------------- a picture removed from the library while a request is on its way ----------------
+# The route checks `iid in lib.items`, then a rescan swaps the dict before the render or the original
+# reads it: a 404, not a KeyError 500.
+class LyingItems(dict):
+    def __contains__(self, k): return True  # the check passed before the swap
+
+
+eng = make_engine("gone")
+port = serve(eng)
+gone = eng.current()["id"]
+real_items = eng.lib.items
+eng.lib.items = LyingItems({k: v for k, v in real_items.items() if k != gone})
+st, body, _ = req(port, "GET", "/img/%s/original.jpg" % gone)
+check("gone mid-request: original.jpg is a 404", st == 404, (st, body[:200]))
+rev = eng.lib.display(gone)["rev"]
+st, body, _ = req(port, "GET", "/img/%s/%s/clean/640x360.jpg" % (gone, rev))
+check("gone mid-request: a render is a 404", st == 404, (st, body[:200]))
+st, body, _ = req(port, "GET", "/img/%s/%s/span.jpg?layout=1920x1080%%2B0%%2B0" % (gone, rev))
+check("gone mid-request: a span is a 404", st == 404, (st, body[:200]))
+eng.lib.items = real_items
+
 print("\n%d passed, %d failed" % (ok, fail))
 if not fail:
     shutil.rmtree(S, ignore_errors=True)

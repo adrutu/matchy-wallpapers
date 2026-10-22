@@ -33,7 +33,7 @@ import hass  # noqa: E402
 import render  # noqa: E402
 from caption import Captioner, subject_box  # noqa: E402
 from artsources import SOURCES  # noqa: E402
-from library import Library, log, num, open_image, read_json, rev_of, write_json  # noqa: E402
+from library import Gone, Library, log, num, open_image, read_json, rev_of, write_json  # noqa: E402
 from palette import HEX_RE  # noqa: E402
 
 DEFAULTS = {
@@ -1419,7 +1419,7 @@ class Engine:
         return {"lo": z["min"], "hi": z["max"], "max_w": z["span_w"], "max_h": z["span_h"]}
 
     def original(self, iid):
-        it = self.lib.items[iid]
+        it = self.lib.item(iid)
         if it["path"].lower().endswith((".jpg", ".jpeg")):
             with open(it["path"], "rb") as f:
                 return f.read()
@@ -1763,6 +1763,8 @@ class Handler(BaseHTTPRequestHandler):
                             return self.send(304, headers=hdr, head=True)
                     data = eng.render_kind(iid, rev, kind, size[0], size[1], s, kids=kids, pad=pad)
                     return self.send(200, data, "image/jpeg", hdr, head)
+        except Gone:  # removed from the library while this request was on its way
+            return self.send(404, "not found\n", head=head)
         except ValueError as e:
             return self.send(400, "%s\n" % e, head=head)
         return self.send(404, "not found\n", head=head)
