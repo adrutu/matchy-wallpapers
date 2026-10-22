@@ -114,6 +114,9 @@ Robustness review of the engine's edges (`tests/security_test.py`, also in CI):
   an art API hands back must be public. A `302` to the Supervisor or Home Assistant is refused.
 - The panel page carries a Content-Security-Policy with a per-response nonce: only its own script
   and stylesheet run, images and requests stay on its origin.
+- The captioner's prompt marks the picture's source text (titles, museum facts, Wikimedia's
+  description) off as data in a fenced block, each value on one line and capped, so a source cannot
+  pass the captioner instructions; the grounding check is unchanged.
 
 - Colour match: each picture gets a five-colour `palette`, a usable `accent` (3:1 contrast on both
   light and dark) and the nearest `gnome_accent` name, computed once from the master into the sidecar
