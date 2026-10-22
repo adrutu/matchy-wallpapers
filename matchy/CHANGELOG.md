@@ -117,6 +117,8 @@ Robustness review of the engine's edges (`tests/security_test.py`, also in CI):
 - The captioner's prompt marks the picture's source text (titles, museum facts, Wikimedia's
   description) off as data in a fenced block, each value on one line and capped, so a source cannot
   pass the captioner instructions; the grounding check is unchanged.
+- CI installs Pillow and the config validator's packages from hash-pinned requirement files
+  (`tests/requirements/`, `pip --require-hashes`).
 
 - Colour match: each picture gets a five-colour `palette`, a usable `accent` (3:1 contrast on both
   light and dark) and the nearest `gnome_accent` name, computed once from the master into the sidecar
