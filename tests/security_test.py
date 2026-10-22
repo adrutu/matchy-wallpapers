@@ -227,13 +227,50 @@ gone = eng.current()["id"]
 real_items = eng.lib.items
 eng.lib.items = LyingItems({k: v for k, v in real_items.items() if k != gone})
 st, body, _ = req(port, "GET", "/img/%s/original.jpg" % gone)
-check("gone mid-request: original.jpg is a 404", st == 404, (st, body[:200]))
+check("gone mid-request: original.jpg is a 404", st == 404, (st, body[:80]))
 rev = eng.lib.display(gone)["rev"]
 st, body, _ = req(port, "GET", "/img/%s/%s/clean/640x360.jpg" % (gone, rev))
-check("gone mid-request: a render is a 404", st == 404, (st, body[:200]))
+check("gone mid-request: a render is a 404", st == 404, (st, body[:80]))
 st, body, _ = req(port, "GET", "/img/%s/%s/span.jpg?layout=1920x1080%%2B0%%2B0" % (gone, rev))
-check("gone mid-request: a span is a 404", st == 404, (st, body[:200]))
+check("gone mid-request: a span is a 404", st == 404, (st, body[:80]))
 eng.lib.items = real_items
+
+# ---------------- render budget on the published port ----------------
+# Any LAN client may ask for a size: one picture or a span canvas is held to `size_limits.max_pixels`
+# (40 MP: 7680x4320 and three 4K screens in a row fit), and renders waiting for a slot are capped
+# (`render_queue`), the rest answered 503 with Retry-After instead of piling up threads and memory.
+eng = make_engine("budget")
+port = serve(eng)
+iid = eng.current()["id"]
+rev = eng.lib.display(iid)["rev"]
+st, body, _ = req(port, "GET", "/img/%s/%s/clean/7680x7680.jpg" % (iid, rev))
+check("budget: 7680x7680 (59 MP) is refused", st == 400 and b"megapixels" in body, (st, body[:80]))
+st, body, _ = req(port, "GET", "/img/%s/%s/clean/7680x4320.jpg" % (iid, rev))
+check("budget: 7680x4320 (8K) still renders", st == 200, (st, body[:80]))
+st, body, _ = req(port, "GET", "/img/%s/%s/clean/5000x5000.jpg?pad=1.3" % (iid, rev))
+check("budget: a pad that takes it past the budget is refused", st == 400 and b"megapixels" in body, (st, body[:80]))
+st, body, _ = req(port, "GET", "/img/%s/%s/span.jpg?layout=1920x1080%%2B0%%2B0,1920x1080%%2B10000%%2B6900" % (iid, rev))
+check("budget: a span canvas stretched by a far-away screen (95 MP) is refused",
+      st == 400 and b"megapixels" in body, (st, body[:80]))
+st, body, _ = req(port, "GET", "/img/%s/%s/span.jpg?layout=3840x2160%%2B0%%2B0,3840x2160%%2B3840%%2B0,3840x2160%%2B7680%%2B0p"
+                  % (iid, rev))
+check("budget: three 4K screens in a row still span", st == 200, (st, body[:80]))
+
+release = threading.Event()
+eng.cfg["render_queue"] = 1
+holder = threading.Thread(target=lambda: eng.cached("hold/slot.jpg", lambda: (release.wait(20), b"x")[1]), daemon=True)
+holder.start()
+for _ in range(100):
+    if eng.render_waiting:
+        break
+    time.sleep(0.02)
+st, body, h = req(port, "GET", "/img/%s/%s/clean/800x600.jpg" % (iid, rev))
+check("budget: a render past the queue answers 503 with Retry-After", st == 503 and h.get("Retry-After"), (st, body[:200], h))
+st, _, _ = req(port, "GET", "/img/%s/%s/clean/7680x4320.jpg" % (iid, rev))
+check("budget: a cached size is still served while the queue is full", st == 200, st)
+release.set(); holder.join(5)
+st, _, _ = req(port, "GET", "/img/%s/%s/clean/800x600.jpg" % (iid, rev))
+check("budget: the queue frees up again", st == 200 and eng.render_waiting == 0, (st, eng.render_waiting))
 
 print("\n%d passed, %d failed" % (ok, fail))
 if not fail:

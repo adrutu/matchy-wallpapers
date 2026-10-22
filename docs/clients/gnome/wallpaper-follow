@@ -55,8 +55,8 @@ IFACE = "org.gnome.desktop.interface"
 ACCENT_KEY = "accent-color"
 KEEP_RECENT = 2        # current + previous
 KEEP_OTHER_LAYOUTS = 4  # plus the newest image of up to 4 other layouts (fallback when away)
-# Engine limits (API contract): each monitor side 320..7680, canvas <= 12000x8000
-MAX_SIDE, MAX_W, MAX_H = 7680, 12000, 8000
+# Engine limits (API contract): each monitor side 320..7680, canvas <= 12000x8000 and <= 40 megapixels
+MAX_SIDE, MAX_W, MAX_H, MAX_PIXELS = 7680, 12000, 8000, 40_000_000
 VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$")
 SCREEN = socket.gethostname()
 UA = f"wallpaper-follow/1 ({SCREEN})"
@@ -118,7 +118,7 @@ def layout_spec(state):
         r[0] -= ox; r[2] -= ox; r[1] -= oy; r[3] -= oy
     cw, ch = max(r[2] for r in rects), max(r[3] for r in rects)
     side = max(max(r[2] - r[0], r[3] - r[1]) for r in rects)
-    f = min(1.0, MAX_W / cw, MAX_H / ch, MAX_SIDE / side)
+    f = min(1.0, MAX_W / cw, MAX_H / ch, MAX_SIDE / side, 0.999 * (MAX_PIXELS / (cw * ch)) ** 0.5)
     if f < 1.0:
         for r in rects:
             r[:4] = [round(v * f) for v in r[:4]]

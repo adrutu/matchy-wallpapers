@@ -43,6 +43,7 @@ DEFAULTS = {
     "master_max_px": 3840,
     "cache_max_mb": 2048,
     "render_threads": 2,
+    "render_queue": 16,  # cache misses waiting for or holding a render slot; past it, 503 + Retry-After
     # love_weight: how many turns a loved picture gets per shuffle, so about how many times as often it comes up.
     "rotation": {"min_minutes": 15, "max_minutes": 20, "love_weight": 3, "caption_priority": []},
     "location": None,  # {"latitude", "longitude"}: Day & night changes at sunrise and sunset there
@@ -89,7 +90,8 @@ DEFAULTS = {
     "lan_cidrs": ["127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10",
                   "::1/128", "fc00::/7", "fe80::/10"],
     "style": {},
-    "size_limits": {"min": 320, "max": 7680, "span_w": 12000, "span_h": 8000},
+    # max_pixels: one picture (padding included) or a span canvas; 7680x4320 and three 4K screens fit.
+    "size_limits": {"min": 320, "max": 7680, "span_w": 12000, "span_h": 8000, "max_pixels": 40_000_000},
     # Home Assistant entities over MQTT discovery (hass.py). The add-on fills host, port, username,
     # password_file and base_url from the Supervisor; base_url is where Home Assistant fetches the
     # picture for the image entity. Off by default.
@@ -134,6 +136,10 @@ def box_focus(box, sha):
     """A focus at the centre of the captioner's subject box."""
     return {"x": round((box[0] + box[2]) / 2, 3), "y": round((box[1] + box[3]) / 2, 3), "source": "model",
             "sha256": sha}
+
+
+class Busy(Exception):
+    """Too many renders waiting: the handler answers 503 with Retry-After."""
 
 
 class Refused(Exception):
@@ -294,6 +300,7 @@ class Engine:
         self.wake = threading.Event()
         self.caption_wake = threading.Event()
         self.render_sem = threading.Semaphore(int(cfg["render_threads"]))
+        self.render_waiting = 0  # cache misses between the queue check and the end of their render
         self.render_locks = {}
         self.masters = OrderedDict()
         self.masters_lock = threading.Lock()
@@ -1313,6 +1320,11 @@ class Engine:
         except OSError:
             pass
         with self.lock:
+            # Each miss waits for a slot holding a thread (and, once rendering, the picture in memory):
+            # past the queue the client is told to come back rather than adding to the pile.
+            if self.render_waiting >= int(self.cfg.get("render_queue", 16)):
+                raise Busy()
+            self.render_waiting += 1
             lk = self.render_locks.setdefault(key_path, threading.Lock())
         try:
             with lk:
@@ -1333,6 +1345,7 @@ class Engine:
         finally:  # a render that fails must not leave its lock behind (one per size asked for)
             with self.lock:
                 self.render_locks.pop(key_path, None)
+                self.render_waiting -= 1
         self.evict(len(data))
         return data
 
@@ -1416,7 +1429,8 @@ class Engine:
 
     def span_limits(self):
         z = self.cfg["size_limits"]
-        return {"lo": z["min"], "hi": z["max"], "max_w": z["span_w"], "max_h": z["span_h"]}
+        return {"lo": z["min"], "hi": z["max"], "max_w": z["span_w"], "max_h": z["span_h"],
+                "max_pixels": z.get("max_pixels")}
 
     def original(self, iid):
         it = self.lib.item(iid)
@@ -1651,8 +1665,10 @@ class Handler(BaseHTTPRequestHandler):
         if not 1.0 <= p <= 1.3:
             raise ValueError("pad must be 1.0-1.3")
         p = round(p, 2)
-        if max(round(size[0] * p), round(size[1] * p)) > self.engine.cfg["size_limits"]["max"]:
-            raise ValueError("pad makes the picture larger than %d pixels" % self.engine.cfg["size_limits"]["max"])
+        z = self.engine.cfg["size_limits"]
+        if max(round(size[0] * p), round(size[1] * p)) > z["max"]:
+            raise ValueError("pad makes the picture larger than %d pixels" % z["max"])
+        check_pixels(round(size[0] * p) * round(size[1] * p), z)
         return p
 
     def parse_size(self, name):
@@ -1663,6 +1679,7 @@ class Handler(BaseHTTPRequestHandler):
         z = self.engine.cfg["size_limits"]
         if not (z["min"] <= w <= z["max"] and z["min"] <= h <= z["max"]):
             return None
+        check_pixels(w * h, z)
         return w, h
 
     def route(self, head):
@@ -1765,9 +1782,19 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send(200, data, "image/jpeg", hdr, head)
         except Gone:  # removed from the library while this request was on its way
             return self.send(404, "not found\n", head=head)
+        except Busy:
+            return self.send(503, "busy rendering, try again shortly\n", head=head,
+                             headers={"Retry-After": "5", "Cache-Control": "no-store"})
         except ValueError as e:
             return self.send(400, "%s\n" % e, head=head)
         return self.send(404, "not found\n", head=head)
+
+
+def check_pixels(n, limits):
+    """A ValueError (400) for a picture or span canvas over `size_limits.max_pixels`."""
+    cap = limits.get("max_pixels")
+    if cap and n > cap:
+        raise ValueError("over %g megapixels" % (cap / 1e6))
 
 
 def arg_id(a):

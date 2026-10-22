@@ -100,6 +100,10 @@ Robustness review of the engine's edges (`tests/security_test.py`, also in CI):
   answered `401`).
 - A picture removed from the library while a request for it was on its way (a folder scan in
   between) answers `404` instead of `500`.
+- Render budget on the published port: one picture or span canvas is at most 40 megapixels
+  (`size_limits.max_pixels`; 8K and three 4K screens fit), and past 16 renders waiting
+  (`render_queue`) a new render answers `503` with `Retry-After`, so a loop of huge requests can no
+  longer run the add-on out of memory. The GNOME follower scales a larger layout down to fit.
 
 - Colour match: each picture gets a five-colour `palette`, a usable `accent` (3:1 contrast on both
   light and dark) and the nearest `gnome_accent` name, computed once from the master into the sidecar

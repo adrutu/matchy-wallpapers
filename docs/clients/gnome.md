@@ -106,8 +106,8 @@ On GNOME 46 or older the key does not exist: one journal line says so, and the w
 
 ## Notes
 
-- The engine's limits apply to the span: each monitor side 320–7680 px, canvas up to 12000x8000,
-  at most 8 monitors. A layout larger than that is scaled down proportionally (GNOME stretches the
+- The engine's limits apply to the span: each monitor side 320–7680 px, canvas up to 12000x8000
+  and 40 megapixels, at most 8 monitors. A layout larger than that is scaled down proportionally (GNOME stretches the
   spanned picture over the stage anyway).
 - If Matchy is behind a reverse proxy with TLS, give `MATCHY_URL` the `https://` name; nothing else
   changes.

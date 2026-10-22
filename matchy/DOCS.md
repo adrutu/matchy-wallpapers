@@ -528,7 +528,10 @@ Read endpoints:
 A `label` other than `kids`, or a `reveal` that is not whole seconds from 0 to 86400, answers `400`.
 Sizes: width and height 320–7680 (outside that, `/img/...` answers `400` and `/current/...` `404`;
 a `pad` outside 1.0–1.3, or one that takes a side past 7680, answers `400` on both); a
-span canvas up to 12000x8000 with at most 8 monitors and one primary. A `<rev>` that is no longer current (the caption or the focus point changed) answers `302` to the current
+span canvas up to 12000x8000 with at most 8 monitors and one primary. One picture (padding included)
+or span canvas is at most 40 megapixels (`size_limits.max_pixels`; 7680x4320 and three 4K screens in a
+row fit), otherwise `400`. When more than 16 renders are already waiting (`render_queue`), a request
+that needs a new render answers `503` with `Retry-After: 5`; sizes already rendered are still served. A `<rev>` that is no longer current (the caption or the focus point changed) answers `302` to the current
 URL. `HEAD` works everywhere `GET` does. Every read response carries
 `Access-Control-Allow-Origin: *`, except the gallery page and `/screens.json`, which name the screens (and the latter their addresses).
 
@@ -782,7 +785,7 @@ Keys the engine understands but the add-on does not expose:
   identifier and the start of every unique id, so two engines on one broker need two prefixes) and
   `image_size` (`[1920, 1080]`, the labelled picture the image entity shows);
 - `rotation.caption_priority`, `dedupe.avoid_prefixes` and `ladder_prefer` (`"4k"`), `lan_cidrs`,
-  `ingress_peers`, `size_limits`, `bind` and `style` (label proportions, fonts, `jpeg_quality`, and
+  `ingress_peers`, `size_limits` (`max_pixels` included), `render_queue` (16), `bind` and `style` (label proportions, fonts, `jpeg_quality`, and
   `kids_scale`, 1.3, the label scale for `?label=kids` without `s`).
 
 Environment: `WE_CONFIG`, `WE_PORT`, `WE_DATA_DIR`, `WE_FONT_DIR`, `WE_ACCESS_LOG`.
