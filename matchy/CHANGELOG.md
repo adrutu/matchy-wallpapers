@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.5.0 (unreleased, on trial at home)
+## 0.5.0 (2026-10-27)
 
 New features, all documented in DOCS.md; the client recipes are in `docs/clients`.
 
